@@ -1,0 +1,7 @@
+# Store text with LF line endings on every platform; Make, shell and Go
+# tooling break on CRLF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

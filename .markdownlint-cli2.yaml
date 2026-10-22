@@ -1,0 +1,11 @@
+# Markdown style rules, run by `make lint-repo`.
+config:
+  default: true
+  MD013: false # line length: editors wrap prose, and tables can't wrap
+  MD024:
+    siblings_only: true # repeated headings are fine under different parents
+
+globs:
+  - "**/*.md"
+
+gitignore: true

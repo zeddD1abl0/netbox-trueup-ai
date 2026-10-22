@@ -1,0 +1,17 @@
+# Pinned tool versions for local development and CI. Install with `mise install`
+# (https://mise.jdx.dev). Why each tool is here: docs/tooling.md.
+#
+# Version policy: Go and Node take the latest patch release promptly, because
+# those releases usually carry security fixes. Third-party tools wait until a
+# release has been public for at least 7 days, matching Dependabot's cooldown.
+
+[tools]
+go = "1.27.3"
+node = "24.22.1"
+golangci-lint = "2.14.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
+actionlint = "1.7.12"
+zizmor = "1.30.1"
+gitleaks = "8.30.1"
+lefthook = "2.2.1"
+"npm:markdownlint-cli2" = "0.23.3"

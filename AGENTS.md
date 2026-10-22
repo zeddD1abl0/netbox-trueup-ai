@@ -1,0 +1,75 @@
+# AGENTS.md
+
+Instructions for AI coding agents working on NetBox TrueUp AI. Human contributors should start with [CONTRIBUTING.md](CONTRIBUTING.md). Everything here applies to humans too; this file is just more explicit.
+
+## Project
+
+NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories. See [README.md](README.md) for the planned feature set.
+
+**Status:** early development. Only repository scaffolding exists. Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+
+**NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
+
+## Commands
+
+| Task | Command |
+| --- | --- |
+| Install the pinned toolchain | `make tools` (needs [mise](https://mise.jdx.dev)) |
+| Build | `make build` |
+| Test (with race detector) | `make test` |
+| Format | `make fmt` |
+| Lint Go | `make lint` |
+| Lint workflows and Markdown, scan for secrets | `make lint-repo` |
+| Vulnerability check | `make vuln` |
+| Everything CI runs | `make check` |
+| Fetch NetBox source for reference | `make reference` |
+
+Run `make check` before proposing a pull request.
+
+## Layout
+
+| Path | Contents |
+| --- | --- |
+| `cmd/netbox-trueup-ai/` | Entry point |
+| `internal/` | Application packages |
+| `docs/` | Documentation. `docs/adr/` holds decision records; `docs/tooling.md` lists every tool and why it was chosen |
+| `.github/` | CI workflows, Dependabot, issue and PR templates |
+| `.claude/` | Claude Code project settings and skills |
+
+## Rules
+
+### Always
+
+- Work on a branch and open a pull request. `main` only changes through merged PRs.
+- Write commit messages and PR titles as [Conventional Commits](https://www.conventionalcommits.org): `type(scope): summary`, imperative mood, at most 72 characters. Types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+- Sign every commit. If signing fails, stop and tell the human; don't work around it.
+- Keep each PR to one logical change, with tests for any behaviour change.
+- Update documentation in the same PR: `docs/tooling.md` for any new or changed tool or dependency, an ADR for any significant decision ([what counts](docs/adr/README.md)), and the README of any directory whose usage changes.
+- Keep the attribution your tool adds to commits and pull requests, such as a `Co-Authored-By` trailer.
+
+### Never
+
+- Never commit secrets, tokens, or real hostnames, addresses or data from anyone's network. Use documentation values: `example.com`, `192.0.2.0/24`, `2001:db8::/32`.
+- Never write to a NetBox instance other than a disposable local one, and never run a sync against shared or production NetBox.
+- Never push to `main`, approve a pull request, or merge one. A human maintainer does those.
+- Never bypass checks: no `--no-verify`, no `--no-gpg-sign`, no `-c commit.gpgsign=false`.
+- Never weaken a CI check, linter rule or security setting to make a change pass. Explain the problem to a human instead.
+- Never add a dependency without a reason in the PR description. Prefer the standard library.
+- Never edit generated files by hand. Change the source and regenerate.
+
+## Go conventions
+
+- Format with `make fmt` (gofumpt and goimports).
+- Wrap errors with context and `%w`: `fmt.Errorf("load source %q: %w", name, err)`. Either handle an error or return it, not both. No panics outside `main`.
+- Functions that do I/O take a `context.Context` as their first parameter.
+- Log with `log/slog` using structured key-value pairs. Never log secrets or tokens.
+- Write table-driven tests using the standard library, plus `go-cmp` for comparing values. Call `t.Parallel()` where it's safe.
+- Put packages under `internal/` unless they are deliberately public API.
+
+## Matching NetBox behaviour
+
+The comparison engine must treat fields the way NetBox does. Before writing comparison rules for a model or field, read NetBox's own code at the target version: `make reference` puts it in `.cache/reference/`. Cite the NetBox source you followed in the PR description.
+
+## Security
+
+Treat everything from source repositories, YAML files, the web UI and NetBox responses as untrusted input. Vulnerabilities are reported privately; see [SECURITY.md](SECURITY.md).

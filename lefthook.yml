@@ -1,0 +1,38 @@
+# Git hooks, installed with `make hooks`. They give fast feedback before CI;
+# CI runs the same checks and is what actually enforces them.
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: format Go
+      glob: "*.go"
+      run: golangci-lint fmt {staged_files}
+      stage_fixed: true
+
+    - name: lint Go
+      glob: "*.go"
+      run: golangci-lint run
+
+    - name: lint Markdown
+      glob: "*.md"
+      run: markdownlint-cli2 {staged_files}
+
+    - name: lint workflows
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint {staged_files}
+
+    - name: scan for secrets
+      run: gitleaks git --pre-commit --staged --redact --no-banner
+
+commit-msg:
+  jobs:
+    - name: conventional commit message
+      run: |
+        subject=$(head -n 1 {1})
+        pattern='^(feat|fix|docs|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._-]+\))?!?: .+'
+        if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+          echo "Commit subject must follow Conventional Commits, e.g. 'feat(sync): add device type import'."
+          echo "Got: $subject"
+          echo "See CONTRIBUTING.md#commit-messages"
+          exit 1
+        fi

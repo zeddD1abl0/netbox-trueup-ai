@@ -1,0 +1,37 @@
+# golangci-lint v2 configuration. `make lint` and CI run the same checks;
+# `make fmt` applies the formatters.
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose # unclosed HTTP response bodies
+    - contextcheck # functions that drop the caller's context
+    - errorlint # errors.Is/As and %w wrapping
+    - exhaustive # switches over enums handle every value
+    - forcetypeassert # unchecked type assertions
+    - gocritic
+    - gosec # security problems
+    - misspell
+    - nilerr # returning nil when an error was checked
+    - noctx # HTTP requests without a context
+    - nolintlint # //nolint directives must name the linter and say why
+    - unconvert
+    - unparam
+    - usestdlibvars
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/zeddD1abl0/netbox-trueup-ai

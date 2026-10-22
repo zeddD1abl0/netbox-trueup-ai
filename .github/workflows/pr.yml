@@ -1,0 +1,45 @@
+name: Pull request
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Conventional title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read # read the PR title
+    steps:
+      # PRs are squash-merged, so the title becomes the commit message on main.
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  signatures:
+    name: Signed commits
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # list the PR's commits and their signature status
+    steps:
+      - name: Check every commit has a signature GitHub verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          unsigned=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+            --jq '.[] | select(.commit.verification.verified | not) | .sha[0:12]')
+          if [ -n "$unsigned" ]; then
+            echo "::error::Commits without a verified signature: ${unsigned//$'\n'/ }"
+            echo "Sign your commits and force-push the branch. See CONTRIBUTING.md#signing-commits"
+            exit 1
+          fi
+          echo "All commits have verified signatures."

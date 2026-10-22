@@ -1,0 +1,77 @@
+name: Bug report
+description: Something doesn't work the way the documentation says it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. For security issues, don't use this form; follow [SECURITY.md](https://github.com/zeddD1abl0/netbox-trueup-ai/blob/main/SECURITY.md) instead.
+
+        Remove tokens, passwords and internal hostnames from anything you paste.
+
+  - type: input
+    id: version
+    attributes:
+      label: NetBox TrueUp AI version
+      description: The release version, or the commit you built from.
+    validations:
+      required: true
+
+  - type: input
+    id: netbox-version
+    attributes:
+      label: NetBox version
+      placeholder: "4.7.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - Binary under systemd
+        - Windows service
+        - Docker
+        - Kubernetes (Helm)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - SQLite
+        - PostgreSQL
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest YAML and configuration that shows the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      render: text
