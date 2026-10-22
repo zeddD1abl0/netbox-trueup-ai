@@ -1,28 +1,31 @@
 # Git hooks, installed with `make hooks`. They give fast feedback before CI;
 # CI runs the same checks and is what actually enforces them.
+#
+# Jobs run through .lefthook/with-tools so they use the versions pinned in
+# mise.toml, even when Git is called from an IDE or an AI agent's shell.
 
 pre-commit:
   parallel: true
   jobs:
     - name: format Go
       glob: "*.go"
-      run: golangci-lint fmt {staged_files}
+      run: .lefthook/with-tools golangci-lint fmt {staged_files}
       stage_fixed: true
 
     - name: lint Go
       glob: "*.go"
-      run: golangci-lint run
+      run: .lefthook/with-tools golangci-lint run
 
     - name: lint Markdown
       glob: "*.md"
-      run: markdownlint-cli2 {staged_files}
+      run: .lefthook/with-tools markdownlint-cli2 {staged_files}
 
     - name: lint workflows
       glob: ".github/workflows/*.{yml,yaml}"
-      run: actionlint {staged_files}
+      run: .lefthook/with-tools actionlint {staged_files}
 
     - name: scan for secrets
-      run: gitleaks git --pre-commit --staged --redact --no-banner
+      run: .lefthook/with-tools gitleaks git --pre-commit --staged --redact --no-banner
 
 commit-msg:
   jobs:

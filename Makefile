@@ -1,6 +1,13 @@
 # Developer entry points. Run `make help` to list them; CI runs `make check`.
 # Tool versions come from mise.toml (`make tools` installs them).
 
+# Put the tools pinned in mise.toml first on PATH even when mise isn't activated
+# in the calling shell, as with IDE tasks, scripts and AI agents. Without mise,
+# tools come from PATH as usual.
+ifneq ($(shell command -v mise 2>/dev/null),)
+export PATH := $(shell mise bin-paths 2>/dev/null | tr '\n' ':')$(PATH)
+endif
+
 BINARY  := netbox-trueup-ai
 MODULE  := github.com/zeddD1abl0/netbox-trueup-ai
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
