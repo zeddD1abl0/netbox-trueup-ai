@@ -331,7 +331,7 @@ Once the bootstrap PRs land, most of this is automated by `mise.toml`, `.devcont
 **Manual setup:**
 
 1. Install Git, Docker with Compose, and [mise](https://mise.jdx.dev/getting-started.html).
-2. In the repository, run `mise install` to install the pinned toolchain, including Go. Then run `make hooks` to install the Git hooks.
+2. In the repository, run `mise install` to install the pinned toolchain, including Go. Then run `make hooks` to install the Git hooks. You don't need to activate mise in your shell: `make` and the Git hooks find the pinned tools themselves, including when Git runs from an IDE or an AI agent.
 3. Set up [commit signing](../CONTRIBUTING.md#signing-commits), and authenticate the GitHub CLI with `gh auth login`.
 4. Install Claude Code ([instructions](https://github.com/anthropics/claude-code)) and sign in with your own Claude account. Optionally install the VS Code extension.
 5. Open Claude Code in the repository and trust the folder. When prompted, install the plugins listed in `.claude/settings.json`. To install them by hand instead:
