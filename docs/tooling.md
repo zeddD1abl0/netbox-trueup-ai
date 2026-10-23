@@ -3,7 +3,7 @@
 This document lists the tools, libraries, and AI skills used to build NetBox TrueUp AI, and why each was chosen. It doubles as a reference for setting up a complete development environment, including AI-assisted development with your own Claude account.
 
 **Audience:** human contributors and AI coding agents.
-**Last reviewed:** 2026-10-22. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
+**Last reviewed:** 2026-10-23. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
 
 ## Status legend
 
@@ -120,15 +120,18 @@ These live in `.claude/skills/` and are versioned with the code. Each one is wri
 | --- | --- |
 | `AGENTS.md` | Canonical guide for AI agents: build and test commands, architecture map, rules (no secrets, generated files, commit format, ADRs). |
 | `CLAUDE.md` | Imports `AGENTS.md` and adds Claude-specific notes only. |
-| `.claude/settings.json` | Shared plugin list, a permission allowlist for safe commands (`make` targets, `go test`, read-only `git`), and deny rules for secret files. The hooks below are added here as they are written. |
+| `.claude/settings.json` | Shared plugin list, a permission allowlist for safe commands (`make` targets, `go test`, read-only `git`), deny rules for secret files, and the hooks below. |
+| `.claude/hooks/` | Scripts the hooks run. POSIX `sh`, with no dependency beyond the pinned toolchain. |
 | `.claude/skills/` | Project skills (section 1.4). |
 
-Planned hooks. They are guardrails for agents, not a security boundary; CI is the real enforcement.
+Hooks are guardrails for agents, not a security boundary; CI is the real enforcement.
 
-- Block edits to generated files (sqlc output, `*_templ.go`, bundled UI assets, `CHANGELOG.md`). Change the source and regenerate instead.
-- Format Go files after every edit.
-- Block `git commit` on `main`, force-pushes, and `--no-verify`.
-- Block reads of `.env*`, key files, and anything under `secrets/`.
+| Hook | Status |
+| --- | --- |
+| Format each Go file Claude edits or writes with gofumpt (`.claude/hooks/format-go.sh`, a `PostToolUse` hook). Not goimports: run on a half-finished edit, it deletes an import that is briefly unused, or adds whichever package of that name is in the module cache, which once picked a stray YAML fork. `make fmt`, the pre-commit hook and lint run goimports on finished code. | In place |
+| Block edits to generated files (sqlc output, `*_templ.go`, bundled UI assets, `CHANGELOG.md`). Change the source and regenerate instead. | Planned, roadmap step 6 |
+| Block `git commit` on `main`, force-pushes, and `--no-verify`. | Planned, backlog |
+| Block reads of `.env*`, key files, and anything under `secrets/`. | Planned, backlog |
 
 Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 
@@ -178,7 +181,7 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 
 | Tool | Status | Why |
 | --- | --- | --- |
-| [go.yaml.in/yaml/v3](https://github.com/yaml/go-yaml) | Use | Maintained path of the de-facto Go YAML library. Its `yaml.Node` API keeps comments and key order, which we need when users edit YAML in the UI and we write it back. `gopkg.in/yaml.v3` is frozen. Move to v4 once it leaves release candidate (v4.0.0-rc.6 as of June 2026). |
+| [go.yaml.in/yaml/v3](https://github.com/yaml/go-yaml) | Use | Maintained path of the de-facto Go YAML library. Its `yaml.Node` API keeps comments and key order, which we need when users edit YAML in the UI and we write it back. `gopkg.in/yaml.v3` is frozen. Move to v4 once it leaves release candidate (v4.0.0-rc.6 as of June 2026). Already used by the config loader to check that the config file is a mapping, and by koanf's YAML parser. |
 | [santhosh-tekuri/jsonschema](https://github.com/santhosh-tekuri/jsonschema) (v6) | Use | Validates source YAML, such as devicetype-library files against that library's JSON schemas, before anything reaches NetBox. |
 | [go-git](https://github.com/go-git/go-git) | Use | Clones and fetches source repositories in pure Go, so the container image and Windows builds don't need a `git` binary. Records the commit that produced each object. |
 
@@ -216,9 +219,9 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 
 | Tool | Status | Why |
 | --- | --- | --- |
-| [cobra](https://github.com/spf13/cobra) | Use | Command tree (`serve`, `migrate`, `permissions export`, `version`), help text, and shell completion. |
-| [koanf](https://github.com/knadh/koanf) (v2) | Use | Layers configuration with clear precedence: flags, then environment, then file, then database, then defaults (ADR 0012). Precedence is simply load order, so settings stored in the database fit in as one more layer, and loading layers separately shows where each value came from, which `config show` and the UI's read-only marking need. It also keeps key case, and reads every prefixed environment variable rather than only keys it already knows. Reads cobra's flags through its `posflag` provider. viper was considered (section 9). |
-| `log/slog` (standard library) | Use | Structured logging. JSON output for containers, text for terminals. |
+| [cobra](https://github.com/spf13/cobra) | Use | Command tree (`serve`, `migrate`, `permissions export`, `version`), help text, and shell completion. Its flag library, [pflag](https://github.com/spf13/pflag), is also used directly, to define a flag for each setting. Conventions for commands are in ADR 0018. |
+| [koanf](https://github.com/knadh/koanf) (v2) | Use | Layers configuration with clear precedence: flags, then environment, then file, then database, then defaults (ADR 0012). Precedence is simply load order, so settings stored in the database fit in as one more layer, and loading layers separately shows where each value came from, which `config show` and the UI's read-only marking need. It also keeps key case, and reads every prefixed environment variable rather than only keys it already knows. viper was considered (section 9). We use the core module, the `env/v2` and `posflag` providers, and the YAML parser. We don't use the `file` provider: it exists mainly to watch files, pulling in fsnotify, and settings only change on restart. TrueUp reads the file itself, with a size limit and a permission check. If live reloading is ever wanted, the `file` provider is the way to do it. |
+| `log/slog` (standard library) | Use | Structured logging. JSON output for containers, text for terminals. Logs go to stderr, so stdout carries only a command's result. |
 | [golang.org/x/sys/windows/svc](https://pkg.go.dev/golang.org/x/sys/windows/svc) | Use | Native Windows Service support from the official Go module. |
 | [go-systemd](https://github.com/coreos/go-systemd) (`daemon`) | Use | systemd readiness and watchdog notifications (`Type=notify`). |
 | [prometheus/client_golang](https://github.com/prometheus/client_golang) | Use | `/metrics` endpoint: sync durations, object counts, errors. |

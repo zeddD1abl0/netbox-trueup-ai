@@ -43,9 +43,9 @@ flowchart LR
 
 Steps not connected in the graph can run in parallel. Each step updates the docs it affects, and adds dependencies to [tooling.md](tooling.md) with the reason in its PR description.
 
-1. **`docs: add architecture, roadmap and ADRs 0006-0017`.** This plan, the architecture, and the ADRs it rests on.
+1. **`docs: add architecture, roadmap and ADRs 0006-0017`.** Done in #2. This plan, the architecture, and the ADRs it rests on.
 
-2. **`feat(cli): add command tree, configuration and logging`.**
+2. **`feat(cli): add command tree, configuration and logging`.** Done in #3.
    - A cobra root command with `version`, and `config show`, which prints the effective settings with where each came from and secrets redacted.
    - koanf layering as in [ADR 0012](adr/0012-layered-configuration.md): flags, `TRUEUP_` environment variables, a YAML file and defaults, with `_file` companions for secrets.
    - slog output as text or JSON.

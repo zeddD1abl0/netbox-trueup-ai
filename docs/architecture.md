@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the version stub, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration and logging, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -361,7 +361,9 @@ sources:
     include: ["device-types/Juniper/**"]
 ```
 
-Secrets are never logged or displayed, and `config show` redacts them. Until an ADR covers encrypting secrets entered in the UI, secrets come only from declarations.
+Secrets are never logged or displayed, and `config show` redacts them. Until an ADR covers encrypting secrets entered in the UI, secrets come only from declarations, and never from command-line flags ([ADR 0018](adr/0018-cli-conventions.md)).
+
+The loader (`internal/config`) reads each layer into its own koanf instance and resolves every setting to the highest layer that sets it, so it knows where each value came from. A database layer slots in between the file and the defaults. The config file is the one `--config` or `TRUEUP_CONFIG` names, or else `/etc/netbox-trueup-ai/config.yaml` if it exists; the working directory is never searched. Unknown keys and unknown `TRUEUP_` variables are errors. [configuration.md](configuration.md) lists every setting.
 
 ## Linking, planning and applying (M2)
 
@@ -547,7 +549,7 @@ flowchart LR
 
 ## Observability
 
-- **Logs (M1).** `log/slog`, as text for terminals or JSON for log pipelines. Secrets and tokens are never logged.
+- **Logs (M1).** `log/slog`, as text for terminals or JSON for log pipelines, on stderr so that stdout carries only a command's result. Secrets and tokens are never logged: their type logs as `[redacted]`.
 - **Metrics (M6).** Counts and durations of fetches, comparisons, plans and applies; objects in each outcome; NetBox request latency and errors; webhook deliveries. Exposed for Prometheus at `/metrics`, and exported over OTLP to an OpenTelemetry collector. Either can be turned off.
 - **Traces (M6).** OpenTelemetry traces follow fetching, comparing, planning and applying down to each NetBox request, and are exported over OTLP.
 
@@ -616,7 +618,7 @@ flowchart LR
 | B2 | NetBox to TrueUp | API responses | A compromised or impersonated NetBox sending hostile values or huge responses | TLS verification, with a custom CA allowed but no way to turn it off; version check; response size limits; decoding through specs; escaping in the UI |
 | B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a merge that overrides someone else's change | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them; merge conflicts never acknowledged automatically; changelog messages for audit |
 | B4 | Browser to TrueUp | Logins, form posts, override choices, live YAML edits | Credential stuffing, CSRF, XSS, privilege escalation; hostile or oversized YAML, and floods of live-edit requests | argon2id hashes and login rate limits; hardened session cookies; cross-origin protection; Content Security Policy; role checks in every handler; identity never taken from proxy-set headers; live edits parsed and validated like source files, with limits on request size and rate; audit log |
-| B5 | Operator to TrueUp | Config file, environment, secret files | Secrets leaking through logs, `config show`, error messages or the UI | Secrets only from the environment or files; redaction everywhere; a warning when a file holding secrets is readable by other users |
+| B5 | Operator to TrueUp | Config file, environment, secret files | Secrets leaking through logs, `config show`, error messages or the UI | Secrets only from the environment or files, never from command-line flags; redaction everywhere, error messages included; a warning when a file holding secrets is readable by every user; no config file read from the working directory |
 | B6 | TrueUp and its database | All of TrueUp's state | Leaked database credentials; tampering by anyone with database access | The database is inside the trust boundary; its credentials are secrets; TLS to PostgreSQL; the SQLite file is created readable by its owner only |
 | B7 | TrueUp to a writable Git source (export, M10) | Commits containing NetBox data | Pushing to the wrong place; leaked write credentials | Separate write credentials; commits go to a branch, never straight to a protected branch; designed in detail with the feature |
 | B8 | Identity provider to TrueUp (M3, M4) | OpenID Connect ID tokens, SAML assertions, and SCIM provisioning requests | Forged or replayed tokens and assertions, including XML signature wrapping; sign-in CSRF; roles granted too widely by loose group mapping; a leaked SCIM token used to create accounts | OpenID Connect: authorization code flow with PKCE, `state` and `nonce`, and signature, issuer, audience and expiry checks. SAML: signed assertions required, audience, recipient and validity checked, assertion IDs remembered against replay, a maintained library. SCIM: a bearer token per provider that only reaches the SCIM endpoints. Roles only from explicitly mapped groups; local administrator sign-ins audited |
@@ -632,8 +634,8 @@ Planned; packages are created when the code that needs them is written.
 ```text
 cmd/netbox-trueup-ai/     entry point and cobra commands
 internal/
-  config/                 declared and runtime settings
-  telemetry/              logging, metrics and tracing setup
+  config/                 declared and runtime settings (declared settings exist)
+  telemetry/              logging, metrics and tracing setup (logging exists)
   source/                 source kind interface, snapshots
   source/git/             Git source kind (HTTP and file kinds join in M9)
   format/devicetypelib/   devicetype-library format adapter
@@ -676,12 +678,12 @@ ADRs that record this design:
 | [0015](adr/0015-sign-in-and-provisioning.md) | Sign in with OpenID Connect, SAML or local accounts, provision with SCIM, and never trust proxy headers |
 | [0016](adr/0016-permissions-and-approval-policies.md) | Scoped permissions, and approval policies and change references that can be turned on |
 | [0017](adr/0017-netbox-branches.md) | Write plans through NetBox branches where teams want them |
+| [0018](adr/0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output |
 
 ADRs still to write, with the work that needs each one:
 
 | Decision | When |
 | --- | --- |
-| CLI commands, exit codes and machine-readable output | M1, with the command tree |
 | Own NetBox REST client (closes the spike in tooling.md §3.1) | M1, with the read-only client |
 | Fetching Git sources with go-git, given devicetype-library's size | M1, with Git sources |
 | How specs are checked against the OpenAPI schema (closes the kin-openapi spike) | M1, with the object model |

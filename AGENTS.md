@@ -6,7 +6,7 @@ Instructions for AI coding agents working on NetBox TrueUp AI. Human contributor
 
 NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories and, later, other sources. See [README.md](README.md) for the planned feature set.
 
-**Status:** early development. Only repository scaffolding exists. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+**Status:** early development. The command tree, configuration and logging exist; nothing reads sources or talks to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
 
 **NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
 
@@ -30,7 +30,7 @@ Run `make check` before proposing a pull request.
 
 | Path | Contents |
 | --- | --- |
-| `cmd/netbox-trueup-ai/` | Entry point |
+| `cmd/netbox-trueup-ai/` | Entry point and cobra commands |
 | `internal/` | Application packages |
 | `docs/` | Documentation. `docs/architecture.md` describes the design, `docs/roadmap.md` the planned steps, `docs/adr/` holds decision records, and `docs/tooling.md` lists every tool and why it was chosen |
 | `.github/` | CI workflows, Dependabot, issue and PR templates |
@@ -65,6 +65,8 @@ Run `make check` before proposing a pull request.
 - Log with `log/slog` using structured key-value pairs. Never log secrets or tokens.
 - Write table-driven tests using the standard library, plus `go-cmp` for comparing values. Call `t.Parallel()` where it's safe.
 - Put packages under `internal/` unless they are deliberately public API.
+- Commands follow [ADR 0018](docs/adr/0018-cli-conventions.md): results on stdout, everything else on stderr, `--output json` for scripts, and its exit codes.
+- A new setting goes in the table in `internal/config/schema.go` and in [docs/configuration.md](docs/configuration.md). A secret uses the `config.Secret` type, so it can't be printed or logged.
 
 ## Matching NetBox behaviour
 
