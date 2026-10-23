@@ -76,7 +76,7 @@ Built-in Claude Code skills we rely on: `/code-review` and `/security-review` be
 | `netbox-migration` | Import patterns and dependency order for bulk loads. |
 | `netbox-ndx` | Structure of the community device-type library, a likely first sync source. |
 | `netbox-review-integration` | Reviews our NetBox client code for pagination, auth, and performance mistakes. |
-| `netbox-branching`, `netbox-changes` | Later. Possible feature: sync into a NetBox branch so changes can be reviewed before merge. |
+| `netbox-branching`, `netbox-changes` | Writing plans into NetBox branches and merging them, and opening change requests for those branches (milestone 2, ADR 0017). Covers the branch lifecycle, merge jobs, conflicts and merge gating. |
 | `netbox-diode` | Reference only. We evaluated Diode as the write path and did not choose it (section 9). |
 | `setup-mcp` | Optional. Connects a NetBox MCP server to a local development NetBox (section 1.6). |
 
@@ -109,7 +109,7 @@ These live in `.claude/skills/` and are versioned with the code. Each one is wri
 
 | Skill | Purpose |
 | --- | --- |
-| `add-netbox-object` | Checklist for teaching the comparison and sync engine a new NetBox object type: natural key, dependency order, field semantics from NetBox's OpenAPI schema, override handling, fixtures, and a parity test against a real NetBox. |
+| `add-netbox-object` | Checklist for teaching the comparison and sync engine a new NetBox object type by writing its spec (ADR 0008): uniqueness rules, dependency order, field semantics checked against NetBox's OpenAPI schema, override handling, fixtures, and a parity test against a real NetBox. |
 | `netbox-parity` | Before writing comparison rules for a field, look up how NetBox itself validates and serializes it in the pinned NetBox source (section 3.1). The aim is to match NetBox's behaviour, not guess at it. |
 | `db-change` | Add a migration and queries for **both** SQLite and PostgreSQL, regenerate sqlc, and run the dual-backend test suite. |
 | `write-adr` | Create a numbered ADR from the template, add it to the index, and link any ADR it supersedes. |
@@ -170,7 +170,7 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | Tool | Status | Why |
 | --- | --- | --- |
 | Own REST client (`net/http`) | Spike | A thin, typed client that handles exactly what we need: pagination (including 4.6+ cursor pagination), ETag/`If-Match` for safe concurrent updates, v2 tokens, retries with backoff, and bulk operations. We keep control of NetBox version support instead of depending on a generated SDK release (see go-netbox in section 9). |
-| NetBox's OpenAPI schema (`/api/schema/`) + [kin-openapi](https://github.com/getkin/kin-openapi) | Spike | The comparison engine needs NetBox's field semantics for each version: writable or read-only, types, choices, nullability. We read them from the schema the target NetBox publishes, rather than hand-coding them for every release. |
+| NetBox's OpenAPI schema (`/api/schema/`) + [kin-openapi](https://github.com/getkin/kin-openapi) | Spike | Each NetBox object type is described by a hand-written spec (ADR 0008). A contract test checks every spec against the schema the target NetBox publishes: fields, writability, types, choices, nullability. Choice values may later be generated from it. The spike decides whether kin-openapi earns its place over plain JSON decoding. |
 | NetBox source at pinned tags (`.cache/reference/`, gitignored) | Use | `make reference` shallow-clones [netbox-community/netbox](https://github.com/netbox-community/netbox) at the supported version (4.7.2, see ADR 0003). Humans and agents read NetBox's own import and validation code there so our comparison logic matches it. |
 | [devicetype-library](https://github.com/netbox-community/devicetype-library) | Use | Real-world YAML for fixtures and tests. Likely the first supported sync source. |
 
@@ -207,7 +207,9 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | [CodeMirror 6](https://codemirror.net) (YAML language + merge view) | Spike | Editing YAML before sync and showing side-by-side diffs (source vs NetBox, original vs override). Much lighter than Monaco. |
 | [esbuild](https://esbuild.github.io) | Use | Bundles the small amount of JavaScript (CodeMirror plus glue). The output is embedded in the binary with `embed`. |
 | [scs](https://github.com/alexedwards/scs) | Spike | Server-side sessions stored in our own database, so sessions work across HA nodes. |
-| [go-oidc](https://github.com/coreos/go-oidc) + `golang.org/x/oauth2` | Later | Single sign-on (OIDC) for the web UI. |
+| [go-oidc](https://github.com/coreos/go-oidc) + `golang.org/x/oauth2` | Later | Single sign-on (OIDC) for the web UI, with roles mapped from the identity provider's groups. Planned for milestone 3 (ADR 0015). |
+| SAML library (to be chosen) | Later | SP-initiated SAML sign-in, planned for milestone 4 (ADR 0015). XML signature handling is a common source of vulnerabilities, so the library must be maintained and well reviewed; candidates are compared in an ADR. |
+| SCIM 2.0 endpoints (own code or a library, to be chosen) | Later | Provisioning users and groups from the identity provider, planned for milestone 4 (ADR 0015). |
 | `golang.org/x/crypto/argon2` | Use | argon2id password hashing for local UI accounts. |
 
 ### 3.6 Configuration, CLI, and service integration
@@ -215,12 +217,12 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | Tool | Status | Why |
 | --- | --- | --- |
 | [cobra](https://github.com/spf13/cobra) | Use | Command tree (`serve`, `migrate`, `permissions export`, `version`), help text, and shell completion. |
-| [koanf](https://github.com/knadh/koanf) (v2) | Use | Layers configuration with clear precedence: flags, then environment, then file, then defaults. Settings edited in the UI are stored in the database and layered on top. Fewer dependencies than viper, and it preserves key case. |
+| [koanf](https://github.com/knadh/koanf) (v2) | Use | Layers configuration with clear precedence: flags, then environment, then file, then database, then defaults (ADR 0012). Precedence is simply load order, so settings stored in the database fit in as one more layer, and loading layers separately shows where each value came from, which `config show` and the UI's read-only marking need. It also keeps key case, and reads every prefixed environment variable rather than only keys it already knows. Reads cobra's flags through its `posflag` provider. viper was considered (section 9). |
 | `log/slog` (standard library) | Use | Structured logging. JSON output for containers, text for terminals. |
 | [golang.org/x/sys/windows/svc](https://pkg.go.dev/golang.org/x/sys/windows/svc) | Use | Native Windows Service support from the official Go module. |
 | [go-systemd](https://github.com/coreos/go-systemd) (`daemon`) | Use | systemd readiness and watchdog notifications (`Type=notify`). |
 | [prometheus/client_golang](https://github.com/prometheus/client_golang) | Use | `/metrics` endpoint: sync durations, object counts, errors. |
-| [OpenTelemetry Go](https://opentelemetry.io/docs/languages/go/) | Later | Distributed tracing across sync jobs and NetBox calls. |
+| [OpenTelemetry Go](https://opentelemetry.io/docs/languages/go/) | Later | Traces across fetches, comparisons, plans and NetBox calls, and metrics over OTLP alongside Prometheus. Planned for milestone 6. |
 
 ---
 
@@ -308,7 +310,7 @@ These settings are applied by a repository admin. They are listed here so the se
 | --- | --- |
 | [go-netbox](https://github.com/netbox-community/go-netbox) | Generated NetBox SDK, but its latest release targets NetBox 4.3 while NetBox is at 4.7. Depending on it would tie our NetBox version support to its release cadence. |
 | [Diode Go SDK](https://github.com/netboxlabs/diode-sdk-go) | Write-only gRPC ingestion. It needs a Diode server, and the reconciler that decides what changes is not open source. Our product needs its own read, compare, and write loop. Could become an optional output later. |
-| viper | Folds key case, carries more dependencies, and makes layered precedence harder to reason about than koanf. |
+| viper | The most familiar choice, and from the same organization as cobra. But its precedence order is fixed, with no place for settings stored in the database between the config file and defaults, and its merged view can't say which layer a value came from. It also lowercases every key, and `Unmarshal` ignores environment variables for keys it hasn't otherwise seen. Version 1.20 cut its dependencies considerably, so size is no longer the main reason. |
 | GORM, ent | Reflection or heavy code generation that hides the SQL. sqlc keeps queries explicit and reviewable. |
 | mattn/go-sqlite3 | Needs CGO, which complicates cross-compiling for Windows and arm64. |
 | gopkg.in/yaml.v3 | Frozen. The same API is maintained at `go.yaml.in/yaml/v3`. |

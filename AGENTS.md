@@ -4,9 +4,9 @@ Instructions for AI coding agents working on NetBox TrueUp AI. Human contributor
 
 ## Project
 
-NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories. See [README.md](README.md) for the planned feature set.
+NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories and, later, other sources. See [README.md](README.md) for the planned feature set.
 
-**Status:** early development. Only repository scaffolding exists. Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+**Status:** early development. Only repository scaffolding exists. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
 
 **NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
 
@@ -32,7 +32,7 @@ Run `make check` before proposing a pull request.
 | --- | --- |
 | `cmd/netbox-trueup-ai/` | Entry point |
 | `internal/` | Application packages |
-| `docs/` | Documentation. `docs/adr/` holds decision records; `docs/tooling.md` lists every tool and why it was chosen |
+| `docs/` | Documentation. `docs/architecture.md` describes the design, `docs/roadmap.md` the planned steps, `docs/adr/` holds decision records, and `docs/tooling.md` lists every tool and why it was chosen |
 | `.github/` | CI workflows, Dependabot, issue and PR templates |
 | `.claude/` | Claude Code project settings and skills |
 
