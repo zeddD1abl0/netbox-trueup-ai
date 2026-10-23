@@ -48,5 +48,19 @@
       "Read(./**/*.key)",
       "Read(./secrets/**)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-go.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
   }
 }

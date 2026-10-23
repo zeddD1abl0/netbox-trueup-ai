@@ -23,6 +23,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0015](0015-sign-in-and-provisioning.md) | Sign in with OpenID Connect, SAML or local accounts, provision with SCIM, and never trust proxy headers | Accepted |
 | [0016](0016-permissions-and-approval-policies.md) | Scoped permissions, and approval policies and change references that can be turned on | Accepted |
 | [0017](0017-netbox-branches.md) | Write plans through NetBox branches where teams want them | Accepted |
+| [0018](0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output | Accepted |
 
 ## When to write one
 
