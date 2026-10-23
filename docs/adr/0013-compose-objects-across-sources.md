@@ -28,7 +28,7 @@ Several sources can define the same object. A Git source and a file source might
 
 Chosen option: "A primary definition per object, with per-field overrides from another source, NetBox or an edit".
 
-- **Grouping.** Definitions from all sources are grouped into objects by the NetBox uniqueness rules that are also used to match NetBox objects. Two device type definitions with the same manufacturer and model, or the same manufacturer and slug, describe the same object, because NetBox couldn't hold both. A source that defines one object twice reports a conflict.
+- **Grouping.** Definitions from all sources are grouped into objects by the identity rule of their object type, the same rule used to match NetBox objects ([ADR 0006](0006-manage-only-linked-objects.md)). Device types match on manufacturer and model, so two definitions of the same model are one object even if their slugs differ. Definitions that share only another unique value, such as a slug, are different objects NetBox couldn't hold together, and are reported as a conflict. A source that defines one object twice reports a conflict too.
 - **Side by side.** The comparison engine compares any number of versions of one object, field by field: each source's definition, NetBox's object, the live edit and the desired object. Every version is normalized through the same spec, so only real differences show.
 - **Primary definition.** A managed object follows one primary definition. Importing from a source makes that source's definition primary, and a person can switch to another source's definition later. NetBox can be the primary too, which means "leave it": TrueUp manages none of the object's fields except those with overrides.
 - **Overrides.** For any field, child, or child collection, a person can tick Override and take the value from:
@@ -44,7 +44,7 @@ Chosen option: "A primary definition per object, with per-field overrides from a
 - Good, because the origin of every field is explicit, and visible in the comparison view.
 - Good, because a source can be trusted for some fields and not others.
 - Good, because an override that takes a field from another source keeps following that source.
-- Bad, because an object's desired state can depend on several sources, so a change in any of them changes it. Plans record the version of every source they used, and go stale when any of them moves on ([ADR 0010](0010-write-through-reviewed-plans.md)).
+- Bad, because an object's desired state can depend on several sources, so a change in any of them changes it. Plans record every file they used, and go stale when any of those files changes ([ADR 0010](0010-write-through-reviewed-plans.md)).
 - Bad, because the comparison view gets wide with many sources. The UI can hide columns, and rows where every version agrees.
 
 ## Pros and cons of the options

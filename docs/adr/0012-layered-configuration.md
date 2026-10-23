@@ -32,8 +32,10 @@ Chosen option: "Declared settings layered by koanf, plus runtime settings in the
   2. environment variables with the `TRUEUP_` prefix;
   3. the YAML config file;
   4. defaults.
+
+  Runtime settings stored in the database (below) sit between the file and the defaults, so the full order is flags, environment, file, database, defaults.
 - **Variable names.** Keys are snake_case. A variable name is the prefix plus the key path in upper case, with dots between levels becoming underscores: `database.url` becomes `TRUEUP_DATABASE_URL`. That mapping could give two settings the same name, so a test checks that every setting maps to a distinct variable.
-- **Secrets from files.** Each secret setting has a companion setting with `_file` appended to its key, naming a file to read the secret from: `netbox.token_file` in the config file, or `TRUEUP_NETBOX_TOKEN_FILE` in the environment. Only secret settings have these companions, and setting both a secret and its file is an error.
+- **Secrets from files.** Each secret setting has a companion setting with `_file` appended to its key, naming a file to read the secret from: `netbox.token_file` in the config file, or `TRUEUP_NETBOX_TOKEN_FILE` in the environment. Only secret settings have these companions. Setting both a secret and its file in the same layer is an error; across layers, the higher layer wins, whichever form it uses.
 - **Process settings**, such as the listen address, database, data directory and logging, can only be declared. Changing them needs a restart.
 - **Runtime settings**, such as sources, the NetBox connection, schedules and sync policies, can also be edited in the UI or CLI, and are stored in the database. When a runtime setting is declared, the declared value wins, and the UI shows it read-only along with where it came from.
 - **Secret handling.** Secrets are never logged or displayed, and `config show` redacts them. Until an ADR covers encrypting secrets entered in the UI, secrets come only from declarations.

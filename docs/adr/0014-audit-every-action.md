@@ -31,7 +31,8 @@ Chosen option: "An append-only audit log in TrueUp's database, with an outbox th
 - **Who.** People are identified by single sign-on or a local account in the UI, and by their operating system user at the CLI. Schedules and webhooks act as named system actors, recorded with the schedule or delivery that triggered them.
 - **Append-only.** TrueUp never changes or deletes audit events, apart from pruning after a configured retention period, and pruning is itself audited.
 - **In NetBox.** Each write's changelog message names the plan and the person who approved it ([ADR 0007](0007-provenance-and-changelog-messages.md)), so NetBox's own history shows who is behind a change.
-- **Streaming out.** Each event is also written to an outbox in the same transaction as the change it describes. Configured sinks read from the outbox with retries: for example a structured log stream, OTLP logs to an OpenTelemetry collector, or outbound webhooks. The same outbox carries change notifications for other systems.
+- **Writes to NetBox** can't share a transaction with TrueUp's records, so the event for each one is recorded as started before the write and completed with the result after it. After a crash, recovery re-reads NetBox and completes any event left started.
+- **Streaming out.** Each event is also written to an outbox in the same transaction as the TrueUp change it describes, or as its completion for a write to NetBox. Configured sinks read from the outbox with retries: for example a structured log stream, OTLP logs to an OpenTelemetry collector, or outbound webhooks. The same outbox carries change notifications for other systems.
 
 ### Consequences
 

@@ -54,6 +54,7 @@ Chosen option: "Source kinds and format adapters as separate extension points, j
   5. validation against the specs.
 - For devicetype-library, the JSON schemas come from the same snapshot as the files, so validation follows the library's rules as they change. They are compiled with remote references turned off.
 - The adapter converts the format's layout to NetBox's, for example by folding `port-mappings` into the front port templates they belong to.
+- Values the adapter derives instead of reading, such as the slug of a manufacturer that the library only names, are used only when TrueUp creates the object. For an existing object they aren't managed.
 - Keys that aren't NetBox fields are kept as metadata and never sent to NetBox. A key that the format's schema allows but the adapter doesn't know yet is reported as a warning and ignored.
 - An invalid file is reported with its path, line and column, and skipped. The rest of the snapshot is still used.
 - A format grows with the object types it carries. The devicetype-library adapter starts with device types, and later reads the library's module and rack types.

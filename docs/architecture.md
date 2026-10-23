@@ -9,7 +9,7 @@ This document describes how NetBox TrueUp AI is designed: its components, how da
 1. **TrueUp manages only what it is told to.** A NetBox object is managed only after a person imports a definition and TrueUp links the two. Unlinked objects, and fields a definition doesn't set, are left alone. TrueUp never deletes anything on its own. ([ADR 0006](adr/0006-manage-only-linked-objects.md))
 2. **Only the latest version counts.** TrueUp reads the latest content of each source (for Git, the latest commit on the configured branch or tag) and never goes back to an older version. It records which version it read, so you can see what each comparison and sync was based on. ([ADR 0009](adr/0009-source-kinds-and-format-adapters.md))
 3. **NetBox's rules, not ours.** Matching, defaults and field comparison follow what NetBox 4.7 does, taken from its source code and API schema. Each rule cites where it came from. ([ADR 0003](adr/0003-initial-netbox-target.md), [ADR 0008](adr/0008-describe-object-types-with-specs.md))
-4. **Compare, plan, then write.** Every write to NetBox comes from a stored plan that a person approved. Teams that need change management can require approval by others, tie each plan to an external change, and send plans through NetBox branches; a single user isn't slowed down by any of it. ([ADR 0010](adr/0010-write-through-reviewed-plans.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md), [ADR 0017](adr/0017-netbox-branches.md))
+4. **Compare, plan, then write.** Nothing reaches NetBox's main data except from a stored plan that a person approved; a plan can be written into a NetBox branch first, for review. Teams that need change management can require approval by others, tie each plan to an external change, and send plans through NetBox branches; a single user isn't slowed down by any of it. ([ADR 0010](adr/0010-write-through-reviewed-plans.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md), [ADR 0017](adr/0017-netbox-branches.md))
 5. **Every change has a name on it.** Every action in TrueUp, and every write to NetBox, is recorded with who did it, when, how and with what result, and can be streamed to other systems. ([ADR 0014](adr/0014-audit-every-action.md))
 6. **Everything from outside is untrusted.** Source files, NetBox responses and browser input are validated before they are used. See [Trust boundaries](#trust-boundaries).
 7. **One binary at any scale.** The same binary runs as a CLI, as a single-node server on SQLite, or as a cluster of replicas on PostgreSQL.
@@ -234,7 +234,7 @@ A file that fails any step is reported with its path, line and column, and skipp
 The mapping step is where a format and NetBox differ. For devicetype-library:
 
 - `manufacturer` is a name. It becomes a reference to a `dcim.manufacturer`, matched by name as NetBox's own import does (`DeviceTypeImportForm` in `dcim/forms/bulk_import.py`), and resolved to an ID when planning.
-- Manufacturers are objects in their own right, not just references. The library has no manufacturer files, so the adapter derives a manufacturer definition for each manufacturer the library names: the name, and a slug made the way NetBox's UI makes one. Manufacturers are then listed, compared, imported and synced like any other object, and other sources can define them more fully.
+- Manufacturers are objects in their own right, not just references. The library has no manufacturer files, so the adapter derives a manufacturer definition for each manufacturer the library names: the name, and a slug made the way NetBox's UI makes one. A derived value like that slug is used only when TrueUp creates the object; for an existing manufacturer it isn't managed, so importing never rewrites a slug other tools rely on. Manufacturers are then listed, compared, imported and synced like any other object, and other sources can define them more fully.
 - Component lists use hyphenated keys (`console-ports`, `front-ports`). They become child objects of the device type.
 - `port-mappings` is a separate list, but NetBox 4.7's REST API takes a front port template's mappings as a nested `rear_ports` list (`FrontPortTemplateSerializer` in `dcim/api/serializers_/devicetype_components.py`), and replaces the whole set whenever that list is sent (`PortSerializer` in `dcim/api/serializers_/base.py`). The adapter folds each mapping into its front port.
 - `is_powered` is a hint for the library's own tests, and `front_image` and `rear_image` are booleans saying an image file exists. None of them is a NetBox field. They are kept as metadata and never sent to NetBox. NetBox's own YAML import ignores them too, because `DeviceTypeImportForm` doesn't list them.
@@ -247,6 +247,7 @@ devicetype-library holds about 12,400 device type files from about 370 manufactu
 TrueUp handles NetBox objects generically: an object is an object type plus a map of field values. A value is a string, integer, decimal, boolean, date, choice, reference, set or child collection. What each object type means lives in its spec ([ADR 0008](adr/0008-describe-object-types-with-specs.md)), which declares:
 
 - the REST endpoint, and the object types it depends on (a device type needs its manufacturer);
+- the object's identity: the one uniqueness rule that says two definitions, or a definition and a NetBox object, are the same thing. For device types that is manufacturer and model; for manufacturers, the name;
 - the uniqueness rules NetBox enforces, from the model's fields and `Meta.constraints`: `name` and `slug` each for manufacturers (`OrganizationalModel` in `netbox/models/__init__.py`), `(manufacturer, model)` and `(manufacturer, slug)` for device types (`dcim/models/devices.py`), `(device_type, name)` for most component templates, and `(device_type, parent, name)` for inventory item templates (`dcim/models/device_component_templates.py`). Specs also record where a rule has gaps. The inventory item rule doesn't cover top-level items: their `parent` is null and the constraint doesn't set `nulls_distinct=False`, so NetBox accepts two top-level items with the same name;
 - each field's type, whether it is writable, nullable or required, its default, and how NetBox normalizes it;
 - child collections, such as the component templates on a device type, and the key that identifies a child within its parent;
@@ -261,15 +262,15 @@ Definitions refer to other objects by natural key, such as a manufacturer's name
 
 The comparison engine is pure: it takes objects and specs and returns differences, with no I/O. It is fuzzed, and it is the part of the project most worth getting exactly right.
 
-**Grouping across sources.** Several sources can define the same object: a Git source and a file source might both define a Dell PowerEdge R710. Definitions are grouped into objects by the same NetBox uniqueness rules used to match NetBox objects: two device type definitions with the same manufacturer and model, or the same manufacturer and slug, describe the same object, because NetBox couldn't hold both. If one source defines an object twice, that source reports a conflict. Grouping works the same for any number of sources.
+**Grouping across sources.** Several sources can define the same object: a Git source and a file source might both define a Dell PowerEdge R710. Definitions are grouped into objects by their spec's identity rule: two device type definitions with the same manufacturer and model describe the same object, and a difference in slug shows as a difference. Definitions that share only another unique value, such as a slug with different models, are different objects that NetBox couldn't hold together, so they are reported as a conflict for a person to resolve. If one source defines an object twice, that source reports a conflict too. Grouping works the same for any number of sources.
 
 **Matching NetBox.** A linked object is compared with the NetBox object its link names, by ID. For an unlinked object, the engine looks for the NetBox objects its definitions would collide with under NetBox's uniqueness rules, if they were created. Each object gets one outcome:
 
 | Outcome | Meaning |
 | --- | --- |
-| Candidate | Every uniqueness rule that matches anything matches the same NetBox object. For example, the model matches and the slug differs, which shows as a difference. Importing links to it. |
+| Candidate | The identity rule matches one NetBox object, and no other uniqueness rule collides with a different object. For example, the model matches and the slug differs, which shows as a difference. Importing links to it. |
 | Absent | Nothing matches. Importing creates the object. |
-| Conflict | The rules point to different objects, for example the model matches one device type and the slug another. A person decides. |
+| Conflict | Creating the object would collide with a NetBox object that isn't its match: the model matches one device type and the slug another, or only the slug matches. A person decides. |
 | Linked | Compared with the linked object (from M2). |
 | Orphaned | Linked, but the primary definition is no longer in its source (from M2). |
 | Missing | Linked, but the NetBox object has been deleted (from M2). |
@@ -343,7 +344,7 @@ To begin with, each deployment talks to one NetBox instance. Links and locks are
 Settings come in two kinds ([ADR 0012](adr/0012-layered-configuration.md)):
 
 - **Declared settings** come from command-line flags, then environment variables with the `TRUEUP_` prefix, then a YAML config file, then defaults. `database.url` becomes `TRUEUP_DATABASE_URL`. Secrets can be read from files, which suits Docker and Kubernetes secrets. Process settings, such as the listen address, database, data directory and logging, can only be declared, and changing them needs a restart.
-- **Runtime settings**, such as sources, the NetBox connection, schedules and sync policies, can also be edited in the UI or CLI and are stored in the database. If a runtime setting is declared, the declared value wins and the UI shows it as read-only, so a config file kept in Git stays authoritative.
+- **Runtime settings**, such as sources, the NetBox connection, schedules and sync policies, can also be edited in the UI or CLI and are stored in the database. If a runtime setting is declared, the declared value wins and the UI shows it as read-only, so a config file kept in Git stays authoritative. The full order is therefore flags, environment, file, database, defaults.
 
 Keys are snake_case, and each secret setting has a companion ending in `_file` that names a file to read the secret from. In the file below, `netbox.token_file` is that companion; in the environment it is `TRUEUP_NETBOX_TOKEN_FILE`. Milestone 1 has no UI, so everything is declared. For example:
 
@@ -381,15 +382,15 @@ Prerequisites, such as the manufacturer a device type refers to, are looked up b
 - Operations run in dependency order, worked out from the references the specs declare: manufacturers, then device types, then component templates, each after the templates it refers to. Rear ports come before the front ports mapped to them, power ports before the power outlets that refer to them, and an interface after its parent and bridge interfaces. Inventory items come last, parents first, because they can refer to any other component.
 - Creates send the fields the definition sets. Updates `PATCH` only the fields that differ.
 - Deletes appear only when a person selects an orphaned object or component for removal.
-- The plan records the version of each source it used, and the ETag of every NetBox object it read.
+- The plan records the version of each source it used, the digest of every file it used, and the ETag of every NetBox object it read.
 
 Plans are stored, and nothing reaches NetBox's main data until the plan is approved. With approval policies off, the default, the person who applies a plan is its approver. With them on, the plan needs the approvals its policy asks for, and it may first be written into a NetBox branch so reviewers can see it there ([Change management](#change-management)).
 
 **Applying.** The executor runs an approved plan:
 
-- If a source has moved to a newer version since the plan was built, the plan is stale and is rebuilt before anything is written. TrueUp never writes an older version of a definition.
+- If any file the plan used has changed in its source since the plan was built, the plan is stale: nothing is written, and a new plan must be built and approved. TrueUp never writes an older version of a definition. Changes to files the plan didn't use, which are common in a busy repository like devicetype-library, don't make it stale.
 - Updates send `If-Match` with the recorded ETag. If NetBox answers 412, the object changed after planning: the executor stops, marks the plan stale, and a new plan is built from fresh data.
-- Every write carries a `changelog_message` identifying TrueUp, the source, the file, the source version, the plan, its change reference and the person who approved it ([ADR 0007](adr/0007-provenance-and-changelog-messages.md)). NetBox records TrueUp's service account as the user for every write, so the message is how NetBox's own history shows the person behind a change. NetBox caps messages at 200 characters (`ObjectChange.message` in `core/models/change_logging.py`), so long paths are shortened.
+- Every write carries a `changelog_message` identifying TrueUp, the source, the file, the source version, the plan, its change reference and the person who approved it ([ADR 0007](adr/0007-provenance-and-changelog-messages.md)). NetBox records TrueUp's service account as the user for every write, so the message is how NetBox's own history shows the person behind a change. NetBox stores at most 200 characters (`ObjectChange.message` in `core/models/change_logging.py`), and its API doesn't check the length (`ChangeLogMessageSerializer` in `netbox/api/serializers/features.py`), so TrueUp keeps every message within that limit itself. The fixed parts come first: TrueUp's marker, the plan number, the approver and a 12-character commit. The ticket and the file path share what is left, shortened if needed. The plan number leads to the full record in TrueUp.
 - A write that fails, or whose outcome is unknown, such as a `POST` that timed out, is never retried blindly. The executor stops, re-reads NetBox and re-plans. Comparison is idempotent, so finished work shows up as in sync. A create that did go through shows up as a matching object, which the new plan links, and a prerequisite is found by its natural key.
 - Each operation's result, with before and after values, is stored as history and in the audit log. Links record the source version and time of their last successful sync.
 - Only one plan applies at a time per NetBox instance, enforced by a lock in the database, whether the plan was started from the CLI, the UI or a schedule.
@@ -426,7 +427,7 @@ flowchart LR
 - TrueUp creates a branch for the plan, named after the plan and its change reference, waits for it to be ready, and writes the plan into it with the same `If-Match` checks as on main. A fresh branch is a copy of main, so an object changed since planning still fails its check and the plan goes stale.
 - Reviewers see the change in NetBox itself, in the branch's diff, as well as in TrueUp.
 - Approval gates the merge, not the write into the branch: a branch is isolated, so writing to it changes nothing in main.
-- TrueUp merges the branch once the plan is approved, and follows the merge job to its end. Before merging, the same checks as for applying run again: a source with a newer version, or a stale branch, makes the plan stale.
+- TrueUp merges the branch once the plan is approved, and follows the merge job to its end. Before merging, the same checks as for applying run again: a changed file the plan used, or a stale branch, makes the plan stale.
 - If the merge finds conflicts with changes made in main since, TrueUp reports them and never acknowledges them on anyone's behalf. Acknowledging a conflict makes the branch's values win, so it is a decision for a person.
 - Where the netbox-changes plugin is also installed, NetBox's change management is the final arbiter for plans written into branches. TrueUp checks for the plugin when it connects, and then:
   - opens a NetBox change request for every such branch, with the plan and its ticket in the summary, under the NetBox review policy configured for that scope;
@@ -472,7 +473,9 @@ This covers sign-ins and failed sign-ins; changes to users, roles, sources and s
 
 **In NetBox.** NetBox records every write as made by TrueUp's service account, so each write's changelog message names the plan and the person who approved it ([ADR 0007](adr/0007-provenance-and-changelog-messages.md)).
 
-**Streaming it out (M7).** Each audit event is also written to an outbox, in the same database transaction as the change it describes. From there it is delivered to the configured sinks, such as a structured log stream, an OpenTelemetry collector, or a webhook that feeds a SIEM. A sink that is down delays delivery but loses nothing. Copies kept outside TrueUp also make the record hard to tamper with, since anyone with direct database access could change TrueUp's own copy.
+**Writes to NetBox** can't share a database transaction with TrueUp's own records. So before each write the executor records an audit event for it as started, with the person applying the plan, and completes the event with the result afterwards. After a crash, recovery re-reads NetBox and completes any event left started, so no write goes unrecorded.
+
+**Streaming it out (M7).** Each audit event is also written to an outbox, in the same database transaction as the TrueUp change it describes, or as its completion for a write to NetBox. From there it is delivered to the configured sinks, such as a structured log stream, an OpenTelemetry collector, or a webhook that feeds a SIEM. A sink that is down delays delivery but loses nothing. Copies kept outside TrueUp also make the record hard to tamper with, since anyone with direct database access could change TrueUp's own copy.
 
 ## Web UI (M3)
 
@@ -538,7 +541,7 @@ flowchart LR
 
 - **Shared state.** Every replica serves the UI. Replicas share all state, sessions included, through PostgreSQL, so any replica can answer any request. A SQLite deployment runs one replica.
 - **Leader.** One replica is the leader and runs schedules: fetching sources, comparing, and applying plans for sources where automatic apply is turned on. Automatic apply is off by default, and never applies to a plan that an approval policy covers. Background work goes through a job queue in the database, so a job runs once wherever it was queued. River is the preferred queue and leader election on both engines. Whether its SQLite driver is good enough is a spike, with PostgreSQL advisory locks and an in-process scheduler as the fallback (tooling.md §3.4).
-- **Apply lock.** Applying a plan holds the per-NetBox apply lock: a lease with an epoch that the executor checks before each write. A replica that has lost the lease stops writing, and `If-Match` limits the damage of any write that slips through.
+- **Apply lock.** Applying a plan holds the per-NetBox apply lock: a lease with an epoch that the executor checks before each write. A replica that has lost the lease stops writing. If a write slips through anyway, `If-Match` stops a stale update, and NetBox's uniqueness rules stop a duplicate create. Where those rules have gaps, such as top-level inventory items, a duplicate is possible, and the next comparison reports it as a conflict for a person to resolve.
 - **Source caches** are per replica. The database records each source's latest version, and a replica whose cache is older fetches before it reads.
 - **Shutdown** is graceful: stop taking jobs, finish the current operation, release the lease. TrueUp reports readiness and watchdog status to systemd, and serves probes for Kubernetes.
 

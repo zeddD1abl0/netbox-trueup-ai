@@ -35,7 +35,7 @@ Component templates support neither tags nor custom fields.
 Chosen option: "TrueUp's database, plus a changelog message on every write".
 
 - Links, sync history and the audit log in TrueUp's database are the provenance record ([ADR 0006](0006-manage-only-linked-objects.md), [ADR 0014](0014-audit-every-action.md)).
-- Every write to NetBox carries a `changelog_message` that identifies TrueUp, the source, the file, the source version (the commit, for Git), the plan, its change reference if it has one, and the person who approved it. NetBox records TrueUp's service account as the user for every write, so this is how NetBox's own history shows the person behind a change. NetBox stores at most 200 characters (`ObjectChange.message` in `core/models/change_logging.py`), so long paths are shortened.
+- Every write to NetBox carries a `changelog_message` that identifies TrueUp, the source, the file, the source version (the commit, for Git), the plan, its change reference if it has one, and the person who approved it. NetBox records TrueUp's service account as the user for every write, so this is how NetBox's own history shows the person behind a change. NetBox stores at most 200 characters (`ObjectChange.message` in `core/models/change_logging.py`), and its API doesn't check the length, so TrueUp keeps each message within it. The fixed parts come first (TrueUp's marker, the plan number, the approver and a 12-character commit), and the ticket and file path share the rest, shortened if needed. The plan number leads to the full record in TrueUp.
 - TrueUp creates no tags or custom fields in NetBox.
 
 ### Consequences
