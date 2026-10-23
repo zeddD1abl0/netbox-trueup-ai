@@ -18,7 +18,10 @@ type Secret struct {
 	value *string
 }
 
-func newSecret(v string) Secret {
+// NewSecret returns v as a Secret, or an unset Secret if v is empty. Settings
+// make their own; it is for secrets that come from elsewhere, such as a token
+// a test provisions.
+func NewSecret(v string) Secret {
 	if v == "" {
 		return Secret{}
 	}

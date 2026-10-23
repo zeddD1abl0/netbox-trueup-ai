@@ -13,15 +13,22 @@ MODULE  := github.com/zeddD1abl0/netbox-trueup-ai
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X $(MODULE)/internal/version.version=$(VERSION)
 
-# NetBox release whose source `make reference` fetches (docs/adr/0003).
+# NetBox release whose source `make reference` fetches (docs/adr/0003). Keep it
+# in step with netboxtest.Version and the image in internal/netboxtest/compose.yaml.
 NETBOX_VERSION ?= 4.7.2
 REFERENCE_DIR  := .cache/reference/netbox-$(NETBOX_VERSION)
+
+# The disposable local NetBox (internal/netboxtest/README.md). Only ever on
+# 127.0.0.1; set NETBOX_PORT to use another port.
+NETBOX_PORT       ?= 8000
+NETBOX_COMPOSE    := docker compose --file internal/netboxtest/compose.yaml
+NETBOX_TOKEN_FILE := .cache/netbox/token
 
 .DEFAULT_GOAL := help
 
 .PHONY: help
 help: ## List available targets
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: tools
 tools: ## Install the pinned toolchain with mise
@@ -38,6 +45,22 @@ build: ## Build the binary into ./bin
 .PHONY: test
 test: ## Run tests with the race detector
 	go test -race -shuffle=on ./...
+
+# Each package with integration tests starts its own NetBox, which takes
+# about 4 minutes, hence the long timeout.
+.PHONY: test-integration
+test-integration: ## Run tests and integration tests against a disposable NetBox (needs Docker)
+	go test -race -shuffle=on -tags integration -timeout 30m ./...
+
+.PHONY: netbox-up
+netbox-up: ## Start a disposable NetBox on 127.0.0.1 (port NETBOX_PORT, default 8000) and provision a token
+	NETBOX_PORT=$(NETBOX_PORT) $(NETBOX_COMPOSE) up --detach --wait --wait-timeout 1200
+	go run ./internal/netboxtest/cmd/netbox-token -url http://127.0.0.1:$(NETBOX_PORT) -out $(NETBOX_TOKEN_FILE)
+
+.PHONY: netbox-down
+netbox-down: ## Stop the disposable NetBox and delete its data
+	$(NETBOX_COMPOSE) down --volumes --remove-orphans
+	rm -f $(NETBOX_TOKEN_FILE)
 
 .PHONY: fmt
 fmt: ## Format Go code
@@ -59,7 +82,7 @@ lint-repo: ## Lint workflows and Markdown, and scan Git history for secrets
 	gitleaks git --redact --no-banner
 
 .PHONY: check
-check: lint lint-repo test vuln build ## Run everything CI runs
+check: lint lint-repo test vuln build ## Run everything CI runs but the integration tests
 
 .PHONY: reference
 reference: ## Fetch NetBox source at NETBOX_VERSION into .cache/reference

@@ -6,7 +6,7 @@ Instructions for AI coding agents working on NetBox TrueUp AI. Human contributor
 
 NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories and, later, other sources. See [README.md](README.md) for the planned feature set.
 
-**Status:** early development. The command tree, configuration and logging exist; nothing reads sources or talks to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+**Status:** early development. The command tree, configuration and logging exist, and integration tests can start a disposable NetBox. Nothing reads sources or talks to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
 
 **NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
 
@@ -17,14 +17,16 @@ NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-co
 | Install the pinned toolchain | `make tools` (needs [mise](https://mise.jdx.dev)) |
 | Build | `make build` |
 | Test (with race detector) | `make test` |
+| Integration tests, against a disposable NetBox (needs Docker) | `make test-integration` |
+| Start or remove a disposable NetBox for manual testing | `make netbox-up`, `make netbox-down` |
 | Format | `make fmt` |
 | Lint Go | `make lint` |
 | Lint workflows and Markdown, scan for secrets | `make lint-repo` |
 | Vulnerability check | `make vuln` |
-| Everything CI runs | `make check` |
+| Everything CI runs, apart from the integration tests | `make check` |
 | Fetch NetBox source for reference | `make reference` |
 
-Run `make check` before proposing a pull request.
+Run `make check` before proposing a pull request, and `make test-integration` if Docker is available.
 
 ## Layout
 
@@ -32,6 +34,7 @@ Run `make check` before proposing a pull request.
 | --- | --- |
 | `cmd/netbox-trueup-ai/` | Entry point and cobra commands |
 | `internal/` | Application packages |
+| `internal/netboxtest/` | The disposable NetBox: `compose.yaml`, and the package that starts it for integration tests. See its README |
 | `docs/` | Documentation. `docs/architecture.md` describes the design, `docs/roadmap.md` the planned steps, `docs/adr/` holds decision records, and `docs/tooling.md` lists every tool and why it was chosen |
 | `.github/` | CI workflows, Dependabot, issue and PR templates |
 | `.claude/` | Claude Code project settings and skills |
@@ -50,7 +53,7 @@ Run `make check` before proposing a pull request.
 ### Never
 
 - Never commit secrets, tokens, or real hostnames, addresses or data from anyone's network. Use documentation values: `example.com`, `192.0.2.0/24`, `2001:db8::/32`.
-- Never write to a NetBox instance other than a disposable local one, and never run a sync against shared or production NetBox.
+- Never write to a NetBox instance other than a disposable local one (`internal/netboxtest`), and never run a sync against shared or production NetBox.
 - Never push to `main`, approve a pull request, or merge one. A human maintainer does those.
 - Never bypass checks: no `--no-verify`, no `--no-gpg-sign`, no `-c commit.gpgsign=false`.
 - Never weaken a CI check, linter rule or security setting to make a change pass. Explain the problem to a human instead.

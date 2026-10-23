@@ -28,3 +28,30 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+
+  # Images of the disposable NetBox for tests (internal/netboxtest/compose.yaml).
+  - package-ecosystem: docker-compose
+    directory: /internal/netboxtest
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: test
+      include: scope
+    groups:
+      # NetBox stays out of the group: its update fails TestComposeFile until
+      # netboxtest.Version moves too, and shouldn't hold these back.
+      test-databases:
+        patterns: ["*postgres", "*valkey"]
+    ignore:
+      # NetBox 4.7 is the target (docs/adr/0003); a new minor release is a
+      # decision, not an update. Patch releases are still proposed.
+      - dependency-name: "*netbox"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # New major releases of PostgreSQL and Valkey wait until netbox-docker
+      # moves to them.
+      - dependency-name: "*postgres"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "*valkey"
+        update-types: ["version-update:semver-major"]

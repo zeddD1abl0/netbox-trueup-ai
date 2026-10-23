@@ -1,0 +1,90 @@
+# A disposable NetBox for tests and for trying TrueUp by hand. See README.md.
+#
+# This file is the only definition of the stack. `make netbox-up` runs it with
+# Docker Compose, and the netboxtest package reads it to start the same
+# containers with testcontainers-go. netboxtest understands only the Compose
+# keys used here and rejects any other, so the two can't drift apart.
+#
+# Every credential below is a dummy value for this stack alone. Never reuse
+# them, and never publish this NetBox beyond 127.0.0.1.
+#
+# Images are pinned by digest. Dependabot proposes updates (.github/dependabot.yml).
+# The NetBox version is the project's target (docs/adr/0003): moving it also
+# means moving netboxtest.Version and NETBOX_VERSION in the Makefile.
+
+name: trueup-netbox
+
+services:
+  postgres:
+    image: docker.io/library/postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: insecure-test-only
+    # The data is thrown away, so durability isn't worth paying for.
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    expose: ["5432"]
+    healthcheck:
+      # Over TCP, which the entrypoint's temporary server during initdb doesn't listen on.
+      test: ["CMD", "pg_isready", "--quiet", "--host=127.0.0.1", "--dbname=netbox", "--username=netbox"]
+      start_period: 2m
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  valkey:
+    image: docker.io/valkey/valkey:9.1.2-alpine3.24@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    # No snapshots: the queue and cache are thrown away with the stack.
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    expose: ["6379"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      start_period: 1m
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  netbox:
+    image: docker.io/netboxcommunity/netbox:v4.7.2-5.1.1@sha256:3cf9d3bd77aa186233b84d0ea1cf1755581d5e5678fa7d86ec3be62f79d0c643
+    user: "netbox:root"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: insecure-test-only
+      # One Valkey serves both, with separate databases as NetBox requires.
+      REDIS_HOST: valkey
+      REDIS_DATABASE: "0"
+      REDIS_CACHE_HOST: valkey
+      REDIS_CACHE_DATABASE: "1"
+      SECRET_KEY: insecure-test-only-secret-key-for-a-disposable-local-netbox
+      # v2 API tokens need a pepper of at least 50 characters.
+      API_TOKEN_PEPPER_1: insecure-test-only-token-pepper-for-a-disposable-local-netbox
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@example.com
+      SUPERUSER_PASSWORD: insecure-test-only
+      # Nothing leaves this machine: no census report, release check or Copilot.
+      CENSUS_REPORTING_ENABLED: "false"
+      ISOLATED_DEPLOYMENT: "true"
+      COPILOT_ENABLED: "false"
+    ports:
+      # Loopback only. Tests ignore the host port and take a random one.
+      - "127.0.0.1:${NETBOX_PORT:-8000}:8080"
+    healthcheck:
+      # netbox-docker's own check. It passes once migrations have run, the
+      # superuser exists and the web server answers.
+      test: ["CMD", "/opt/netbox/health.sh"]
+      # A fresh database needs about 4 minutes of migrations, and more on a slow machine.
+      start_period: 15m
+      start_interval: 2s
+      interval: 30s
+      timeout: 5s
+      retries: 3

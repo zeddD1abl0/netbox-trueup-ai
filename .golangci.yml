@@ -2,6 +2,11 @@
 # `make fmt` applies the formatters.
 version: "2"
 
+run:
+  # Lint the integration tests too (internal/netboxtest/README.md).
+  build-tags:
+    - integration
+
 linters:
   # standard = errcheck, govet, ineffassign, staticcheck, unused
   default: standard

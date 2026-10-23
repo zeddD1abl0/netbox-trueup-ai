@@ -14,8 +14,8 @@ func TestSecretNeverPrints(t *testing.T) {
 
 	const value = "nbt_example.s3cret"
 	settings := Settings{
-		NetBox:   NetBox{URL: "https://netbox.example.com", Token: newSecret(value)},
-		Database: Database{URL: newSecret("postgres://trueup:" + value + "@db.example.com/trueup")},
+		NetBox:   NetBox{URL: "https://netbox.example.com", Token: NewSecret(value)},
+		Database: Database{URL: NewSecret("postgres://trueup:" + value + "@db.example.com/trueup")},
 	}
 
 	var text, js bytes.Buffer
@@ -62,8 +62,8 @@ func TestSecretInAnUnexportedField(t *testing.T) {
 		settings Settings
 	}
 	c := client{
-		token:    newSecret("nbt_example.s3cret"),
-		settings: Settings{NetBox: NetBox{Token: newSecret("nbt_example.s3cret")}},
+		token:    NewSecret("nbt_example.s3cret"),
+		settings: Settings{NetBox: NetBox{Token: NewSecret("nbt_example.s3cret")}},
 	}
 	var text bytes.Buffer
 	slog.New(slog.NewTextHandler(&text, nil)).Info("client", "client", c)
@@ -90,7 +90,7 @@ func TestUnsetSecret(t *testing.T) {
 	if got := s.String(); got != "" {
 		t.Errorf("zero Secret prints %q, want %q", got, "")
 	}
-	if !newSecret("x").IsSet() {
+	if !NewSecret("x").IsSet() {
 		t.Error("Secret with a value isn't set")
 	}
 }

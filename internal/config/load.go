@@ -633,7 +633,7 @@ func (ld *loader) build(ctx context.Context, layers []*layer) *Config {
 					e.File = r.str
 					r.str = ld.readSecret(ctx, s.key, r.where, r.str)
 				}
-				e.Value = newSecret(r.str).String()
+				e.Value = NewSecret(r.str).String()
 			}
 		case kindSources:
 			r.sources, _ = v.v.([]Source)
