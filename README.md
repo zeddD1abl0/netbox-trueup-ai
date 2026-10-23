@@ -8,10 +8,18 @@ NetBox TrueUp AI is a server that synchronizes infrastructure definitions writte
 
 ## Planned features
 
+- Read definitions from Git repositories first, and later from HTTP and local file sources.
+- Sync manufacturers and device types first, then module types, module type profiles, rack types and more.
 - Choose what syncs, and edit the YAML before it syncs, from a web interface.
-- Compare definitions the way NetBox itself does, and show the differences between versions of an object.
+- Compare definitions the way NetBox itself does, and show the differences between versions of an object side by side: every source that defines it, NetBox's copy, and your live edits.
+- Choose which source each object follows, and take individual fields from another source, from NetBox, or from your edits.
 - Inject values and override fields at import time. Overrides are remembered, so the next sync doesn't undo them.
-- Record which file and repository produced each NetBox object, and when it last synced.
+- Record which source and file produced each NetBox object, and when it last synced.
+- Record who synced what, and when, and stream the audit log to other systems.
+- Sign in with OpenID Connect or SAML single sign-on, with users and groups provisioned through SCIM.
+- Fit corporate change management when you need it: approvals by the right people, a change reference on every sync, and changes written through NetBox branches. A single user can leave all of it off.
+- React to webhooks from Git hosts and NetBox, and send webhooks when something syncs.
+- Expose metrics for Prometheus, and metrics and traces for OpenTelemetry.
 - Generate the NetBox permission set that its API token needs, ready to import.
 - Run as a single binary under systemd or as a Windows service, or in Docker or Kubernetes.
 - Run on a single node with SQLite, or as a highly available cluster with PostgreSQL.
@@ -33,6 +41,8 @@ In practice:
 ## Documentation
 
 - [docs/](docs/): documentation index
+- [docs/architecture.md](docs/architecture.md): how it is designed
+- [docs/roadmap.md](docs/roadmap.md): what gets built next
 - [docs/tooling.md](docs/tooling.md): every tool and library we use, why, and how to set up a development environment
 - [docs/adr/](docs/adr/): architecture decision records
 
