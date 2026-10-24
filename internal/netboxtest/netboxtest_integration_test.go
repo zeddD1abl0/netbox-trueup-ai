@@ -5,6 +5,7 @@ package netboxtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -21,12 +22,18 @@ func TestMain(m *testing.M) {
 }
 
 func runTests(m *testing.M) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	// Longer than the 15m45s compose.yaml's health checks allow, so that
+	// they, not this, report a NetBox that never becomes ready.
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 25*time.Minute,
+		errors.New("NetBox didn't start within 25 minutes"))
 	defer cancel()
 	var err error
 	nb, err = Start(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start NetBox:", err)
+		if cause := context.Cause(ctx); cause != nil {
+			fmt.Fprintln(os.Stderr, "Cause:", cause)
+		}
 		return 1
 	}
 

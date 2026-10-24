@@ -24,12 +24,14 @@ services:
     # The data is thrown away, so durability isn't worth paying for.
     command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     expose: ["5432"]
+    # A health check gives up after start_period plus retries checks, each
+    # interval plus timeout apart: 1m45s here. netboxtest waits as long.
     healthcheck:
       # Over TCP, which the entrypoint's temporary server during initdb doesn't listen on.
       test: ["CMD", "pg_isready", "--quiet", "--host=127.0.0.1", "--dbname=netbox", "--username=netbox"]
-      start_period: 2m
+      start_period: 1m
       start_interval: 1s
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3
 
@@ -40,9 +42,9 @@ services:
     expose: ["6379"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
-      start_period: 1m
+      start_period: 30s
       start_interval: 1s
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3
 
@@ -64,6 +66,9 @@ services:
       REDIS_DATABASE: "0"
       REDIS_CACHE_HOST: valkey
       REDIS_CACHE_DATABASE: "1"
+      # Only these names, not netbox-docker's default "*": a web page that
+      # rebinds its own name to 127.0.0.1 would otherwise reach this NetBox.
+      ALLOWED_HOSTS: "localhost 127.0.0.1 [::1]"
       SECRET_KEY: insecure-test-only-secret-key-for-a-disposable-local-netbox
       # v2 API tokens need a pepper of at least 50 characters.
       API_TOKEN_PEPPER_1: insecure-test-only-token-pepper-for-a-disposable-local-netbox
@@ -82,9 +87,10 @@ services:
       # netbox-docker's own check. It passes once migrations have run, the
       # superuser exists and the web server answers.
       test: ["CMD", "/opt/netbox/health.sh"]
-      # A fresh database needs about 4 minutes of migrations, and more on a slow machine.
-      start_period: 15m
+      # A fresh database needs about 4 minutes of migrations, and more on a slow
+      # machine. With PostgreSQL and Valkey, up to 15m45s in all.
+      start_period: 12m
       start_interval: 2s
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3

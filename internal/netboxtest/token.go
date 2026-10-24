@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
@@ -77,14 +79,21 @@ func provisionToken(ctx context.Context, baseURL, username, password, descriptio
 	if err != nil {
 		return config.Secret{}, fmt.Errorf("provision a token: %w", err)
 	}
-	if status != http.StatusCreated {
+	switch {
+	case status >= 400:
 		return config.Secret{}, fmt.Errorf("provision a token: NetBox answered %d, not 201: %q", status, snippet(respBody))
+	case status != http.StatusCreated:
+		// Any other answer might hold a token, so don't quote it.
+		return config.Secret{}, fmt.Errorf("provision a token: NetBox answered %d, not 201", status)
 	}
 
 	var tok struct {
-		Version int    `json:"version"`
-		Key     string `json:"key"`
-		Token   string `json:"token"`
+		Version      int     `json:"version"`
+		Key          string  `json:"key"`
+		Token        string  `json:"token"`
+		Enabled      *bool   `json:"enabled"`
+		WriteEnabled *bool   `json:"write_enabled"`
+		Expires      *string `json:"expires"`
 	}
 	if err := json.Unmarshal(respBody, &tok); err != nil {
 		return config.Secret{}, fmt.Errorf("provision a token: decode NetBox's answer: %w", err)
@@ -95,6 +104,14 @@ func provisionToken(ctx context.Context, baseURL, username, password, descriptio
 	case !isTokenPart(tok.Key) || !isTokenPart(tok.Token):
 		// Don't quote them: one of them is the secret.
 		return config.Secret{}, errors.New("provision a token: NetBox's answer has no usable key and token")
+	// A token that is disabled, read-only or expiring would fail tests later
+	// with a 403 that doesn't say why.
+	case tok.Enabled == nil || !*tok.Enabled:
+		return config.Secret{}, errors.New("provision a token: NetBox made a disabled token")
+	case tok.WriteEnabled == nil || !*tok.WriteEnabled:
+		return config.Secret{}, errors.New("provision a token: NetBox made a read-only token")
+	case tok.Expires != nil:
+		return config.Secret{}, fmt.Errorf("provision a token: NetBox made a token that expires at %q", *tok.Expires)
 	}
 	return config.NewSecret("nbt_" + tok.Key + "." + tok.Token), nil
 }
@@ -109,21 +126,37 @@ func localEndpoint(baseURL, path string) (string, error) {
 	if u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return "", fmt.Errorf("NetBox URL %q must be http://HOST:PORT, with nothing else", baseURL)
 	}
-	if host := u.Hostname(); host != "localhost" {
-		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-			return "", fmt.Errorf("NetBox URL %q isn't on this machine; netboxtest only talks to a disposable local NetBox", baseURL)
-		}
+	if !isLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("NetBox URL %q isn't on this machine; netboxtest only talks to a disposable local NetBox", baseURL)
 	}
 	return u.Scheme + "://" + u.Host + path, nil
 }
 
-// client never follows redirects, so a request with credentials can't be
-// sent on somewhere else.
+// client only ever connects to this machine, whatever a name resolves to, and
+// never through a proxy. It never follows redirects either, so a request with
+// credentials can't be sent on somewhere else.
 var client = &http.Client{
 	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		Proxy:       nil,
+		DialContext: (&net.Dialer{Timeout: 10 * time.Second, Control: dialLoopbackOnly}).DialContext,
+	},
 	CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
+}
+
+// dialLoopbackOnly refuses to connect to an address that isn't loopback. It
+// sees the resolved address, so it also covers a name such as localhost.
+func dialLoopbackOnly(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("refuse to connect to %s: %w", address, err)
+	}
+	if ip, err := netip.ParseAddr(host); err != nil || !ip.Unmap().IsLoopback() {
+		return fmt.Errorf("refuse to connect to %s: netboxtest only talks to this machine", address)
+	}
+	return nil
 }
 
 // do sends req and returns the status and up to maxResponse bytes of body.

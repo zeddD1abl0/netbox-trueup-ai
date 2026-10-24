@@ -47,7 +47,7 @@ func run(ctx context.Context, url, out string) error {
 	if err != nil {
 		return fmt.Errorf("token file: %w", err)
 	}
-	if err := writeFile(path, []byte(token.Reveal()+"\n")); err != nil {
+	if err := writeFile(ctx, path, []byte(token.Reveal()+"\n")); err != nil {
 		return err
 	}
 
@@ -66,7 +66,10 @@ Stop it and delete its data with: make netbox-down
 
 // writeFile replaces path with data, readable only by its owner, so that
 // TrueUp doesn't warn about it and a half-written token is never read.
-func writeFile(path string, data []byte) (err error) {
+func writeFile(ctx context.Context, path string, data []byte) (err error) {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("token file: %w", err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("token file: %w", err)

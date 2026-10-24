@@ -40,6 +40,30 @@ func fakeNetBox(t *testing.T, status int, body string) (*httptest.Server, *recor
 	return srv, rec
 }
 
+// tokenAnswer is NetBox 4.7.2's answer to a token provisioning request, with
+// the fields in change replaced, as `"field": value, ...`.
+func tokenAnswer(t *testing.T, change string) string {
+	t.Helper()
+	fields := map[string]string{
+		"id": "1", "version": "2", "key": fmt.Sprintf("%q", testKey), "token": fmt.Sprintf("%q", testSecret),
+		"enabled": "true", "write_enabled": "true", "expires": "null", "user": `{"username": "admin"}`,
+	}
+	if change != "" {
+		var changed map[string]json.RawMessage
+		if err := json.Unmarshal([]byte("{"+change+"}"), &changed); err != nil {
+			t.Fatalf("tokenAnswer(%q): %v", change, err)
+		}
+		for k, v := range changed {
+			fields[k] = string(v)
+		}
+	}
+	parts := make([]string, 0, len(fields))
+	for k, v := range fields {
+		parts = append(parts, fmt.Sprintf("%q: %s", k, v))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
 type recorded struct {
 	hits                              atomic.Int32
 	method, path, contentType, accept string
@@ -48,9 +72,7 @@ type recorded struct {
 
 func TestProvisionToken(t *testing.T) {
 	t.Parallel()
-	srv, rec := fakeNetBox(t, http.StatusCreated, fmt.Sprintf(
-		`{"id": 1, "version": 2, "key": %q, "token": %q, "write_enabled": true, "user": {"username": "admin"}}`,
-		testKey, testSecret))
+	srv, rec := fakeNetBox(t, http.StatusCreated, tokenAnswer(t, ""))
 
 	tok, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test")
 	if err != nil {
@@ -101,22 +123,52 @@ func TestProvisionTokenFails(t *testing.T) {
 			want:   `NetBox answered 502, not 201: "\x1b[31mbad gateway"`,
 		},
 		{
+			name:   "token in an answer that isn't 201",
+			status: http.StatusOK,
+			body:   tokenAnswer(t, ""),
+			want:   "NetBox answered 200, not 201",
+		},
+		{
 			name:   "v1 token",
 			status: http.StatusCreated,
-			body:   fmt.Sprintf(`{"version": 1, "key": null, "token": %q}`, testSecret),
+			body:   tokenAnswer(t, `"version": 1, "key": null`),
 			want:   "NetBox made a v1 token, not v2; check API_TOKEN_PEPPERS",
 		},
 		{
 			name:   "no token in the answer",
 			status: http.StatusCreated,
-			body:   fmt.Sprintf(`{"version": 2, "key": %q}`, testKey),
+			body:   tokenAnswer(t, `"token": null`),
 			want:   "NetBox's answer has no usable key and token",
 		},
 		{
 			name:   "key with characters NetBox doesn't use",
 			status: http.StatusCreated,
-			body:   fmt.Sprintf(`{"version": 2, "key": "AbCd.Ef0123", "token": %q}`, testSecret),
+			body:   tokenAnswer(t, `"key": "keykey.keyke"`),
 			want:   "NetBox's answer has no usable key and token",
+		},
+		{
+			name:   "disabled token",
+			status: http.StatusCreated,
+			body:   tokenAnswer(t, `"enabled": false`),
+			want:   "NetBox made a disabled token",
+		},
+		{
+			name:   "read-only token",
+			status: http.StatusCreated,
+			body:   tokenAnswer(t, `"write_enabled": false`),
+			want:   "NetBox made a read-only token",
+		},
+		{
+			name:   "no write_enabled in the answer",
+			status: http.StatusCreated,
+			body:   `{"version": 2, "key": "keykeykeykey", "token": "secretsecretsecretsecretsecretsecret0000", "enabled": true, "expires": null}`,
+			want:   "NetBox made a read-only token",
+		},
+		{
+			name:   "expiring token",
+			status: http.StatusCreated,
+			body:   tokenAnswer(t, `"expires": "2026-10-25T00:00:00Z"`),
+			want:   `NetBox made a token that expires at "2026-10-25T00:00:00Z"`,
 		},
 		{
 			name:   "answer that isn't JSON",
@@ -200,6 +252,20 @@ func TestProvisionTokenDoesNotFollowRedirects(t *testing.T) {
 	}
 	if n := rec.hits.Load(); n != 0 {
 		t.Errorf("the redirect was followed %d times", n)
+	}
+}
+
+func TestDialLoopbackOnly(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{"127.0.0.1:8000", "127.0.0.53:53", "[::1]:8000", "[::ffff:127.0.0.1]:8000"} {
+		if err := dialLoopbackOnly("tcp", addr, nil); err != nil {
+			t.Errorf("dialLoopbackOnly(%q) = %v, want nil", addr, err)
+		}
+	}
+	for _, addr := range []string{"192.0.2.10:8000", "[2001:db8::1]:8000", "0.0.0.0:8000", "netbox.example.com:8000", "8000"} {
+		if err := dialLoopbackOnly("tcp", addr, nil); err == nil {
+			t.Errorf("dialLoopbackOnly(%q) = nil, want an error", addr)
+		}
 	}
 }
 

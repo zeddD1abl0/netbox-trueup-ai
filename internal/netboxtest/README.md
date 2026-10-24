@@ -6,9 +6,9 @@ This directory runs a throwaway NetBox 4.7.2 on your machine, for integration te
 - the `netboxtest` Go package, which starts that stack for tests with [testcontainers-go](https://golang.testcontainers.org) and provisions an API token;
 - `cmd/netbox-token`, which provisions a token for the stack `make netbox-up` starts.
 
-You need Docker with Compose, running on this machine.
+You need Docker with Compose, running on this machine: through a local socket, or TCP on loopback. In a dev container, Docker-in-Docker works. A Docker socket mounted from the host doesn't, because NetBox's port is then on the host's 127.0.0.1, which the container can't reach.
 
-**Only ever use this NetBox.** Its credentials are dummy values published in this repository, so it listens on 127.0.0.1 only. Never point netboxtest, its tests or `netbox-token` at any other NetBox: they refuse a URL that isn't on this machine.
+**Only ever use this NetBox.** Its credentials are dummy values published in this repository, so it listens on 127.0.0.1 only, and answers only to the host names `localhost`, `127.0.0.1` and `[::1]` (`ALLOWED_HOSTS`), so that a web page can't reach it by rebinding its own name to 127.0.0.1. Never point netboxtest, its tests or `netbox-token` at any other NetBox: they refuse a URL that isn't on this machine, and refuse to connect anywhere else.
 
 ## By hand
 
@@ -47,7 +47,7 @@ func TestMain(m *testing.M) {
 }
 
 func runTests(m *testing.M) int {
-    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+    ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
     defer cancel()
     var err error
     if nb, err = netboxtest.Start(ctx); err != nil {
@@ -55,7 +55,9 @@ func runTests(m *testing.M) int {
         return 1
     }
     code := m.Run()
-    if err := nb.Stop(context.Background()); err != nil {
+    stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+    defer stopCancel()
+    if err := nb.Stop(stopCtx); err != nil {
         fmt.Fprintln(os.Stderr, "stop NetBox:", err)
         return 1
     }
@@ -63,9 +65,18 @@ func runTests(m *testing.M) int {
 }
 ```
 
+Give `Start` at least 20 minutes. `compose.yaml`'s health checks allow up to 15m45s for the three services to become ready, and images may need pulling first. `make test-integration` runs `go test` with `-timeout 30m`.
+
 `nb.URL` is NetBox's base URL, on a random port of 127.0.0.1. `nb.Token` is a write-enabled v2 token for the superuser, as `nbt_<key>.<token>`, in a `config.Secret` so that it can't be logged by mistake. Call `nb.Token.Reveal()` to use it. Every test binary gets an empty NetBox of its own, and tests within one binary share it, so make test data that can't collide, or clean it up.
 
-`Start` returns once NetBox passes its health check and has provisioned the token, so NetBox answers API requests by then. If anything fails, the error ends with the last lines of the failing container's log. If a test binary dies without calling `Stop`, testcontainers-go's reaper removes the containers.
+`Start` returns once NetBox passes its health check and has provisioned the token, so NetBox answers API requests by then. As each container starts, it checks that Docker published its ports on 127.0.0.1 only and put it on the stack's network. If anything fails, the error ends with the failing container's last health check results and the end of its log. If a test binary dies without calling `Stop`, for example on Ctrl-C, testcontainers-go's reaper removes the containers.
+
+### The reaper
+
+The reaper is a container, Ryuk, that testcontainers-go starts for each test run. It publishes its control port on every interface, and testcontainers-go has no setting to change that. Anyone who can connect to it while tests run can ask it to remove containers, networks and volumes on your Docker host, matched by label, when the run ends. That doesn't matter in CI. On a network you don't trust, do one of these:
+
+- Set `"ip": "127.0.0.1"` in Docker's `daemon.json` and restart Docker. Docker then publishes every port that names no host address on 127.0.0.1, Ryuk's included.
+- Run with `TESTCONTAINERS_RYUK_DISABLED=true`. `Stop` still removes the stack, but a test binary that dies leaves it running. Find what's left with `docker ps --filter label=org.testcontainers=true`.
 
 `netboxtest_integration_test.go` holds the smoke test: `/api/status/` reports 4.7.2 to the token, and refuses a request without it or with a wrong secret. It also checks that a service that dies is reported with the end of its log, and cleaned up.
 
@@ -100,6 +111,8 @@ The file also has to follow these rules, which `make test` checks:
 - Images name a tag and pin a digest.
 - Every service has a health check with `start_period`, `start_interval`, `interval`, `timeout` and `retries`. Tests wait for it as `docker compose up --wait` does, and a service starts only once those it `depends_on` are healthy.
 - Every service lists its ports under `expose` or `ports`. Otherwise testcontainers-go would publish every port the image declares on all interfaces.
-- `ports` publish on 127.0.0.1 only.
+- `ports` publish on 127.0.0.1 exactly, with a host port that is a number, empty (Docker chooses), or a variable with a default, such as `${NETBOX_PORT:-8000}`.
 - Commands, environment values and health checks don't use `$`. Compose would fill it in from your shell, and the tests wouldn't. Only the host port in `ports` may use a variable, because tests choose their own.
 - Environment values aren't empty, since Compose would take an empty one from your shell.
+- Values are YAML strings: quote anything YAML would read as a number or boolean, such as `"0"` or `"false"`. Compose turns those back into text its own way (`01` becomes `1`), while the tests would keep them as written. Only `retries` is a number. Anchors and aliases aren't allowed.
+- NetBox's `ALLOWED_HOSTS` is set, and isn't `*`.

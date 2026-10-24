@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,6 +83,14 @@ func (h *healthcheck) readiness() time.Duration {
 // parseStack decodes and checks a Compose file. It returns the stack and its
 // service names in start order: every service after the services it depends on.
 func parseStack(data []byte) (*stack, []string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, nil, err
+	}
+	if errs := checkStrings(&doc, ""); len(errs) > 0 {
+		return nil, nil, errors.Join(errs...)
+	}
+
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var st stack
@@ -90,8 +98,11 @@ func parseStack(data []byte) (*stack, []string, error) {
 		return nil, nil, fmt.Errorf("%w (netboxtest reads only the Compose keys it can run the same way; see its README)", err)
 	}
 	var extra yaml.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+	switch err := dec.Decode(&extra); {
+	case err == nil:
 		return nil, nil, errors.New("the file must hold exactly one YAML document")
+	case !errors.Is(err, io.EOF):
+		return nil, nil, fmt.Errorf("after the first YAML document: %w", err)
 	}
 
 	if len(st.Services) == 0 {
@@ -124,6 +135,37 @@ func parseStack(data []byte) (*stack, []string, error) {
 		return nil, nil, err
 	}
 	return &st, order, nil
+}
+
+// checkStrings reports values that YAML reads as something other than a
+// string. Compose turns a number or boolean back into text its own way (01
+// becomes "1", True becomes "true") while netboxtest keeps the text as
+// written, so such values must be quoted. retries, a count, is the exception.
+func checkStrings(n *yaml.Node, key string) []error {
+	var errs []error
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			errs = append(errs, checkStrings(c, key)...)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			errs = append(errs, checkStrings(n.Content[i+1], n.Content[i].Value)...)
+		}
+	case yaml.ScalarNode:
+		want := "!!str"
+		if key == "retries" {
+			want = "!!int"
+		}
+		// An empty value is null; parseStack reports it with more context.
+		if tag := n.ShortTag(); tag != want && tag != "!!null" {
+			errs = append(errs, fmt.Errorf("line %d: %s %q is a YAML %s, not a %s; quote it, since Compose and netboxtest read other types differently",
+				n.Line, key, n.Value, strings.TrimPrefix(tag, "!!"), strings.TrimPrefix(want, "!!")))
+		}
+	case yaml.AliasNode:
+		errs = append(errs, fmt.Errorf("line %d: aliases aren't supported", n.Line))
+	}
+	return errs
 }
 
 func (s service) check(all map[string]service) []error {
@@ -216,17 +258,27 @@ func (s service) containerPorts() []string {
 	return ports
 }
 
+// hostPortVariable is a host port taken from a variable with a default, such
+// as ${NETBOX_PORT:-8000}. Tests choose their own host port, so they ignore it.
+var hostPortVariable = regexp.MustCompile(`^\$\{[A-Z][A-Z0-9_]*:-[0-9]+\}$`)
+
 // containerPort returns the container port of a "127.0.0.1:HOST:CONTAINER"
-// mapping. The host port may use a variable, such as ${NETBOX_PORT:-8000},
-// which itself contains a colon.
+// mapping. The host port may use a variable, which itself contains a colon.
 func containerPort(mapping string) (int, error) {
 	hostIP, rest, ok := strings.Cut(mapping, ":")
 	i := strings.LastIndex(rest, ":")
 	if !ok || i < 0 {
 		return 0, errors.New("must be 127.0.0.1:HOST_PORT:CONTAINER_PORT")
 	}
-	if ip, err := netip.ParseAddr(hostIP); err != nil || !ip.IsLoopback() || !ip.Is4() {
+	// Exactly 127.0.0.1, which is where tests publish and the Makefile connects.
+	if hostIP != "127.0.0.1" {
 		return 0, errors.New("must publish on 127.0.0.1 only")
+	}
+	// Empty or 0 lets Docker choose the host port.
+	if hostPort := rest[:i]; hostPort != "" && hostPort != "0" && !hostPortVariable.MatchString(hostPort) {
+		if _, err := parsePort(hostPort); err != nil {
+			return 0, fmt.Errorf("host port %q must be a number, empty, or ${VARIABLE:-default}", hostPort)
+		}
 	}
 	return parsePort(rest[i+1:])
 }

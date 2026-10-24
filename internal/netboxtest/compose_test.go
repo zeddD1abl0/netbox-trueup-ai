@@ -1,6 +1,9 @@
 package netboxtest
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +36,29 @@ func TestComposeFile(t *testing.T) {
 	username, password, err := Superuser()
 	if err != nil || username == "" || password == "" {
 		t.Errorf("Superuser() = %q, %q, %v; want a user name and password", username, password, err)
+	}
+
+	// netbox-docker's default, "*", would let a page that rebinds its own name
+	// to 127.0.0.1 reach NetBox from a browser.
+	if hosts := st.Services[netboxService].Environment["ALLOWED_HOSTS"]; hosts == "" || strings.Contains(hosts, "*") {
+		t.Errorf("NetBox's ALLOWED_HOSTS = %q, want only names for this machine", hosts)
+	}
+}
+
+// TestMakefileNetBoxVersion checks that `make reference` fetches the source
+// of the NetBox release the tests run.
+func TestMakefileNetBoxVersion(t *testing.T) {
+	t.Parallel()
+	makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^NETBOX_VERSION \?= (\S+)$`).FindSubmatch(makefile)
+	if m == nil {
+		t.Fatal("the Makefile doesn't set NETBOX_VERSION ?= <version>")
+	}
+	if got := string(m[1]); got != Version {
+		t.Errorf("the Makefile's NETBOX_VERSION = %s, want %s, to match netboxtest.Version", got, Version)
 	}
 }
 
@@ -256,6 +282,41 @@ func TestParseStackRejects(t *testing.T) {
 			want: "services db, netbox depend on each other in a cycle",
 		},
 		{
+			name: "port published on another loopback address",
+			old:  `"127.0.0.1:${NETBOX_PORT:-8000}:8080"`, new: `"127.0.0.2:8000:8080"`,
+			want: "must publish on 127.0.0.1 only",
+		},
+		{
+			name: "host port that is neither a number nor a variable with a default",
+			old:  `"127.0.0.1:${NETBOX_PORT:-8000}:8080"`, new: `"127.0.0.1:${NETBOX_PORT}:8080"`,
+			want: `host port "${NETBOX_PORT}" must be a number, empty, or ${VARIABLE:-default}`,
+		},
+		{
+			name: "number that YAML and Compose read differently",
+			old:  "DB_PASSWORD: insecure-test-only", new: "DB_PASSWORD: insecure-test-only\n      DB_PORT: 05432",
+			want: `DB_PORT "05432" is a YAML int, not a str; quote it`,
+		},
+		{
+			name: "boolean that YAML and Compose read differently",
+			old:  "DB_PASSWORD: insecure-test-only", new: "DB_PASSWORD: insecure-test-only\n      DEBUG: True",
+			want: `DEBUG "True" is a YAML bool, not a str; quote it`,
+		},
+		{
+			name: "retries as a string",
+			old:  "      retries: 3\n  netbox:", new: "      retries: \"3\"\n  netbox:",
+			want: `retries "3" is a YAML str, not a int`,
+		},
+		{
+			name: "alias",
+			old:  "      DB_PASSWORD: insecure-test-only", new: "      DB_PASSWORD: &pw insecure-test-only\n      OTHER_PASSWORD: *pw",
+			want: "aliases aren't supported",
+		},
+		{
+			name: "second YAML document that doesn't parse",
+			old:  validStack, new: validStack + "---\nname: [\n",
+			want: "after the first YAML document",
+		},
+		{
 			name: "second YAML document",
 			old:  validStack, new: validStack + "---\nname: other\n",
 			want: "exactly one YAML document",
@@ -276,6 +337,20 @@ func TestParseStackRejects(t *testing.T) {
 				t.Errorf("parseStack error = %q, want it to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestContainerPort(t *testing.T) {
+	t.Parallel()
+	for mapping, want := range map[string]int{
+		"127.0.0.1:${NETBOX_PORT:-8000}:8080": 8080,
+		"127.0.0.1:8000:8080":                 8080,
+		"127.0.0.1:0:6379":                    6379, // Docker chooses the host port
+		"127.0.0.1::6379":                     6379, // so does Compose
+	} {
+		if got, err := containerPort(mapping); err != nil || got != want {
+			t.Errorf("containerPort(%q) = %d, %v; want %d", mapping, got, err, want)
+		}
 	}
 }
 
