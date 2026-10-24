@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
-	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -205,10 +204,10 @@ func list(items []string) string {
 	return string(b)
 }
 
-// cell quotes a value holding control characters, which would break the
-// table or the terminal.
+// cell quotes a value holding characters that would break the table or
+// mislead the terminal (see unsafeRune). strconv.Quote escapes them all.
 func cell(s string) string {
-	if strings.ContainsFunc(s, unicode.IsControl) {
+	if strings.ContainsFunc(s, unsafeRune) {
 		return strconv.Quote(s)
 	}
 	return s

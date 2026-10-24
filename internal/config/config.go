@@ -5,7 +5,9 @@
 package config
 
 import (
+	"crypto/x509"
 	"log/slog"
+	"time"
 )
 
 // Settings are the effective, validated settings.
@@ -42,6 +44,19 @@ type Database struct {
 type NetBox struct {
 	URL   string
 	Token Secret
+	// CABundle is the PEM file named by netbox.ca_bundle, or empty, and
+	// CACerts the certificates read from it, to trust as well as the
+	// system's.
+	CABundle string
+	CACerts  []*x509.Certificate
+	// Timeout limits each request, reading the answer included.
+	Timeout time.Duration
+	// MaxRequests is how many requests may be in flight at once.
+	MaxRequests int
+	// Retries is how many more times a failed read is tried.
+	Retries int
+	// MaxResponseSize is the most bytes TrueUp reads of one answer.
+	MaxResponseSize int64
 }
 
 // Source is where definitions come from.

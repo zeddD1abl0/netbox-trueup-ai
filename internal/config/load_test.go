@@ -2,12 +2,15 @@ package config
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/pflag"
@@ -68,6 +71,14 @@ func expandAll(ss []string, dir string) []string {
 }
 
 var withConfig = []string{"--config", "{dir}/config.yaml"}
+
+// Fake v2 tokens, named for the layer that gives them.
+const (
+	fileToken    = "nbt_key.file"    //nolint:gosec // G101: a fake token in a test fixture
+	envToken     = "nbt_key.env"     //nolint:gosec // G101: a fake token in a test fixture
+	flagToken    = "nbt_key.flag"    //nolint:gosec // G101: a fake token in a test fixture
+	exampleToken = "nbt_key.example" //nolint:gosec // G101: a fake token in a test fixture
+)
 
 // summary is the part of an Entry the tests compare.
 type summary struct {
@@ -245,11 +256,74 @@ func TestLoadSettings(t *testing.T) {
 	want := Settings{
 		Log:     Log{Level: -4, Format: LogJSON},
 		DataDir: DefaultDataDir(),
-		NetBox:  NetBox{URL: "https://netbox.example.com"},
+		NetBox: NetBox{
+			URL:     "https://netbox.example.com",
+			Timeout: 30 * time.Second, MaxRequests: 4, Retries: 3, MaxResponseSize: 32 << 20,
+		},
 		Sources: []Source{},
 	}
 	if diff := cmp.Diff(want, cfg.Settings, cmp.AllowUnexported(Secret{})); diff != "" {
 		t.Errorf("Settings (-want +got):\n%s", diff)
+	}
+}
+
+// The NetBox client's settings take numbers in the config file as well as
+// text, and a CA bundle relative to the file.
+func TestLoadNetBoxClientSettings(t *testing.T) {
+	t.Parallel()
+
+	ca := string(testCertPEM(t))
+	tests := []struct {
+		name      string
+		in        input
+		want      NetBox // without CACerts
+		wantCerts int
+	}{
+		{
+			name: "defaults",
+			want: NetBox{Timeout: 30 * time.Second, MaxRequests: 4, Retries: 3, MaxResponseSize: 32 << 20},
+		},
+		{
+			name: "numbers in the file",
+			in: input{
+				files: map[string]string{
+					"config.yaml": "netbox:\n  ca_bundle: ca.pem\n  timeout: 2m\n  max_requests: 8\n  retries: 0\n  max_response_size: 1048576\n",
+					"ca.pem":      "Two certificates, with text around them\n" + ca + "\n" + ca + "the end\n",
+				},
+				args: withConfig,
+			},
+			want:      NetBox{CABundle: "{dir}/ca.pem", Timeout: 2 * time.Minute, MaxRequests: 8, Retries: 0, MaxResponseSize: 1 << 20},
+			wantCerts: 2,
+		},
+		{
+			name: "text in the environment and flags",
+			in: input{
+				files: map[string]string{"ca.pem": ca},
+				args:  []string{"--netbox-ca-bundle", "{dir}/ca.pem", "--netbox-retries", "10", "--netbox-max-requests", "32"},
+				env:   []string{"TRUEUP_NETBOX_TIMEOUT=1500ms", "TRUEUP_NETBOX_MAX_RESPONSE_SIZE=1 GiB"},
+			},
+			want:      NetBox{CABundle: "{dir}/ca.pem", Timeout: 1500 * time.Millisecond, MaxRequests: 32, Retries: 10, MaxResponseSize: 1 << 30},
+			wantCerts: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, dir, err := tt.in.load(t)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got := cfg.Settings.NetBox
+			if len(got.CACerts) != tt.wantCerts {
+				t.Errorf("read %d CA certificates, want %d", len(got.CACerts), tt.wantCerts)
+			}
+			got.CACerts = nil
+			want := tt.want
+			want.CABundle = expand(want.CABundle, dir)
+			if diff := cmp.Diff(want, got, cmp.AllowUnexported(Secret{})); diff != "" {
+				t.Errorf("NetBox settings (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -268,33 +342,33 @@ func TestLoadSecrets(t *testing.T) {
 		},
 		{
 			name:      "value in the file",
-			in:        input{files: map[string]string{"config.yaml": "netbox:\n  token: nbt_file\n"}, args: withConfig},
-			wantToken: "nbt_file",
+			in:        input{files: map[string]string{"config.yaml": "netbox:\n  token: " + fileToken + "\n"}, args: withConfig},
+			wantToken: fileToken,
 			want:      summary{Value: redacted, Origin: OriginFile, Name: "netbox.token"},
 		},
 		{
 			name: "_file in the file, relative to it, with a trailing newline",
 			in: input{
-				files: map[string]string{"config.yaml": "netbox:\n  token_file: token\n", "token": "nbt_file\n"},
+				files: map[string]string{"config.yaml": "netbox:\n  token_file: token\n", "token": fileToken + "\n"},
 				args:  withConfig,
 			},
-			wantToken: "nbt_file",
+			wantToken: fileToken,
 			want:      summary{Value: redacted, Origin: OriginFile, Name: "netbox.token_file", File: "{dir}/token"},
 		},
 		{
 			name:      "a Windows line ending is trimmed too",
-			in:        input{files: map[string]string{"token": "nbt_file\r\n"}, env: []string{"TRUEUP_NETBOX_TOKEN_FILE={dir}/token"}}, //nolint:gosec // G101: a fake token in a test fixture
-			wantToken: "nbt_file",
+			in:        input{files: map[string]string{"token": fileToken + "\r\n"}, env: []string{"TRUEUP_NETBOX_TOKEN_FILE={dir}/token"}},
+			wantToken: fileToken,
 			want:      summary{Value: redacted, Origin: OriginEnv, Name: "TRUEUP_NETBOX_TOKEN_FILE", File: "{dir}/token"},
 		},
 		{
 			name: "_file in the environment over a value in the file",
 			in: input{
-				files: map[string]string{"config.yaml": "netbox:\n  token: nbt_file\n", "token": "nbt_env"},
+				files: map[string]string{"config.yaml": "netbox:\n  token: " + fileToken + "\n", "token": envToken},
 				args:  withConfig,
 				env:   []string{"TRUEUP_NETBOX_TOKEN_FILE={dir}/token"},
 			},
-			wantToken: "nbt_env",
+			wantToken: envToken,
 			want:      summary{Value: redacted, Origin: OriginEnv, Name: "TRUEUP_NETBOX_TOKEN_FILE", File: "{dir}/token"},
 		},
 		{
@@ -302,19 +376,19 @@ func TestLoadSecrets(t *testing.T) {
 			in: input{
 				files: map[string]string{"config.yaml": "netbox:\n  token_file: missing\n"},
 				args:  withConfig,
-				env:   []string{"TRUEUP_NETBOX_TOKEN=nbt_env"},
+				env:   []string{"TRUEUP_NETBOX_TOKEN=" + envToken},
 			},
-			wantToken: "nbt_env",
+			wantToken: envToken,
 			want:      summary{Value: redacted, Origin: OriginEnv, Name: "TRUEUP_NETBOX_TOKEN"},
 		},
 		{
 			name: "_file flag over a value in the environment",
 			in: input{
-				files: map[string]string{"token": "nbt_flag"},
+				files: map[string]string{"token": flagToken},
 				args:  []string{"--netbox-token-file", "{dir}/token"},
-				env:   []string{"TRUEUP_NETBOX_TOKEN=nbt_env"},
+				env:   []string{"TRUEUP_NETBOX_TOKEN=" + envToken},
 			},
-			wantToken: "nbt_flag",
+			wantToken: flagToken,
 			want:      summary{Value: redacted, Origin: OriginFlag, Name: "--netbox-token-file", File: "{dir}/token"},
 		},
 	}
@@ -410,7 +484,10 @@ func TestLoadConfigFileChoice(t *testing.T) {
 	}
 }
 
-const badToken = "contains characters a token can't, such as whitespace, control characters or a byte-order mark"
+const (
+	badToken = "contains characters a token can't, such as whitespace, control characters or a byte-order mark"
+	cutToken = "starts with nbt_, so it is a v2 token, but isn't in the form nbt_<key>.<token>: check that it was copied whole" //nolint:gosec // G101: an error message, not a credential
+)
 
 // badSources breaks every rule a source's values follow.
 //
@@ -437,6 +514,8 @@ sources:
 func TestLoadProblems(t *testing.T) {
 	t.Parallel()
 
+	// {cert} in a file's content stands for a valid certificate.
+	cert := string(testCertPEM(t))
 	tests := []struct {
 		name string
 		in   input
@@ -559,7 +638,7 @@ func TestLoadProblems(t *testing.T) {
 			in: input{
 				files: map[string]string{"config.yaml": "netbox:\n  token_file: missing\n"},
 				args:  withConfig,
-				env:   []string{"TRUEUP_NETBOX_TOKEN=nbt_env", "TRUEUP_NETBOX_TOKEN_FILE=/run/secrets/netbox-token"},
+				env:   []string{"TRUEUP_NETBOX_TOKEN=" + envToken, "TRUEUP_NETBOX_TOKEN_FILE=/run/secrets/netbox-token"},
 			},
 			want: []string{"environment: TRUEUP_NETBOX_TOKEN and TRUEUP_NETBOX_TOKEN_FILE are both set; set only one"},
 		},
@@ -619,6 +698,87 @@ func TestLoadProblems(t *testing.T) {
 			in:     input{env: []string{"TRUEUP_DATABASE_URL=postgres://trueup:s3cret@db.example.com:port/trueup"}},
 			want:   []string{"database.url (env TRUEUP_DATABASE_URL): is not a valid URL; percent-encode any special characters in the password"},
 			secret: "s3cret",
+		},
+		{
+			name:   "a v2 token without its secret",
+			in:     input{env: []string{"TRUEUP_NETBOX_TOKEN=nbt_keykeykeykey"}},
+			want:   []string{"netbox.token (env TRUEUP_NETBOX_TOKEN): " + cutToken},
+			secret: "keykeykeykey",
+		},
+		{
+			name:   "a v2 token with an empty secret",
+			in:     input{files: map[string]string{"token": "nbt_keykeykeykey.\n"}, env: []string{"TRUEUP_NETBOX_TOKEN_FILE={dir}/token"}}, //nolint:gosec // G101: a fake token in a test fixture
+			want:   []string{"netbox.token (env TRUEUP_NETBOX_TOKEN_FILE): " + cutToken},
+			secret: "keykeykeykey",
+		},
+		{
+			name: "NetBox client settings out of range",
+			in: input{env: []string{
+				"TRUEUP_NETBOX_TIMEOUT=0s", "TRUEUP_NETBOX_MAX_REQUESTS=0",
+				"TRUEUP_NETBOX_RETRIES=99999999999999999999", "TRUEUP_NETBOX_MAX_RESPONSE_SIZE=512KiB",
+			}},
+			want: []string{
+				"netbox.timeout (env TRUEUP_NETBOX_TIMEOUT): 0s is out of range: use 1s to 10m",
+				"netbox.max_requests (env TRUEUP_NETBOX_MAX_REQUESTS): 0 is out of range: use 1 to 32",
+				"netbox.retries (env TRUEUP_NETBOX_RETRIES): 99999999999999999999 is out of range: use 0 to 10",
+				"netbox.max_response_size (env TRUEUP_NETBOX_MAX_RESPONSE_SIZE): 512KiB is out of range: use 1MiB to 1GiB",
+			},
+		},
+		{
+			name: "NetBox client settings that don't parse",
+			in: input{files: map[string]string{
+				"config.yaml": "netbox:\n  timeout: 30\n  max_requests: four\n  retries: 1.5\n  max_response_size: 32MB\n",
+			}, args: withConfig},
+			want: []string{
+				`netbox.timeout (file {dir}/config.yaml): "30" is not a duration: use a number and a unit, such as 30s or 2m`,
+				`netbox.max_requests (file {dir}/config.yaml): "four" is not a whole number`,
+				`netbox.retries (file {dir}/config.yaml): "1.5" is not a whole number`,
+				`netbox.max_response_size (file {dir}/config.yaml): "32MB" is not a size: use a number of bytes, or one with KiB, MiB or GiB, such as 32MiB`,
+			},
+		},
+		{
+			name: "a NetBox client setting of the wrong type",
+			in:   input{files: map[string]string{"config.yaml": "netbox:\n  retries: true\n  timeout: [30s]\n"}, args: withConfig},
+			want: []string{
+				"netbox.retries (file {dir}/config.yaml): must be a string or a number",
+				"netbox.timeout (file {dir}/config.yaml): must be a string or a number",
+			},
+		},
+		{
+			name: "a CA bundle that is missing",
+			in:   input{env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/missing.pem"}},
+			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): read file: open {dir}/missing.pem: no such file or directory"},
+		},
+		{
+			name:   "a CA bundle holding a private key",
+			in:     input{files: map[string]string{"ca.pem": "{cert}" + string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("keykeykeykey")}))}, env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/ca.pem"}},
+			want:   []string{`netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): file {dir}/ca.pem holds a "PRIVATE KEY" block: a CA bundle holds only certificates`},
+			secret: base64.StdEncoding.EncodeToString([]byte("keykeykeykey")),
+		},
+		{
+			name: "a CA bundle without certificates",
+			in:   input{files: map[string]string{"ca.pem": "not a certificate\n"}, env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/ca.pem"}},
+			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): file {dir}/ca.pem holds no PEM certificates"},
+		},
+		{
+			name: "a CA bundle cut short",
+			in:   input{files: map[string]string{"ca.pem": "{cert}-----BEGIN CERTIFICATE-----\nMIIB\n"}, env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/ca.pem"}},
+			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): file {dir}/ca.pem has a PEM block that can't be read, such as one cut short"},
+		},
+		{
+			name: "a CA bundle with a block cut short between good ones",
+			in:   input{files: map[string]string{"ca.pem": "{cert}-----BEGIN CERTIFICATE-----\nMIIB\n{cert}"}, env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/ca.pem"}},
+			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): file {dir}/ca.pem has a PEM block that can't be read, such as one cut short"},
+		},
+		{
+			name: "a CA bundle with a block that isn't base64, between good ones",
+			in:   input{files: map[string]string{"ca.pem": "{cert}-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n{cert}"}, env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/ca.pem"}},
+			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): file {dir}/ca.pem has a PEM block that can't be read, such as one cut short"},
+		},
+		{
+			name: "a CA bundle with a certificate that doesn't parse",
+			in:   input{files: map[string]string{"ca.pem": "{cert}" + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("junk")}))}, env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/ca.pem"}},
+			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): certificate 2 in file {dir}/ca.pem can't be read: x509: malformed certificate"},
 		},
 		{
 			name:   "a token with whitespace",
@@ -721,7 +881,12 @@ func TestLoadProblems(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, dir, err := tt.in.load(t)
+			in := tt.in
+			in.files = map[string]string{}
+			for name, content := range tt.in.files {
+				in.files[name] = strings.ReplaceAll(content, "{cert}", cert)
+			}
+			_, dir, err := in.load(t)
 			cfgErr, ok := errors.AsType[*Error](err)
 			if !ok {
 				t.Fatalf("Load error = %v, want an *Error", err)
@@ -766,6 +931,7 @@ func TestLoadNetBoxURL(t *testing.T) {
 		{url: "https://admin:s3cret@netbox.example.com", wantProblem: user}, //nolint:gosec // G101: a fake password in a test fixture
 		{url: "https://netbox.example.com/?token=x", wantProblem: query},
 		{url: "https://netbox.example.com/#top", wantProblem: query},
+		{url: "https://netbox.example.com/?", wantProblem: query},
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
@@ -820,7 +986,7 @@ func TestLoadWarnsAboutReadableSecrets(t *testing.T) {
 		},
 		{
 			name:  "a config file holding a secret, readable by all",
-			file:  "netbox:\n  token: nbt_example\n",
+			file:  "netbox:\n  token: nbt_key.example\n",
 			modes: map[string]os.FileMode{"config.yaml": 0o644},
 			want:  []Warning{{Message: "config file {dir}/config.yaml holds a secret and every user on this host can read it: remove read access for others (chmod o-r), or give the secret through its _file setting"}},
 		},
@@ -834,7 +1000,7 @@ func TestLoadWarnsAboutReadableSecrets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			for name, content := range map[string]string{"config.yaml": tt.file, "token": "nbt_example"} {
+			for name, content := range map[string]string{"config.yaml": tt.file, "token": exampleToken} {
 				p := filepath.Join(dir, name)
 				mode, ok := tt.modes[name]
 				if !ok {

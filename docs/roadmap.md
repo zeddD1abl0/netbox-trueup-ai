@@ -59,11 +59,12 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - Integration tests carry the `integration` build tag, stay out of `make test`, and run with `make test-integration` in the "Integration tests" CI job. Making that job a required check is a ruleset change for the maintainer.
    - New test-only dependency: testcontainers-go.
 
-4. **`feat(netbox): add a read-only REST client`.**
-   - Version check, v2 token authentication, cursor pagination, filtered listings, timeouts, retries for reads, response size limits and a custom CA bundle. No write methods.
-   - `netbox-trueup-ai netbox check` connects, checks the version, and confirms the token can read every object type milestone 1 needs.
-   - Integration tests against the NetBox from step 3.
-   - ADR: our own NetBox REST client, closing the spike in tooling.md §3.1.
+4. **`feat(netbox): add a read-only REST client`.** Done in #7.
+   - `internal/netbox`, on `net/http` alone: a version check that accepts NetBox 4.7.x only, v2 token authentication with a warning for v1 tokens, cursor pagination, filtered listings across many parents, timeouts, a cap on concurrent requests, retries for reads, response size limits and a custom CA bundle. No write methods.
+   - `netbox-trueup-ai netbox check` connects, checks the version, and confirms the token can read every object type milestone 1 needs, exiting with 4 if it can't.
+   - New settings: `netbox.ca_bundle`, `netbox.timeout`, `netbox.max_requests`, `netbox.retries` and `netbox.max_response_size`.
+   - Integration tests against the NetBox from step 3, seeded through `netboxtest.Post`, with a restricted user's token for the permission check. Packages with integration tests now run one at a time.
+   - [ADR 0019](adr/0019-own-netbox-rest-client.md): our own NetBox REST client, closing the spike in tooling.md §3.1.
 
 5. **`feat(source): fetch Git sources and read files at a commit`.**
    - The source kind interface that later kinds implement: snapshots, file listings, path confinement and limits.

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -70,13 +72,18 @@ func TestEveryEnvironmentVariableSetsItsSetting(t *testing.T) {
 	// A valid value for each setting. Adding a setting without one fails
 	// the test.
 	samples := map[string]string{
-		"log.level":    "debug",
-		"log.format":   "json",
-		"data_dir":     "/srv/trueup",
-		"database.url": "postgres://trueup@db.example.com/trueup",
-		"netbox.url":   "https://netbox.example.com",
-		"netbox.token": "nbt_example",
-		"sources":      `[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
+		"log.level":                "debug",
+		"log.format":               "json",
+		"data_dir":                 "/srv/trueup",
+		"database.url":             "postgres://trueup@db.example.com/trueup",
+		"netbox.url":               "https://netbox.example.com",
+		"netbox.token":             exampleToken,
+		"netbox.ca_bundle":         "", // set below, to a file the test writes
+		"netbox.timeout":           "1m",
+		"netbox.max_requests":      "8",
+		"netbox.retries":           "0",
+		"netbox.max_response_size": "64MiB",
+		"sources":                  `[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
 	}
 	for _, s := range settings {
 		t.Run(s.key, func(t *testing.T) {
@@ -84,6 +91,12 @@ func TestEveryEnvironmentVariableSetsItsSetting(t *testing.T) {
 			sample, ok := samples[s.key]
 			if !ok {
 				t.Fatalf("no sample value for %s", s.key)
+			}
+			if s.key == "netbox.ca_bundle" {
+				sample = filepath.Join(t.TempDir(), "ca.pem")
+				if err := os.WriteFile(sample, testCertPEM(t), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			name := envName(s.key)
 			cfg, err := Load(t.Context(), Input{Environ: []string{name + "=" + sample}})
@@ -113,7 +126,8 @@ func TestRegisterFlags(t *testing.T) {
 	fs.VisitAll(func(f *pflag.Flag) { names = append(names, f.Name) })
 	got := strings.Join(names, " ")
 	// pflag lists flags sorted. Secrets have only their _file flag.
-	want := "config data-dir database-url-file log-format log-level netbox-token-file netbox-url"
+	want := "config data-dir database-url-file log-format log-level netbox-ca-bundle netbox-max-requests " +
+		"netbox-max-response-size netbox-retries netbox-timeout netbox-token-file netbox-url"
 	if got != want {
 		t.Errorf("flags = %q, want %q", got, want)
 	}

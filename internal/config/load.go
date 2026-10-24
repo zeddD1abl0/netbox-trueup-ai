@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	koanfyaml "github.com/knadh/koanf/parsers/yaml"
@@ -25,8 +26,9 @@ import (
 
 // Size limits for files Load reads.
 const (
-	maxConfigFileSize = 1 << 20  // 1 MiB
-	maxSecretFileSize = 64 << 10 // 64 KiB
+	maxConfigFileSize  = 1 << 20  // 1 MiB
+	maxSecretFileSize  = 64 << 10 // 64 KiB
+	maxSettingFileSize = 1 << 20  // 1 MiB, for files such as a CA bundle
 )
 
 // Input says where Load finds declared settings.
@@ -475,16 +477,19 @@ func (ld *loader) set(l *layer, key string, raw any, name, base string) {
 
 	var v any
 	switch k {
-	case kindString, kindPath:
+	case kindString, kindPath, kindFile, kindScalar:
 		str, isString := raw.(string)
+		if !isString && k == kindScalar {
+			str, isString = numberText(raw)
+		}
 		if !isString {
-			ld.reject(s.key, key, l.where(name), "must be a string")
+			ld.reject(s.key, key, l.where(name), "must be "+ref.want())
 			return
 		}
 		if str == "" {
 			return // an empty string counts as unset
 		}
-		if k == kindPath {
+		if k == kindPath || k == kindFile {
 			p, err := absPath(str, base)
 			if err != nil {
 				ld.reject(s.key, key, l.where(name), err.Error())
@@ -509,6 +514,23 @@ func (ld *loader) set(l *layer, key string, raw any, name, base string) {
 	l.values[s.key] = value{v: v, name: name, file: ref.file}
 	if s.secret && !ref.file {
 		l.holdsSecret = true
+	}
+}
+
+// numberText returns a number from the config file as decimal text, which is
+// how the environment and flags give it.
+func numberText(raw any) (string, bool) {
+	switch n := raw.(type) {
+	case int:
+		return strconv.Itoa(n), true
+	case int64:
+		return strconv.FormatInt(n, 10), true
+	case uint64:
+		return strconv.FormatUint(n, 10), true
+	case float64:
+		return strconv.FormatFloat(n, 'f', -1, 64), true
+	default:
+		return "", false
 	}
 }
 
@@ -606,9 +628,13 @@ func (ld *loader) strs(key, where string, v any) ([]string, bool) {
 
 // resolved is a setting's winning value, ready for its apply function.
 type resolved struct {
-	key     string
-	where   string   // where the value came from, for messages
-	str     string   // for string, path and secret settings
+	key   string
+	where string // where the value came from, for messages
+	str   string // for every kind but sources
+	// data is the content of a kindFile setting's file. It is nil if the
+	// setting isn't set, or if the file couldn't be read, which has been
+	// reported.
+	data    []byte
 	sources []Source // for sources
 }
 
@@ -625,7 +651,7 @@ func (ld *loader) build(ctx context.Context, layers []*layer) *Config {
 		e := Entry{Key: s.key, Secret: s.secret, Origin: top.origin, Name: v.name}
 		r := resolved{key: s.key, where: top.where(v.name)}
 		switch s.kind {
-		case kindString, kindPath:
+		case kindString, kindPath, kindFile, kindScalar:
 			r.str, _ = v.v.(string)
 			e.Value = r.str
 			if s.secret {
@@ -634,6 +660,9 @@ func (ld *loader) build(ctx context.Context, layers []*layer) *Config {
 					r.str = ld.readSecret(ctx, s.key, r.where, r.str)
 				}
 				e.Value = NewSecret(r.str).String()
+			}
+			if s.kind == kindFile && r.str != "" {
+				r.data = ld.readSettingFile(ctx, s.key, r.where, r.str)
 			}
 		case kindSources:
 			r.sources, _ = v.v.([]Source)
@@ -676,6 +705,17 @@ func (ld *loader) readSecret(ctx context.Context, key, where, path string) strin
 		ld.warn(key, fmt.Sprintf("secret file %s can be read by every user on this host: remove read access for others, with chmod o-r or the mode of a Kubernetes or Docker secret mount", path))
 	}
 	return secret
+}
+
+// readSettingFile reads the file a kindFile setting names, or returns nil if
+// it can't, having reported why.
+func (ld *loader) readSettingFile(ctx context.Context, key, where, path string) []byte {
+	data, _, err := readFile(ctx, path, maxSettingFileSize)
+	if err != nil {
+		ld.problem(key, where, "read file: "+err.Error())
+		return nil
+	}
+	return data
 }
 
 // readFile reads at most limit bytes from the file at path, and reports
