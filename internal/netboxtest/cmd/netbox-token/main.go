@@ -35,7 +35,7 @@ func main() {
 }
 
 func run(ctx context.Context, url, out string) error {
-	username, password, err := netboxtest.Superuser()
+	username, _, err := netboxtest.Superuser()
 	if err != nil {
 		return err
 	}
@@ -51,8 +51,10 @@ func run(ctx context.Context, url, out string) error {
 		return err
 	}
 
+	// The password is a published dummy value, but a password is still never
+	// printed. The README gives it.
 	fmt.Printf(`NetBox is running at %s.
-Sign in as %s with the password %s.
+Sign in as %s, with the password in internal/netboxtest/README.md.
 
 A new v2 API token is in %s. To point TrueUp at this NetBox:
 
@@ -60,7 +62,7 @@ A new v2 API token is in %s. To point TrueUp at this NetBox:
   export TRUEUP_NETBOX_TOKEN_FILE=%s
 
 Stop it and delete its data with: make netbox-down
-`, url, username, password, path, url, path)
+`, url, username, path, url, path)
 	return nil
 }
 
