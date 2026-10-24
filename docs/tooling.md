@@ -3,7 +3,7 @@
 This document lists the tools, libraries, and AI skills used to build NetBox TrueUp AI, and why each was chosen. It doubles as a reference for setting up a complete development environment, including AI-assisted development with your own Claude account.
 
 **Audience:** human contributors and AI coding agents.
-**Last reviewed:** 2026-10-23. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
+**Last reviewed:** 2026-10-24. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
 
 ## Status legend
 
@@ -160,8 +160,8 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | [Dev container](https://containers.dev) | Use | `.devcontainer/` gives a ready environment in VS Code or GitHub Codespaces: Go, mise tools, Docker-in-Docker, and the [Claude Code dev container feature](https://github.com/anthropics/devcontainer-features). |
 | Git | Use | Version control. |
 | [GitHub CLI](https://cli.github.com) (`gh`) | Use | Creating PRs and issues and checking CI from the terminal. Agents use it to open PRs. |
-| Docker with Compose | Use | Local NetBox and PostgreSQL, container builds, integration tests. |
-| [netbox-docker](https://github.com/netbox-community/netbox-docker) | Use | Standard way to run a disposable NetBox locally, at any version. |
+| Docker with Compose | Use | Runs the disposable NetBox for integration tests and for `make netbox-up` ([internal/netboxtest](../internal/netboxtest/README.md)), and later PostgreSQL for the storage tests and container builds. |
+| [netbox-docker](https://github.com/netbox-community/netbox-docker) | Use | Standard way to run a disposable NetBox locally, at any version. We use its image (`netboxcommunity/netbox`, pinned by digest) and the environment variables its configuration reads, with a Compose file of our own in `internal/netboxtest`: smaller than netbox-docker's, with one Valkey and no worker, and only on 127.0.0.1. |
 | [Node.js](https://nodejs.org) (current LTS) | Use | Runs markdownlint-cli2 and, later, rebuilds the web UI's JavaScript bundle. Bundled output is committed, so a plain `go build` needs only Go. Node 20 is end-of-life. |
 
 ---
@@ -233,12 +233,12 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 
 | Tool | Status | Why |
 | --- | --- | --- |
-| [golangci-lint](https://golangci-lint.run) (v2) | Use | One linter runner: staticcheck, gosec, errcheck, revive, and others. It also runs the formatters (gofumpt, goimports). Run locally and in CI with the same config. |
+| [golangci-lint](https://golangci-lint.run) (v2) | Use | One linter runner: staticcheck, gosec, errcheck, revive, and others. It also runs the formatters (gofumpt, goimports). Run locally and in CI with the same config, which sets the `integration` build tag so that integration tests are linted too. |
 | [gofumpt](https://github.com/mvdan/gofumpt) | Use | Stricter `gofmt`, which ends formatting debates. Runs through golangci-lint. |
 | `go test -race` | Use | Every CI test run uses the race detector. This is a concurrent server. |
 | Go native fuzzing | Use | Fuzz the YAML parser, comparison engine, and override merge, where unexpected input does the most damage. |
 | [go-cmp](https://github.com/google/go-cmp) | Use | Readable diffs in test failures. Test-only; never used in production code. |
-| [testcontainers-go](https://golang.testcontainers.org) | Use | Integration tests start real PostgreSQL and real NetBox containers. CI runs a matrix across every supported NetBox version. |
+| [testcontainers-go](https://golang.testcontainers.org) | Use | Integration tests start real containers: a disposable NetBox now, and PostgreSQL for the storage tests later. Test-only, core module only. The NetBox stack is defined once, in `internal/netboxtest/compose.yaml`, which `make netbox-up` runs with Docker Compose. `netboxtest` reads the same file and runs each service with the core module, and rejects any Compose key it can't run the same way, so the two can't drift. It also imports moby's API types, which the core module's container options take. Integration tests carry the `integration` build tag, run with `make test-integration`, and have their own CI job. CI runs them against every supported NetBox version, which is 4.7.2 for now. Its reaper container, which removes what a crashed test leaves behind, publishes a control port on every interface while tests run; [the README](../internal/netboxtest/README.md#the-reaper) says how to keep it off a network you don't trust. |
 | [goleak](https://github.com/uber-go/goleak) | Use | Catches goroutine leaks in a long-running service. |
 | [Playwright](https://playwright.dev) | Later | End-to-end UI tests in CI. Claude also uses the Playwright MCP plugin interactively. |
 | [lefthook](https://github.com/evilmartians/lefthook) | Use | Fast Git hooks from a single binary: format, lint changed files, gitleaks, commit-message check. Hooks are a convenience; CI enforces the same checks. |
@@ -254,7 +254,7 @@ Generated code (sqlc, templ, bundled JS) is committed. CI regenerates it and fai
 | [govulncheck](https://go.dev/doc/security/vuln/) | Use | Reports only the Go vulnerabilities our code actually calls. Runs in CI and on a schedule. |
 | [CodeQL](https://codeql.github.com) | Use | GitHub code scanning for Go, JavaScript, and Actions workflows. Free for public repositories. |
 | [gitleaks](https://github.com/gitleaks/gitleaks) | Use | Secret detection in the pre-commit hook and in CI, alongside GitHub's secret-scanning push protection. |
-| [Dependabot](https://docs.github.com/en/code-security/dependabot) | Use | Update PRs for Go modules, GitHub Actions, Docker base images, and npm, with a 7-day cooldown on new releases (security updates aren't delayed). Native to GitHub, with no third-party app. It doesn't cover `mise.toml`, so tool pins there are bumped by hand. |
+| [Dependabot](https://docs.github.com/en/code-security/dependabot) | Use | Update PRs for Go modules, GitHub Actions, Docker base images, the test NetBox's images in `internal/netboxtest/compose.yaml`, and npm, with a 7-day cooldown on new releases (security updates aren't delayed). Native to GitHub, with no third-party app. It doesn't cover `mise.toml`, so tool pins there are bumped by hand. |
 | Signed commits | Use | Every commit must carry a signature GitHub verifies (GPG or SSH). A ruleset enforces this on `main`, and a PR check enforces it for each commit in a pull request (ADR 0004). |
 | [OpenSSF Scorecard](https://github.com/ossf/scorecard) | Use | Ongoing public score of the repository's security practices. |
 | [actionlint](https://github.com/rhysd/actionlint) + [zizmor](https://docs.zizmor.sh) | Use | Lint GitHub Actions workflows for correctness and for security problems such as template injection and over-broad permissions. |
@@ -320,6 +320,7 @@ These settings are applied by a repository admin. They are listed here so the se
 | React, Vue, or another SPA | A second toolchain and language, a larger client-side attack surface, and an API layer we don't otherwise need. |
 | Monaco editor | Much heavier than CodeMirror 6 for the same YAML editing. |
 | testify | The standard library plus go-cmp covers our needs with one fewer dependency. |
+| testcontainers-go's compose module | It runs a Compose file directly, but brings in docker/compose, docker/cli, buildkit and containerd: 139 modules against about 50 for the core module, all for tests. Reading our one Compose file with the core module keeps a single definition of the test stack without them. |
 | pre-commit (Python framework) | Adds a Python runtime to a Go project. lefthook is a single binary. |
 | Task (go-task) | A good tool, but Make is already installed nearly everywhere. Revisit if Windows-native development becomes common. |
 | Renovate | More capable than Dependabot (it can update `mise.toml`), but requires installing a third-party app with write access. Revisit if keeping tool pins current by hand becomes a burden. |
@@ -356,5 +357,5 @@ Once the bootstrap PRs land, most of this is automated by `mise.toml`, `.devcont
    ```
 
 6. Optional: copy the Go skills listed in section 1.3 from a reviewed commit of [samber/cc-skills-golang](https://github.com/samber/cc-skills-golang) into `~/.claude/skills/`.
-7. Optional: run a local NetBox with netbox-docker and set up the NetBox MCP server against it (section 1.6).
+7. Optional: run a local NetBox with `make netbox-up` and set up the NetBox MCP server against it (section 1.6).
 8. Run `make check` to confirm the environment works.

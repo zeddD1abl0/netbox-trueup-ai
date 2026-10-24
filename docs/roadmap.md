@@ -53,10 +53,10 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - New dependencies: cobra, koanf.
    - Fits here from the backlog: the Claude Code hook that formats Go after edits.
 
-3. **`test: run a disposable NetBox 4.7.2 for integration tests`.**
-   - testcontainers-go starts NetBox 4.7.2 from netbox-docker images pinned by digest, with PostgreSQL and Redis, and provisions a v2 token.
-   - `make netbox-up` and `make netbox-down` start the same stack with Docker Compose for manual testing.
-   - Integration tests stay out of `make test` and run in a new CI job. Making that job a required check is a ruleset change for the maintainer.
+3. **`test: run a disposable NetBox 4.7.2 for integration tests`.** Done in #4.
+   - testcontainers-go starts NetBox 4.7.2 from netbox-docker's image, with PostgreSQL and Valkey (netbox-docker's Redis), all pinned by digest, and provisions a v2 token through NetBox's token provisioning endpoint.
+   - `make netbox-up` and `make netbox-down` start the same stack with Docker Compose for manual testing. One Compose file, `internal/netboxtest/compose.yaml`, defines it for both.
+   - Integration tests carry the `integration` build tag, stay out of `make test`, and run with `make test-integration` in the "Integration tests" CI job. Making that job a required check is a ruleset change for the maintainer.
    - New test-only dependency: testcontainers-go.
 
 4. **`feat(netbox): add a read-only REST client`.**

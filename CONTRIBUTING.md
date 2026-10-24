@@ -25,7 +25,7 @@ make check     # everything CI runs
    - the README of any directory whose usage changes;
    - [docs/tooling.md](docs/tooling.md) if you add, remove or replace a tool or dependency;
    - an [ADR](docs/adr/README.md) if you make a significant decision.
-3. Run `make check`.
+3. Run `make check`. With Docker, run `make test-integration` too: it runs the integration tests against a disposable NetBox, as CI does. `make netbox-up` starts the same NetBox for trying things by hand (see [internal/netboxtest](internal/netboxtest/README.md)).
 4. Commit using [signed](#signing-commits) [Conventional Commits](#commit-messages).
 5. Open a pull request and fill in the template.
 

@@ -91,7 +91,7 @@ func (ld *loader) databaseURL(r resolved) Secret {
 	}
 	switch u.Scheme {
 	case "sqlite", "postgres", "postgresql":
-		return newSecret(r.str)
+		return NewSecret(r.str)
 	default:
 		ld.problem(r.key, r.where, "must be a sqlite, postgres or postgresql URL")
 		return Secret{}
@@ -141,7 +141,7 @@ func (ld *loader) netboxToken(r resolved) Secret {
 		ld.problem(r.key, r.where, "contains characters a token can't, such as whitespace, control characters or a byte-order mark")
 		return Secret{}
 	}
-	return newSecret(r.str)
+	return NewSecret(r.str)
 }
 
 // sourceName keeps source names safe to use as directory names, in command
