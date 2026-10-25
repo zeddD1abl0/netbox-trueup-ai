@@ -75,12 +75,15 @@ func compile(patterns []string) ([]glob.Pattern, error) {
 
 // Kind fetches one kind of source.
 type Kind interface {
-	// Fetch brings the cached content of the source up to date with its
-	// latest version, and returns that content.
+	// Fetch fetches the source's latest version into the cache and returns
+	// its content. The content replaces the cached version only when it is
+	// committed, once a snapshot of it has passed every check, so that a
+	// version that fails them leaves the previous one in place. Closing
+	// content that wasn't committed discards it.
 	Fetch(ctx context.Context, spec Spec) (Content, error)
-	// Open returns the content the last successful Fetch left in the
-	// cache, without the network. It returns an error wrapping
-	// ErrNotFetched if there is none.
+	// Open returns the cached version, as the last committed fetch left
+	// it, without the network. It returns an error wrapping ErrNotFetched
+	// if there is none, or if the cache no longer fits the spec.
 	Open(ctx context.Context, spec Spec) (Content, error)
 }
 
@@ -103,7 +106,12 @@ type Content interface {
 	ReadDir(ctx context.Context, id string) ([]Entry, error)
 	// Open returns the content of the file with the given ID.
 	Open(ctx context.Context, id string) (io.ReadCloser, error)
-	// Close releases what the content holds open.
+	// Commit makes the content the source's cached version, replacing the
+	// previous one. Content from Open is the cached version already, and
+	// committing it again does nothing.
+	Commit(ctx context.Context) error
+	// Close releases what the content holds open, and discards content
+	// that Fetch returned and that wasn't committed.
 	Close() error
 }
 

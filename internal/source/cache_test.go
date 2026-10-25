@@ -19,7 +19,7 @@ func TestPruneCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "stray-file"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := PruneCache(root, []string{"lib", "new"})
+	removed, err := PruneCache(t.Context(), root, []string{"lib", "new"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestPruneCache(t *testing.T) {
 		t.Errorf("left (-want +got):\n%s", diff)
 	}
 
-	if removed, err := PruneCache(filepath.Join(root, "absent"), nil); err != nil || removed != nil {
+	if removed, err := PruneCache(t.Context(), filepath.Join(root, "absent"), nil); err != nil || removed != nil {
 		t.Errorf("PruneCache of a root that doesn't exist = %v, %v", removed, err)
 	}
 }

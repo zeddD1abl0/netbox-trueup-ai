@@ -56,17 +56,26 @@ type listed struct {
 	id string
 }
 
-// Fetch brings the source's cache up to date with its latest version, using
-// kind, and returns a snapshot of it.
+// Fetch fetches the source's latest version, using kind, and returns a
+// snapshot of it. The version replaces the cached one only if its snapshot
+// passes every check: if it fails one, such as max_files, the cache keeps
+// the previous version.
 func Fetch(ctx context.Context, kind Kind, spec Spec) (*Snapshot, error) {
 	content, err := kind.Fetch(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
-	return newSnapshot(ctx, spec, content, fixedLimits)
+	snap, err := newSnapshot(ctx, spec, content, fixedLimits)
+	if err != nil {
+		return nil, err
+	}
+	if err := content.Commit(ctx); err != nil {
+		return nil, errors.Join(fmt.Errorf("keep version %s in the cache: %w", snap.Version, err), snap.Close())
+	}
+	return snap, nil
 }
 
-// Open returns a snapshot of the source's cached content, as the last
+// Open returns a snapshot of the source's cached version, as the last
 // successful Fetch left it, without the network. It returns an error
 // wrapping ErrNotFetched if there is none.
 func Open(ctx context.Context, kind Kind, spec Spec) (*Snapshot, error) {

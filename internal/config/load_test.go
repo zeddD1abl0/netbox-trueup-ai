@@ -80,12 +80,6 @@ const (
 	exampleToken = "nbt_key.example" //nolint:gosec // G101: a fake token in a test fixture
 )
 
-// withDefaultLimits gives s the default limits, as Entries shows them.
-func withDefaultLimits(s Source) Source {
-	s.MaxFileSize, s.MaxFiles, s.FetchTimeout, s.MaxFetchSize = "1MiB", "50000", "15m", "2GiB"
-	return s
-}
-
 // summary is the part of an Entry the tests compare.
 type summary struct {
 	Value  any
@@ -118,11 +112,11 @@ func TestLoadPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lib := withDefaultLimits(Source{
+	lib := Source{
 		Name: "devicetype-library", Kind: "git", Format: "devicetype-library",
 		URL: "https://github.com/netbox-community/devicetype-library.git", Ref: "master",
 		Include: []string{"device-types/Juniper/**"}, Exclude: []string{},
-	})
+	}
 
 	tests := []struct {
 		name string
@@ -217,10 +211,10 @@ sources:
 				env:   []string{`TRUEUP_SOURCES=[{"name":"b","kind":"git","url":"git@example.com:b.git","format":"devicetype-library"}]`},
 			},
 			want: map[string]summary{"sources": {
-				Value: []Source{withDefaultLimits(Source{
+				Value: []Source{{
 					Name: "b", Kind: "git", URL: "git@example.com:b.git", Format: "devicetype-library",
 					Include: []string{}, Exclude: []string{},
-				})},
+				}},
 				Origin: OriginEnv, Name: "TRUEUP_SOURCES",
 			}},
 		},
@@ -346,7 +340,7 @@ func TestLoadSourceLimits(t *testing.T) {
 			name:        "defaults",
 			in:          input{env: []string{`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`}},
 			want:        SourceLimits{MaxFileSize: 1 << 20, MaxFiles: 50000, FetchTimeout: 15 * time.Minute, MaxFetchSize: 2 << 30},
-			wantEntries: [4]string{"1MiB", "50000", "15m", "2GiB"},
+			wantEntries: [4]string{"", "", "", ""}, // unset, so the defaults apply
 		},
 		{
 			name: "numbers and text in the file",

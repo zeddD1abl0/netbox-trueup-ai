@@ -4,12 +4,12 @@
 // (docs/adr/0020-git-sources-with-go-git.md).
 //
 // Each fetch makes a shallow, single-branch, bare clone, with a partial-clone
-// filter that leaves out files larger than the source's max_file_size. The
-// clone goes into the source's cache, in a directory named for its commit,
-// and replaces the previous one once it is complete, so a failed fetch
-// leaves the previous clone in place. A fetch first asks the repository
-// which commit its branch or tag is at, and downloads nothing when the cache
-// already holds it.
+// filter that leaves out files larger than the source's max_file_size, in a
+// directory of its own in the source's cache. The clone becomes the cached
+// version only when it is committed, once its snapshot has passed every
+// check, so a failed fetch leaves the previous version in place. A fetch
+// first asks the repository which commit its branch or tag is at, and
+// downloads nothing when the cache already holds it.
 //
 // Repositories are untrusted (boundary B1 in docs/architecture.md):
 //
@@ -17,8 +17,9 @@
 //     a proxy only from HTTPS_PROXY; every other scheme is refused before
 //     go-git sees it, and nothing is read from Git's own configuration,
 //     credential helpers or ~/.ssh;
-//   - a fetch is limited in time (fetch_timeout), in what it writes to disk
-//     (max_fetch_size), and in how many objects it may hold;
+//   - a fetch is limited in time (fetch_timeout), in what it reads and
+//     writes (max_fetch_size), in the size of a repository's list of refs
+//     and of each tree, and in how many objects it may hold;
 //   - text from the server reaches errors cut short, and URLs in logs and
 //     errors carry no user name or password.
 package git
@@ -37,6 +38,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 	gogit "github.com/go-git/go-git/v6"
 	gitconfig "github.com/go-git/go-git/v6/config"
@@ -69,13 +71,15 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// Kind fetches Git sources. It is safe for concurrent use, though fetches of
-// one source at once download it twice.
+// Kind fetches Git sources. It is safe for concurrent use. Fetches of one
+// source at once each make their own clone, and the last committed wins.
 type Kind struct {
 	cacheDir   string
-	http       *http.Client
+	transport  http.RoundTripper
 	log        *slog.Logger
 	maxObjects uint32
+	maxRefs    int64
+	maxTree    int64
 	now        func() time.Time
 }
 
@@ -89,15 +93,18 @@ func New(opts Options) *Kind {
 	}
 	return &Kind{
 		cacheDir:   opts.CacheDir,
-		http:       newHTTPClient(opts.RootCAs, http.ProxyFromEnvironment),
+		transport:  newTransport(opts.RootCAs, http.ProxyFromEnvironment),
 		log:        logger,
 		maxObjects: maxObjects,
+		maxRefs:    maxRefsSize,
+		maxTree:    maxTreeSize,
 		now:        time.Now,
 	}
 }
 
-// Fetch brings the source's cache up to date with the latest commit of its
-// branch or tag, and returns that commit's content.
+// Fetch fetches the latest commit of the source's branch or tag into its
+// cache, and returns that commit's content, to be committed once its
+// snapshot has passed every check.
 func (k *Kind) Fetch(ctx context.Context, spec source.Spec) (source.Content, error) {
 	if err := checkURL(spec.URL); err != nil {
 		return nil, err
@@ -111,25 +118,29 @@ func (k *Kind) Fetch(ctx context.Context, spec source.Spec) (source.Content, err
 	return c, err
 }
 
-// Open returns the content the last successful Fetch left in the cache,
+// Open returns the cached version, as the last committed fetch left it,
 // without the network.
 func (k *Kind) Open(ctx context.Context, spec source.Spec) (source.Content, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	dir := source.CacheDir(k.cacheDir, spec.Name)
-	l, err := readLatest(dir)
+	l, err := readLatest(ctx, dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, source.ErrNotFetched
 	case err != nil:
-		return nil, fmt.Errorf("%w: its cache can't be read: %w", source.ErrNotFetched, err)
+		return nil, fmt.Errorf("read the source's cache: %w", err)
 	case l.URL != spec.URL || l.Requested != spec.Ref:
 		return nil, fmt.Errorf("%w since its url or ref changed", source.ErrNotFetched)
 	case !l.covers(spec.Limits.MaxFileSize):
 		return nil, fmt.Errorf("%w since its max_file_size was raised", source.ErrNotFetched)
 	}
-	return k.open(dir, l)
+	if _, err := os.Stat(filepath.Join(dir, l.Dir)); errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: its cached clone is gone", source.ErrNotFetched)
+	}
+	c, err := k.open(ctx, dir, l)
+	if err != nil {
+		return nil, fmt.Errorf("read the source's cache: %w", err)
+	}
+	return c, nil
 }
 
 // checkURL refuses any URL but an https one. The configuration allows ssh
@@ -151,26 +162,29 @@ func (k *Kind) fetch(ctx context.Context, spec source.Spec) (source.Content, err
 	}
 	start := k.now()
 	k.log.Info("fetching source", "source", spec.Name, "url", redactURL(spec.URL), "ref", spec.Ref)
-	ref, advertised, err := k.resolve(ctx, spec)
+	// One budget for everything the fetch reads from the network.
+	b := &budget{limit: spec.Limits.MaxFetchSize, maxRefs: k.maxRefs}
+	httpClient := newHTTPClient(k.transport, b)
+	ref, advertised, err := k.resolve(ctx, httpClient, spec)
 	if err != nil {
+		if budgetErr := b.stopped(); budgetErr != nil {
+			return nil, budgetErr
+		}
 		return nil, err
 	}
 
-	prev, err := readLatest(dir)
+	prev, err := readLatest(ctx, dir)
 	switch {
 	case err == nil && prev.URL == spec.URL && prev.Ref == ref.String() && prev.Advertised == advertised.String() &&
 		prev.covers(spec.Limits.MaxFileSize):
-		c, err := k.open(dir, prev)
+		c, err := k.open(ctx, dir, prev)
 		if err == nil {
 			if prev.Requested != spec.Ref {
-				prev.Requested = spec.Ref
-				if err := writeLatest(dir, prev); err != nil {
-					_ = c.Close()
-					return nil, err
-				}
+				l := prev
+				l.Requested = spec.Ref
+				c.commit = &l
 			}
 			k.log.Info("source is unchanged", "source", spec.Name, "version", prev.Version)
-			clean(dir, prev.Version, k.now(), k.log)
 			return c, nil
 		}
 		k.log.Warn("the cached clone can't be read, so fetching it again", "source", spec.Name, "error", err)
@@ -178,25 +192,29 @@ func (k *Kind) fetch(ctx context.Context, spec source.Spec) (source.Content, err
 		k.log.Warn("the source's cache can't be read, so fetching again", "source", spec.Name, "error", err)
 	}
 
-	l := latest{URL: spec.URL, Requested: spec.Ref, Ref: ref.String(), Advertised: advertised.String()}
-	var written int64
-	if l.Version, l.Filter, written, err = k.download(ctx, spec, dir, ref); err != nil {
+	l := latest{URL: spec.URL, Requested: spec.Ref, Ref: ref.String()}
+	written, err := k.download(ctx, spec, httpClient, b, dir, ref, &l)
+	if err != nil {
 		return nil, err
 	}
-	if err := writeLatest(dir, l); err != nil {
+	c, err := k.open(ctx, dir, l)
+	if err != nil {
+		if rmErr := os.RemoveAll(filepath.Join(dir, l.Dir)); rmErr != nil {
+			k.log.Warn("can't remove a clone that can't be read", "path", filepath.Join(dir, l.Dir), "error", rmErr)
+		}
 		return nil, err
 	}
+	c.commit, c.discard = &l, true
 	k.log.Info("fetched source", "source", spec.Name, "version", l.Version, "bytes", written,
 		"duration", k.now().Sub(start).Round(time.Millisecond))
-	clean(dir, l.Version, k.now(), k.log)
-	return k.open(dir, l)
+	return c, nil
 }
 
 // resolve asks the repository which commit the source's branch or tag is
 // at. It returns the ref's full name and the hash the repository gives it.
-func (k *Kind) resolve(ctx context.Context, spec source.Spec) (plumbing.ReferenceName, plumbing.Hash, error) {
+func (k *Kind) resolve(ctx context.Context, httpClient *http.Client, spec source.Spec) (plumbing.ReferenceName, plumbing.Hash, error) {
 	remote := gogit.NewRemote(memory.NewStorage(), &gitconfig.RemoteConfig{Name: "origin", URLs: []string{spec.URL}})
-	refs, err := remote.ListContext(ctx, &gogit.ListOptions{ClientOptions: clientOptions(k.http)})
+	refs, err := remote.ListContext(ctx, &gogit.ListOptions{ClientOptions: clientOptions(httpClient)})
 	if err != nil {
 		return "", plumbing.Hash{}, fmt.Errorf("list the repository's branches and tags: %w", describe(err))
 	}
@@ -232,29 +250,31 @@ func pickRef(refs []*plumbing.Reference, want string) (plumbing.ReferenceName, p
 	return "", plumbing.Hash{}, fmt.Errorf("the repository has no branch or tag named %q", want)
 }
 
-// download clones the ref into a new directory in the source's cache, and
-// installs it as the directory named for its commit. It asks for files no
+// download clones the ref into a new directory in the source's cache, gives
+// it a name of its own, and fills in l: the clone's directory, its commit,
+// the hash it holds for the ref, and its filter. It asks for files no
 // larger than max_file_size, and fetches every file from a server that
-// can't filter them.
-func (k *Kind) download(ctx context.Context, spec source.Spec, dir string, ref plumbing.ReferenceName) (version string, filter, written int64, err error) {
-	filter = spec.Limits.MaxFileSize
+// can't filter them. It returns the bytes the clone wrote.
+func (k *Kind) download(ctx context.Context, spec source.Spec, httpClient *http.Client, b *budget, dir string, ref plumbing.ReferenceName, l *latest) (int64, error) {
+	filter := spec.Limits.MaxFileSize
 	for {
 		tmp, err := os.MkdirTemp(dir, tmpPrefix)
 		if err != nil {
-			return "", 0, 0, fmt.Errorf("create a directory for the clone: %w", err)
+			return 0, fmt.Errorf("create a directory for the clone: %w", err)
 		}
-		version, written, err = k.clone(ctx, spec, tmp, ref, filter)
+		c, err := k.clone(ctx, spec, httpClient, b, tmp, ref, filter)
 		if err == nil {
-			if err := install(dir, tmp, version); err != nil {
-				return "", 0, 0, err
-			}
-			return version, filter, written, nil
+			l.Dir, err = install(ctx, dir, tmp, c.version)
+		}
+		if err == nil {
+			l.Version, l.Advertised, l.Filter = c.version, c.advertised, filter
+			return c.written, nil
 		}
 		if rmErr := os.RemoveAll(tmp); rmErr != nil {
 			k.log.Warn("can't remove a failed clone from the source cache", "path", tmp, "error", rmErr)
 		}
 		if filter == 0 || !errors.Is(err, transport.ErrFilterNotSupported) {
-			return "", 0, 0, err
+			return 0, err
 		}
 		k.log.Warn("the repository's server can't leave out large files, so all are downloaded, up to max_fetch_size",
 			"source", spec.Name)
@@ -262,16 +282,22 @@ func (k *Kind) download(ctx context.Context, spec source.Spec, dir string, ref p
 	}
 }
 
+// cloned is what clone made.
+type cloned struct {
+	version    string // the commit
+	advertised string // the hash the clone holds for the ref
+	written    int64  // bytes written
+}
+
 // clone makes a shallow, single-branch, bare clone of the ref in dir, with
-// a partial-clone filter at filter bytes unless it is 0, and returns the
-// commit it holds and the bytes it wrote.
-func (k *Kind) clone(ctx context.Context, spec source.Spec, dir string, ref plumbing.ReferenceName, filter int64) (string, int64, error) {
+// a partial-clone filter at filter bytes unless it is 0.
+func (k *Kind) clone(ctx context.Context, spec source.Spec, httpClient *http.Client, b *budget, dir string, ref plumbing.ReferenceName, filter int64) (cloned, error) {
 	q := &quota{limit: spec.Limits.MaxFetchSize, maxObjects: k.maxObjects}
 	// osfs confines every path to dir, through os.Root.
-	st := filesystem.NewStorage(quotaFS{Filesystem: osfs.New(dir), q: q}, cache.NewObjectLRUDefault())
+	st := newStorage(quotaFS{Filesystem: osfs.New(dir), q: q})
 	opts := &gogit.CloneOptions{
 		URL:           spec.URL,
-		ClientOptions: clientOptions(k.http),
+		ClientOptions: clientOptions(httpClient),
 		ReferenceName: ref,
 		SingleBranch:  true,
 		NoCheckout:    true,
@@ -287,51 +313,80 @@ func (k *Kind) clone(ctx context.Context, spec source.Spec, dir string, ref plum
 	repo, err := gogit.CloneContext(ctx, st, nil, opts)
 	if err != nil {
 		_ = st.Close()
-		if qErr := q.err(); errors.Is(qErr, errTooLarge) {
-			return "", 0, fmt.Errorf("%w, %d bytes: raise it, or narrow max_file_size", qErr, spec.Limits.MaxFetchSize)
-		} else if qErr != nil {
-			return "", 0, qErr
+		// A limit that stopped the clone explains go-git's error better
+		// than go-git's own text does.
+		if limitErr := limitError(q, b, spec.Limits.MaxFetchSize); limitErr != nil {
+			return cloned{}, limitErr
 		}
-		return "", 0, fmt.Errorf("clone %s: %w", shortRef(ref), describe(err))
+		return cloned{}, fmt.Errorf("clone %s: %w", shortRef(ref), describe(err))
 	}
-	version, err := commitOf(repo, ref)
+	c, err := commitOf(repo, ref)
 	if closeErr := repo.Close(); err == nil && closeErr != nil {
 		err = fmt.Errorf("close the clone: %w", closeErr)
 	}
-	return version, q.bytes(), err
+	if err == nil {
+		// go-git reported success; make sure no limit stopped a read or
+		// write whose error it might have passed over.
+		err = limitError(q, b, spec.Limits.MaxFetchSize)
+	}
+	c.written = q.bytes()
+	return c, err
+}
+
+// limitError returns the error for the first limit that stopped a clone, or
+// nil if none did.
+func limitError(q *quota, b *budget, maxFetchSize int64) error {
+	if err := q.err(); errors.Is(err, errTooLarge) {
+		return fmt.Errorf("%w, %d bytes: raise it, or narrow max_file_size", err, maxFetchSize)
+	} else if err != nil {
+		return err
+	}
+	return b.stopped()
+}
+
+// newStorage returns go-git's storage on fs. Pack indexes are read into
+// memory whole: read on demand, an index that can't be read makes go-git
+// report its objects as missing, which a filtered clone would take for
+// files left out.
+func newStorage(fs billy.Filesystem) *filesystem.Storage {
+	return filesystem.NewStorageWithOptions(fs, cache.NewObjectLRUDefault(), filesystem.Options{UseInMemoryIdx: true})
 }
 
 // commitOf returns the commit a clone's ref points to, through any tags,
-// once it has checked that the commit and its tree are there.
-func commitOf(repo *gogit.Repository, name plumbing.ReferenceName) (string, error) {
+// once it has checked that the commit and its tree are there, and the hash
+// the clone holds for the ref.
+func commitOf(repo *gogit.Repository, name plumbing.ReferenceName) (cloned, error) {
 	ref, err := repo.Reference(name, true)
 	if err != nil {
-		return "", fmt.Errorf("find %s in the clone: %w", shortRef(name), err)
+		return cloned{}, fmt.Errorf("find %s in the clone: %w", shortRef(name), err)
 	}
 	h := ref.Hash()
 	for range 8 {
 		obj, err := repo.Object(plumbing.AnyObject, h)
 		if err != nil {
-			return "", fmt.Errorf("read object %s: %w", h, err)
+			return cloned{}, fmt.Errorf("read object %s: %w", h, err)
 		}
 		switch o := obj.(type) {
 		case *object.Commit:
 			if _, err := o.Tree(); err != nil {
-				return "", fmt.Errorf("read the tree of commit %s: %w", h, err)
+				return cloned{}, fmt.Errorf("read the tree of commit %s: %w", h, err)
 			}
-			return o.Hash.String(), nil
+			return cloned{version: o.Hash.String(), advertised: ref.Hash().String()}, nil
 		case *object.Tag:
 			h = o.Target
 		default:
-			return "", fmt.Errorf("%s points to a %s, not a commit", shortRef(name), obj.Type())
+			return cloned{}, fmt.Errorf("%s points to a %s, not a commit", shortRef(name), obj.Type())
 		}
 	}
-	return "", fmt.Errorf("%s is a tag of a tag, too many times over", shortRef(name))
+	return cloned{}, fmt.Errorf("%s is a tag of a tag, too many times over", shortRef(name))
 }
 
 // open opens the clone l names, in a source's cache.
-func (k *Kind) open(dir string, l latest) (*content, error) {
-	st := filesystem.NewStorage(osfs.New(filepath.Join(dir, l.Version)), cache.NewObjectLRUDefault())
+func (k *Kind) open(ctx context.Context, dir string, l latest) (*content, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	st := newStorage(osfs.New(filepath.Join(dir, l.Dir)))
 	repo, err := gogit.Open(st, nil)
 	if err != nil {
 		_ = st.Close()
@@ -353,6 +408,11 @@ func (k *Kind) open(dir string, l latest) (*content, error) {
 		ref:      shortRef(plumbing.ReferenceName(l.Ref)),
 		root:     commit.TreeHash.String(),
 		filtered: l.Filter > 0,
+		cacheDir: dir,
+		clone:    l.Dir,
+		maxTree:  k.maxTree,
+		log:      k.log,
+		now:      k.now,
 	}, nil
 }
 

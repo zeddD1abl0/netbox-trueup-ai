@@ -36,13 +36,15 @@ func dir(name string, children ...node) node {
 func link(name string) node { return node{name: name, typ: EntrySymlink} }
 
 // fakeContent is Content held in memory. It records the directories read,
-// and whether it was closed.
+// and whether it was committed and closed.
 type fakeContent struct {
-	mu       sync.Mutex
-	dirs     map[string][]Entry
-	files    map[string]string
-	readDirs []string
-	closed   bool
+	mu        sync.Mutex
+	dirs      map[string][]Entry
+	files     map[string]string
+	readDirs  []string
+	committed bool
+	commitErr error // what Commit returns
+	closed    bool
 }
 
 func newFake(children ...node) *fakeContent {
@@ -95,6 +97,16 @@ func (c *fakeContent) Open(_ context.Context, id string) (io.ReadCloser, error) 
 		return nil, errors.New("object not found")
 	}
 	return io.NopCloser(strings.NewReader(content)), nil
+}
+
+func (c *fakeContent) Commit(context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.commitErr != nil {
+		return c.commitErr
+	}
+	c.committed = true
+	return nil
 }
 
 func (c *fakeContent) Close() error {
@@ -223,6 +235,9 @@ func TestSnapshot(t *testing.T) {
 				if diff := cmp.Diff(tt.wantReadDirs, content.readDirs); diff != "" {
 					t.Errorf("directories read (-want +got):\n%s", diff)
 				}
+			}
+			if !content.committed {
+				t.Error("Fetch didn't commit the content")
 			}
 			if snap.Source != "lib" || snap.Version != "v1" || snap.Ref != "main" {
 				t.Errorf("snapshot is of %s at %s from %s, want lib at v1 from main", snap.Source, snap.Version, snap.Ref)
@@ -469,14 +484,29 @@ func TestSnapshotErrors(t *testing.T) {
 			case err == nil || !strings.Contains(err.Error(), tt.wantErr):
 				t.Fatalf("Fetch error = %v, want one containing %q", err, tt.wantErr)
 			}
-			if !tt.kind.content.closed {
-				t.Error("the content wasn't closed after an error")
+			if !tt.kind.content.closed || tt.kind.content.committed {
+				t.Errorf("after an error, the content was closed: %v, committed: %v; want closed, not committed",
+					tt.kind.content.closed, tt.kind.content.committed)
 			}
 			var tooMany *TooManyFilesError
 			if strings.Contains(tt.wantErr, "max_files") && !errors.As(err, &tooMany) {
 				t.Errorf("Fetch error = %T, want *TooManyFilesError", err)
 			}
 		})
+	}
+}
+
+// A version that can't be kept fails the fetch, and its snapshot is closed.
+func TestFetchFailsWhenCommitFails(t *testing.T) {
+	t.Parallel()
+	content := library()
+	content.commitErr = errors.New("disk full")
+	_, err := Fetch(t.Context(), fakeKind{content: content}, spec(t, nil, nil))
+	if err == nil || !strings.Contains(err.Error(), "keep version v1 in the cache: disk full") {
+		t.Errorf("Fetch = %v, want the commit's error", err)
+	}
+	if !content.closed {
+		t.Error("the content wasn't closed")
 	}
 }
 
@@ -508,9 +538,13 @@ func TestFetchStopsWhenCancelled(t *testing.T) {
 func TestOpen(t *testing.T) {
 	t.Parallel()
 
-	snap, err := Open(t.Context(), fakeKind{content: library()}, spec(t, []string{"schema"}, nil))
+	content := library()
+	snap, err := Open(t.Context(), fakeKind{content: content}, spec(t, []string{"schema"}, nil))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+	}
+	if content.committed {
+		t.Error("Open committed the content")
 	}
 	if len(snap.Files) != 1 || snap.Files[0].Path != "schema/devicetype.json" {
 		t.Errorf("Open listed %+v, want schema/devicetype.json", snap.Files)

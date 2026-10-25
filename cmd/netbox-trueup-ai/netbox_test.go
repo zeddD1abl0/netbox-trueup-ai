@@ -225,6 +225,8 @@ func TestErrorsEscapeControlCharacters(t *testing.T) {
 		"a\rreturn and a \u0085 too": `a\rreturn and a \u0085 too`,
 		"user\u202egnp.exe":          `user\u202egnp.exe`,
 		"zero\u200bwidth":            `zero\u200bwidth`,
+		"8-bit \x9b2J csi":           `8-bit \x9b2J csi`,
+		"é then \xff":                `é then \xff`,
 	}
 	for in, want := range tests {
 		if got := escapeControls(in); got != want {
@@ -235,7 +237,9 @@ func TestErrorsEscapeControlCharacters(t *testing.T) {
 
 func TestCellQuotes(t *testing.T) {
 	t.Parallel()
-	for in, want := range map[string]string{"trueup": "trueup", "a\tb": `"a\tb"`, "user\u202egnp": `"user\u202egnp"`} {
+	for in, want := range map[string]string{
+		"trueup": "trueup", "a\tb": `"a\tb"`, "user\u202egnp": `"user\u202egnp"`, "csi\x9b2J": `"csi\x9b2J"`,
+	} {
 		if got := cell(in); got != want {
 			t.Errorf("cell(%q) = %q, want %q", in, got, want)
 		}

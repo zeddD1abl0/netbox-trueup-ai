@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -386,8 +387,9 @@ func (ld *loader) sources(r resolved) []Source {
 			}
 		}
 
+		// An unset limit takes its default.
 		limit := func(field, value string) resolved {
-			return resolved{key: at(field), where: r.where, str: value}
+			return resolved{key: at(field), where: r.where, str: cmp.Or(value, DefaultSourceLimit(field))}
 		}
 		r.sources[i].Limits = SourceLimits{
 			MaxFileSize: ld.size(limit("max_file_size", s.MaxFileSize),

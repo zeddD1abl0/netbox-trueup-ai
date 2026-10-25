@@ -20,6 +20,8 @@ func TestProblem(t *testing.T) {
 		{"a/**/b/**", ""},
 		{"device-types/[A-C]*/*.y?ml", ""},
 		{`a\*b`, ""},
+		{"a..b/*", ""}, // .. is refused only as a whole segment
+		{"...", ""},
 		{"", "must not be empty"},
 		{"/device-types", "no leading /"},
 		{"device-types/", "must not end with /"},

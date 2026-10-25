@@ -1,37 +1,57 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 )
 
-const dialTimeout = 10 * time.Second
+const (
+	dialTimeout = 10 * time.Second
+	// maxRefsSize bounds a repository's list of branches and tags, which
+	// go-git holds in memory whole. devicetype-library's 4,500 refs take
+	// about 400 KB.
+	maxRefsSize = 32 << 20
+	// maxRequestPeek is the most of a request's body read to tell whether
+	// it asks for refs, which such requests stay well under.
+	maxRequestPeek = 64 << 10
+)
 
-// newHTTPClient returns the HTTP client for fetching, which verifies TLS
-// against roots, or the system's trusted certificates if roots is nil.
-func newHTTPClient(roots *x509.CertPool, fromEnv func(*http.Request) (*url.URL, error)) *http.Client {
+// newTransport returns the HTTP transport for fetching, which verifies TLS
+// against roots, or the system's trusted certificates if roots is nil, and
+// takes its proxy from fromEnv, for https only.
+func newTransport(roots *x509.CertPool, fromEnv func(*http.Request) (*url.URL, error)) *http.Transport {
+	return &http.Transport{
+		Proxy:       httpsProxy(fromEnv),
+		DialContext: (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		// security: verification is always on (B1 in
+		// docs/architecture.md): there is no setting to turn it off.
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
+		TLSHandshakeTimeout: dialTimeout,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        2,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
+// newHTTPClient returns the HTTP client for one fetch, whose answers count
+// against b.
+func newHTTPClient(tr http.RoundTripper, b *budget) *http.Client {
 	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:       httpsProxy(fromEnv),
-			DialContext: (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
-			// security: verification is always on (B1 in
-			// docs/architecture.md): there is no setting to turn it off.
-			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
-			TLSHandshakeTimeout: dialTimeout,
-			ForceAttemptHTTP2:   true,
-			MaxIdleConns:        2,
-			IdleConnTimeout:     90 * time.Second,
-		},
+		Transport: budgetTransport{base: tr, b: b},
 		// go-git refuses redirects itself, given NoFollowRedirects. This
 		// refuses them too, should that ever change: a redirect could lead
 		// a fetch, and later its credentials, to another host.
@@ -55,10 +75,10 @@ func httpsProxy(fromEnv func(*http.Request) (*url.URL, error)) func(*http.Reques
 	}
 }
 
-// clientOptions configure go-git's transport client for every fetch: our
-// HTTP client, no redirects, and every scheme but https refused, so that
-// nothing reaches go-git's ssh, git, file or plain http transports, with
-// their own defaults, even if a URL slipped past the checks before.
+// clientOptions configure go-git's transport client for a fetch: our HTTP
+// client, no redirects, and every scheme but https refused, so that nothing
+// reaches go-git's ssh, git, file or plain http transports, with their own
+// defaults, even if a URL slipped past the checks before.
 func clientOptions(httpClient *http.Client) []client.Option {
 	opts := []client.Option{
 		client.WithHTTPClient(httpClient),
@@ -89,4 +109,100 @@ func redactURL(raw string) string {
 	}
 	u.User = nil
 	return u.String()
+}
+
+// budget bounds what one fetch reads from the network: every answer
+// together, and each list of refs. go-git holds a list of refs in memory, so
+// without a bound a server could send refs until memory ran out.
+type budget struct {
+	limit   int64
+	maxRefs int64
+
+	mu   sync.Mutex
+	read int64
+	err  error // why the budget stopped a read, or nil
+}
+
+// take counts n bytes read.
+func (b *budget) take(n int) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.err == nil && b.read+int64(n) > b.limit {
+		b.err = fmt.Errorf("the server sent more than max_fetch_size, %d bytes: raise it, or narrow max_file_size", b.limit)
+	}
+	b.read += int64(n)
+	return b.err
+}
+
+// refsTooLarge records that a list of refs went past its limit.
+func (b *budget) refsTooLarge() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.err == nil {
+		b.err = fmt.Errorf("the repository's list of branches and tags is larger than %d bytes", b.maxRefs)
+	}
+	return b.err
+}
+
+// stopped returns why the budget stopped a read, or nil.
+func (b *budget) stopped() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err
+}
+
+// budgetTransport counts every answer's body against a budget.
+type budgetTransport struct {
+	base http.RoundTripper
+	b    *budget
+}
+
+func (t budgetTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	refs := listsRefs(req)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &budgetBody{ReadCloser: resp.Body, b: t.b, refs: refs}
+	return resp, nil
+}
+
+// listsRefs reports whether a request asks for a repository's refs: the GET
+// of info/refs, or a POST of protocol v2's ls-refs command. A request whose
+// body can't be read again counts as not asking, and so is bounded only by
+// the whole fetch's budget.
+func listsRefs(req *http.Request) bool {
+	if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/info/refs") {
+		return true
+	}
+	if req.Method != http.MethodPost || req.GetBody == nil || req.ContentLength > maxRequestPeek {
+		return false
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return false
+	}
+	defer func() { _ = body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(body, maxRequestPeek))
+	return err == nil && bytes.Contains(data, []byte("command=ls-refs"))
+}
+
+// budgetBody is an answer's body that counts against a budget.
+type budgetBody struct {
+	io.ReadCloser
+	b    *budget
+	refs bool  // the answer lists refs
+	read int64 // bytes read of this answer
+}
+
+func (r *budgetBody) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.read += int64(n)
+	if r.refs && r.read > r.b.maxRefs {
+		return 0, r.b.refsTooLarge()
+	}
+	if budgetErr := r.b.take(n); budgetErr != nil {
+		return 0, budgetErr
+	}
+	return n, err
 }

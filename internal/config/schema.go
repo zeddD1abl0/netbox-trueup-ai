@@ -79,6 +79,20 @@ const (
 	maxSourceMaxFetchSize     = 64 << 30
 )
 
+// sourceLimitDefaults are the defaults of a source's limits, by field.
+var sourceLimitDefaults = map[string]string{
+	"max_file_size":  formatSize(defaultSourceMaxFileSize),
+	"max_files":      strconv.Itoa(defaultSourceMaxFiles),
+	"fetch_timeout":  shortDuration(defaultSourceFetchTimeout),
+	"max_fetch_size": formatSize(defaultSourceMaxFetchSize),
+}
+
+// DefaultSourceLimit returns the default of a source's limit field, such as
+// max_files, as text, or "" for a field that isn't a limit.
+func DefaultSourceLimit(field string) string {
+	return sourceLimitDefaults[field]
+}
+
 // settings lists every setting, in the order `config show` prints them.
 // Environment variable and flag names are derived from the keys, and a test
 // checks that no two settings share one.

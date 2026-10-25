@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,18 +63,37 @@ func blobHash(content string) plumbing.Hash {
 	return h.Sum()
 }
 
-// cacheEntries lists what a source's cache directory holds.
-func cacheEntries(t *testing.T, k *Kind) []string {
+// cached returns the source's latest.json, and the other entries its cache
+// holds.
+func cached(t *testing.T, k *Kind) (latest, []string) {
 	t.Helper()
-	entries, err := os.ReadDir(source.CacheDir(k.cacheDir, "lib"))
+	dir := source.CacheDir(k.cacheDir, "lib")
+	l, err := readLatest(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var names []string
 	for _, e := range entries {
-		names = append(names, e.Name())
+		if e.Name() != latestFile {
+			names = append(names, e.Name())
+		}
 	}
-	return names
+	return l, names
+}
+
+// cachedClone checks that the source's cache holds one clone, of version,
+// and returns its directory.
+func cachedClone(t *testing.T, k *Kind, version plumbing.Hash) string {
+	t.Helper()
+	l, others := cached(t, k)
+	if l.Version != version.String() || !cmp.Equal(others, []string{l.Dir}) {
+		t.Errorf("the cache holds %v, with latest.json naming %s at %s; want only a clone of %s", others, l.Dir, l.Version, version)
+	}
+	return l.Dir
 }
 
 func TestFetch(t *testing.T) {
@@ -118,15 +138,16 @@ func TestFetch(t *testing.T) {
 			if err != nil || string(data) != "model: MX204" {
 				t.Errorf("ReadFile = %q, %v", data, err)
 			}
-			if got := cacheEntries(t, k); !cmp.Equal(got, []string{first.String(), latestFile}) {
-				t.Errorf("the cache holds %v, want the clone and %s", got, latestFile)
-			}
+			firstClone := cachedClone(t, k, first)
 
 			// Nothing changed upstream, so nothing is downloaded.
 			fetches := srv.rec.fetches()
 			snap = fetch(t, k, spec)
 			if snap.Version != first.String() || srv.rec.fetches() != fetches {
 				t.Errorf("fetching again gave %s after %d downloads, want %s after none", snap.Version, srv.rec.fetches()-fetches, first)
+			}
+			if got := cachedClone(t, k, first); got != firstClone {
+				t.Errorf("fetching again replaced clone %s with %s", firstClone, got)
 			}
 			if !strings.Contains(logs.String(), "source is unchanged") {
 				t.Errorf("logs don't say the source is unchanged:\n%s", logs)
@@ -138,9 +159,7 @@ func TestFetch(t *testing.T) {
 			if snap.Version != second.String() || !cmp.Equal(paths(snap), []string{"only.yaml"}) {
 				t.Errorf("after a new commit, the snapshot is %s with %v, want %s with only.yaml", snap.Version, paths(snap), second)
 			}
-			if got := cacheEntries(t, k); !cmp.Equal(got, []string{second.String(), latestFile}) {
-				t.Errorf("the cache holds %v, want only the new clone and %s", got, latestFile)
-			}
+			cachedClone(t, k, second)
 		})
 	}
 }
@@ -172,17 +191,13 @@ func TestFetchFilter(t *testing.T) {
 			if diff := cmp.Diff([]source.Skipped{{Path: "big.png", Reason: source.TooLarge}}, snap.Skipped); diff != "" {
 				t.Errorf("skipped (-want +got):\n%s", diff)
 			}
-			l, err := readLatest(source.CacheDir(k.cacheDir, "lib"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			l, _ := cached(t, k)
 			if l.Filter != tt.wantFilter {
 				t.Errorf("the clone's filter = %d, want %d", l.Filter, tt.wantFilter)
 			}
-			st := filesystem.NewStorage(osfs.New(filepath.Join(source.CacheDir(k.cacheDir, "lib"), l.Version)), cache.NewObjectLRUDefault())
+			st := filesystem.NewStorage(osfs.New(filepath.Join(source.CacheDir(k.cacheDir, "lib"), l.Dir)), cache.NewObjectLRUDefault())
 			defer func() { _ = st.Close() }()
-			bigHash := blobHash(big)
-			_, err = st.EncodedObjectSize(bigHash)
+			_, err := st.EncodedObjectSize(blobHash(big))
 			if inClone := err == nil; inClone != tt.wantInClone {
 				t.Errorf("the large file is in the clone: %v, want %v (%v)", inClone, tt.wantInClone, err)
 			}
@@ -326,40 +341,103 @@ func TestFetchHostileTree(t *testing.T) {
 	}
 }
 
+// A fetch stopped by a limit, or whose snapshot fails one, leaves the
+// previous version in the cache, and nothing of its own.
 func TestFetchLimits(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		limit   func(k *Kind, spec *source.Spec)
+		wantErr string
+	}{
+		{
+			name:    "max_fetch_size",
+			limit:   func(_ *Kind, spec *source.Spec) { spec.Limits.MaxFetchSize = 2000 },
+			wantErr: "more than max_fetch_size, 2000 bytes",
+		},
+		{
+			name:    "objects: a commit, a tree and three blobs",
+			limit:   func(k *Kind, _ *source.Spec) { k.maxObjects = 4 },
+			wantErr: "the server sent 5 objects, more than the 4 a source may have",
+		},
+		{
+			name:    "max_files",
+			limit:   func(_ *Kind, spec *source.Spec) { spec.Limits.MaxFiles = 2 },
+			wantErr: "the source holds more than 2 files, its max_files",
+		},
+		{
+			name:    "the size of a tree",
+			limit:   func(k *Kind, _ *source.Spec) { k.maxTree = 100 },
+			wantErr: "bytes, more than the 100 a directory may",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			repo := newRepo(t, root, "lib")
+			first := repo.commit("main", file("a.yaml", "x"))
+			srv := goGitServer(t, root)
+			k, _ := newKind(t, srv)
+			fetch(t, k, testSpec(srv, "lib", ""))
+			repo.commit("main", file("a.yaml", random(1000)), file("b.yaml", random(1000)), file("c.yaml", random(1000)))
+
+			spec := testSpec(srv, "lib", "")
+			tt.limit(k, &spec)
+			_, err := source.Fetch(t.Context(), k, spec)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Fetch = %v, want %q", err, tt.wantErr)
+			}
+			cachedClone(t, k, first)
+			snap, err := source.Open(t.Context(), k, testSpec(srv, "lib", ""))
+			if err != nil || snap.Version != first.String() {
+				t.Fatalf("Open after a failed fetch = %v, want the previous version", err)
+			}
+			_ = snap.Close()
+		})
+	}
+}
+
+// A repository's list of refs is limited, whichever way the server sends
+// it: protocol v2's ls-refs, as both servers here speak it.
+func TestFetchLimitsRefs(t *testing.T) {
+	t.Parallel()
+	for _, s := range servers {
+		t.Run(s.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			repo := newRepo(t, root, "lib")
+			commit := repo.commit("main", file("a.yaml", "x"))
+			for i := range 50 {
+				repo.setRef(plumbing.NewBranchReferenceName(fmt.Sprintf("branch-%02d", i)), commit)
+			}
+			srv := s.start(t, root)
+			k, _ := newKind(t, srv)
+			k.maxRefs = 1000
+			_, err := source.Fetch(t.Context(), k, testSpec(srv, "lib", ""))
+			if err == nil || !strings.Contains(err.Error(), "the repository's list of branches and tags is larger than 1000 bytes") {
+				t.Errorf("Fetch = %v, want the list of refs refused", err)
+			}
+			k.maxRefs = maxRefsSize
+			fetch(t, k, testSpec(srv, "lib", ""))
+		})
+	}
+}
+
+// latest.json records the hash the clone holds for the ref: for an
+// annotated tag, the tag object, which is what the repository advertises.
+func TestAdvertisedComesFromTheClone(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	repo := newRepo(t, root, "lib")
-	first := repo.commit("main", file("a.yaml", "x"))
+	commit := repo.commit("main", file("a.yaml", "x"))
+	tag := repo.annotatedTag("v1", commit)
 	srv := goGitServer(t, root)
 	k, _ := newKind(t, srv)
-	fetch(t, k, testSpec(srv, "lib", ""))
-	repo.commit("main", file("a.yaml", random(1000)), file("b.yaml", random(1000)), file("c.yaml", random(1000)))
-
-	// The disk limit stops a fetch, and the previous clone stays.
-	spec := testSpec(srv, "lib", "")
-	spec.Limits.MaxFetchSize = 2000
-	_, err := source.Fetch(t.Context(), k, spec)
-	if err == nil || !strings.Contains(err.Error(), "the fetch wrote more than max_fetch_size, 2000 bytes") {
-		t.Errorf("Fetch over max_fetch_size = %v", err)
+	fetch(t, k, testSpec(srv, "lib", "v1"))
+	l, _ := cached(t, k)
+	if l.Version != commit.String() || l.Advertised != tag.String() || l.Ref != "refs/tags/v1" {
+		t.Errorf("latest.json = %+v, want version %s advertised as %s", l, commit, tag)
 	}
-	if got := cacheEntries(t, k); !cmp.Equal(got, []string{first.String(), latestFile}) {
-		t.Errorf("after a failed fetch, the cache holds %v, want the previous clone and %s", got, latestFile)
-	}
-	snap, err := source.Open(t.Context(), k, testSpec(srv, "lib", ""))
-	if err != nil || snap.Version != first.String() {
-		t.Fatalf("Open after a failed fetch = %v, want the previous version", err)
-	}
-	_ = snap.Close()
-
-	// So does the limit on objects: a commit, a tree and three blobs.
-	k.maxObjects = 4
-	_, err = source.Fetch(t.Context(), k, testSpec(srv, "lib", ""))
-	if err == nil || !strings.Contains(err.Error(), "the server sent 5 objects, more than the 4 a source may have") {
-		t.Errorf("Fetch over the object limit = %v", err)
-	}
-	k.maxObjects = maxObjects
-	fetch(t, k, testSpec(srv, "lib", ""))
 }
 
 func TestFetchTimeout(t *testing.T) {
@@ -404,7 +482,7 @@ func TestTLS(t *testing.T) {
 		t.Errorf("the server answered %d requests over an unverified connection", n)
 	}
 
-	tr, ok := k.http.Transport.(*http.Transport)
+	tr, ok := k.transport.(*http.Transport)
 	if !ok || tr.TLSClientConfig == nil || tr.TLSClientConfig.InsecureSkipVerify || tr.TLSClientConfig.MinVersion < tls.VersionTLS12 {
 		t.Errorf("TLS config = %+v, want verification on and TLS 1.2 or later", tr.TLSClientConfig)
 	}
@@ -442,7 +520,7 @@ func TestProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	k, _ := newKind(t, srv)
-	k.http = newHTTPClient(srv.pool(), func(*http.Request) (*url.URL, error) { return proxyURL, nil })
+	k.transport = newTransport(srv.pool(), func(*http.Request) (*url.URL, error) { return proxyURL, nil })
 
 	fetch(t, k, testSpec(srv, "lib", ""))
 	if seen := p.seen(); len(seen) == 0 || seen[0] != srv.Listener.Addr().String() {
@@ -525,6 +603,37 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+// Content a fetch made counts only once committed; closed without that, it
+// is discarded.
+func TestFetchWithoutCommit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	repo := newRepo(t, root, "lib")
+	first := repo.commit("main", file("a.yaml", "x"))
+	srv := goGitServer(t, root)
+	k, _ := newKind(t, srv)
+	spec := testSpec(srv, "lib", "")
+	fetch(t, k, spec)
+	firstClone := cachedClone(t, k, first)
+
+	repo.commit("main", file("a.yaml", "y"))
+	c, err := k.Fetch(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cachedClone(t, k, first); got != firstClone {
+		t.Errorf("the cache holds %s, want %s", got, firstClone)
+	}
+	snap, err := source.Open(t.Context(), k, spec)
+	if err != nil || snap.Version != first.String() {
+		t.Fatalf("Open = %v, want the first version", err)
+	}
+	_ = snap.Close()
+}
+
 // A cache that can't be read costs a fetch, never a failure.
 func TestBrokenCache(t *testing.T) {
 	t.Parallel()
@@ -546,7 +655,11 @@ func TestBrokenCache(t *testing.T) {
 			}
 		},
 		"the clone is gone": func(t *testing.T, dir string) {
-			if err := os.RemoveAll(filepath.Join(dir, commit.String())); err != nil {
+			l, err := readLatest(t.Context(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(filepath.Join(dir, l.Dir)); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -556,8 +669,12 @@ func TestBrokenCache(t *testing.T) {
 			k, logs := newKind(t, srv)
 			fetch(t, k, spec)
 			breakIt(t, source.CacheDir(k.cacheDir, "lib"))
-			if _, err := k.Open(t.Context(), spec); err == nil {
+			_, err := k.Open(t.Context(), spec)
+			if err == nil {
 				t.Error("Open of a broken cache succeeded")
+			}
+			if notFetched := errors.Is(err, source.ErrNotFetched); notFetched != (name == "the clone is gone") {
+				t.Errorf("Open = %v: that is ErrNotFetched: %v, want it only when the clone is gone", err, notFetched)
 			}
 			if snap := fetch(t, k, spec); snap.Version != commit.String() {
 				t.Errorf("version = %s, want %s", snap.Version, commit)
@@ -646,13 +763,13 @@ func TestCommitOf(t *testing.T) {
 func TestNewTrustsTheSystemByDefault(t *testing.T) {
 	t.Parallel()
 	k := New(Options{})
-	tr, ok := k.http.Transport.(*http.Transport)
+	tr, ok := k.transport.(*http.Transport)
 	if !ok || tr.TLSClientConfig.RootCAs != nil {
 		t.Errorf("RootCAs = %v, want nil, for the system's", tr.TLSClientConfig.RootCAs)
 	}
 	pool := x509.NewCertPool()
 	k = New(Options{RootCAs: pool})
-	if tr, _ := k.http.Transport.(*http.Transport); tr.TLSClientConfig.RootCAs != pool {
+	if tr, _ := k.transport.(*http.Transport); tr.TLSClientConfig.RootCAs != pool {
 		t.Error("RootCAs isn't used")
 	}
 }

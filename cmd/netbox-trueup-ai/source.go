@@ -176,7 +176,7 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 	for _, s := range cfg.Settings.Sources {
 		keep = append(keep, s.Name)
 	}
-	removed, err := source.PruneCache(root, keep)
+	removed, err := source.PruneCache(ctx, root, keep)
 	for _, name := range removed {
 		a.logger.Info("removed the cache of a source no longer configured", "source", name)
 	}

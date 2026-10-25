@@ -59,9 +59,9 @@ Chosen option: "go-git v6.0.0-beta.1, with a `blob:limit` filter at the source's
 - go-git can't fetch a left-out file later, and TrueUp never needs to: a file larger than `max_file_size` is skipped whether it was fetched or not. Raising `max_file_size` means a new clone, made at the next fetch.
 - Each upstream change means a new clone, not an incremental fetch into the old one. A clone made afresh never grows, never needs repacking, and doesn't depend on go-git's shallow updates, its least-tested path. At the defaults that costs the library about 490 MB per change; a smaller `max_file_size` cuts it, as the table shows.
 
-**The cache.** Each source has a directory in `<data_dir>/cache/sources/`. A clone is made in a temporary directory there, renamed to the commit's hash once complete, and then named in `latest.json`, which is replaced in one step. Older clones are then removed, and so are temporary directories older than four hours, left by fetches that crashed. A failed fetch therefore leaves the previous clone in use. `source fetch` removes the caches of sources no longer configured. The cache is disposable.
+**The cache.** Each source has a directory in `<data_dir>/cache/sources/`. A clone is made in a temporary directory there, and renamed, once complete, to a name of its own: the commit's hash and a number. Fetching is two-phase. The kind returns the new clone's content, and the source layer commits it only once its snapshot has passed every check, such as `max_files`: committing replaces `latest.json` in one step, then removes the clone it named before. Content that isn't committed is removed when closed. A fetch that fails, at any stage, therefore leaves the previous clone in use. A clone is never replaced in place, and clones that `latest.json` doesn't name are removed only when they are four hours old, so fetches running at once never remove each other's work. `source fetch` removes the caches of sources no longer configured. The cache is disposable.
 
-**Reading.** The commit's tree is read from the clone's object store, never checked out. File sizes come from the pack index without reading the files. A file the filter left out reads as missing, and is reported as too large; in a clone made without a filter, a missing file is an error. The source layer then checks every name, applies patterns and limits, and reads each file it keeps once, to give its size and SHA-256 digest ([ADR 0009](0009-source-kinds-and-format-adapters.md)).
+**Reading.** The commit's tree is read from the clone's object store, never checked out. File sizes come from the pack index without reading the files. Pack indexes are read into memory whole: read on demand, go-git reports an index it can't read as objects missing. A file is reported as too large, for the filter left it out, only when the store confirms it doesn't hold it; any other failure to read the store is an error, with a hint to delete the cache, and so is a missing file in a clone made without a filter. The source layer then checks every name, applies patterns and limits, and reads each file it keeps once, to give its size and SHA-256 digest ([ADR 0009](0009-source-kinds-and-format-adapters.md)).
 
 **Transport.**
 
@@ -73,7 +73,9 @@ Chosen option: "go-git v6.0.0-beta.1, with a `blob:limit` filter at the source's
 **Limits on a hostile repository.**
 
 - `fetch_timeout` bounds the whole fetch.
-- `max_fetch_size` bounds what a fetch writes to disk: go-git writes through a filesystem that counts every byte.
+- `max_fetch_size` bounds what a fetch downloads, counted on every answer's body, and what it writes to disk: go-git writes through a filesystem that counts every byte.
+- A repository's list of branches and tags, which go-git holds in memory whole, may be at most 32 MiB; devicetype-library's 4,500 refs take about 400 KB.
+- A tree object, which go-git also decodes whole, may be at most 32 MiB; devicetype-library's largest is about 150 KB.
 - The pack's header announces how many objects it holds; more than 1,100,000 stops the fetch before go-git indexes them, since memory and the index grow with the number of objects, which a small pack of tiny objects can make huge. The source layer walks at most a million entries, so no legitimate source comes near.
 - go-git's own checks limit delta chains and inflate objects only to their declared size; the source layer reads each file through a limit as well.
 - The clone's files are confined to its directory through `os.Root`, which go-billy's `osfs` uses.

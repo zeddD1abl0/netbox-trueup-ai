@@ -68,8 +68,9 @@ type Source struct {
 	Format  string   `json:"format"`
 	Include []string `json:"include"`
 	Exclude []string `json:"exclude"`
-	// The source's limits as given, or their defaults, such as "1MiB" or
-	// "15m". Limits holds them read.
+	// The source's limits as given, such as "1MiB" or "15m", or empty when
+	// not set, so that the default (DefaultSourceLimit) applies. Limits
+	// holds them read.
 	MaxFileSize  string `json:"max_file_size"`
 	MaxFiles     string `json:"max_files"`
 	FetchTimeout string `json:"fetch_timeout"`

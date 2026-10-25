@@ -211,9 +211,9 @@ sources[0].format          file                        devicetype-library
 sources[0].include         file                        ["device-types/Juniper/**"]
 sources[0].exclude         file                        []
 sources[0].max_file_size   file                        64KiB
-sources[0].max_files       file                        50000
-sources[0].fetch_timeout   file                        15m
-sources[0].max_fetch_size  file                        2GiB
+sources[0].max_files       default                     50000
+sources[0].fetch_timeout   default                     15m
+sources[0].max_fetch_size  default                     2GiB
 `, "{dir}", dir)
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("config show (-want +got):\n%s", diff)
@@ -260,9 +260,9 @@ func TestConfigShowJSON(t *testing.T) {
 					"include":        []any{"device-types/Juniper/**"},
 					"exclude":        []any{},
 					"max_file_size":  "64KiB",
-					"max_files":      "50000",
-					"fetch_timeout":  "15m",
-					"max_fetch_size": "2GiB",
+					"max_files":      "",
+					"fetch_timeout":  "",
+					"max_fetch_size": "",
 				}},
 			},
 		},

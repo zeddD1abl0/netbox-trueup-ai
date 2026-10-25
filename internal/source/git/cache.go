@@ -1,39 +1,52 @@
 package git
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
 // A source's cache directory holds:
 //
-//	latest.json  which clone is the latest, and how it was made
-//	<commit>/    a bare clone, named for the commit it holds
-//	tmp-*/       a clone in progress, renamed to <commit>/ when done
+//	latest.json     which clone is the cached version, and how it was made
+//	<commit>-<n>/   a clone, named for its commit, and unique through n
+//	tmp-<n>/        a clone being made, renamed once it is complete
+//
+// A fetch makes a new clone beside the one latest.json names, and replaces
+// latest.json only once its snapshot has passed every check. Unique names
+// mean that a clone is never replaced in place, and that fetches running at
+// once never touch each other's clones.
 const (
 	latestFile = "latest.json"
 	tmpPrefix  = "tmp-"
 	// maxLatestSize bounds latest.json, which is a few hundred bytes.
 	maxLatestSize = 64 << 10
-	// staleAfter is when a clone in progress is taken to be abandoned, by a
-	// fetch that crashed: twice the longest fetch_timeout.
+	// staleAfter is when a clone that latest.json doesn't name is taken to
+	// be left behind by a fetch that crashed, rather than one still running
+	// or not yet committed: twice the longest fetch_timeout.
 	staleAfter = 4 * time.Hour
 )
 
-// latest says which clone in a source's cache is the latest, and how it was
-// made, so that a later fetch or open can tell whether it still fits the
-// source's settings.
+// cloneName matches the name of a clone's directory: its commit's hash, a
+// hyphen and a number.
+var cloneName = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})-[0-9]+$`)
+
+// latest says which clone in a source's cache is the cached version, and
+// how it was made, so that a later fetch or open can tell whether it still
+// fits the source's settings.
 type latest struct {
-	// Version is the commit the clone holds, which names its directory.
+	// Dir is the clone's directory in the source's cache.
+	Dir string `json:"dir"`
+	// Version is the commit the clone holds.
 	Version string `json:"version"`
 	// URL is the repository's URL.
 	URL string `json:"url"`
@@ -41,8 +54,8 @@ type latest struct {
 	// the default branch.
 	Requested string `json:"requested"`
 	// Ref is the full name of the ref fetched, such as refs/heads/master,
-	// and Advertised the hash the repository gave it: the commit, or for
-	// an annotated tag the tag object.
+	// and Advertised the hash the clone holds for it: the commit, or for an
+	// annotated tag the tag object.
 	Ref        string `json:"ref"`
 	Advertised string `json:"advertised"`
 	// Filter is the largest file the clone holds, if the fetch left larger
@@ -58,8 +71,11 @@ func (l latest) covers(maxFileSize int64) bool {
 
 // readLatest reads a source's latest.json. It returns an error wrapping
 // fs.ErrNotExist if there is none.
-func readLatest(dir string) (latest, error) {
+func readLatest(ctx context.Context, dir string) (latest, error) {
 	var l latest
+	if err := ctx.Err(); err != nil {
+		return l, err
+	}
 	// security: dir is the source's cache, below data_dir, which the
 	// operator configures (B5 in docs/architecture.md); nothing from a
 	// repository names it.
@@ -78,16 +94,19 @@ func readLatest(dir string) (latest, error) {
 	if err := json.Unmarshal(data, &l); err != nil {
 		return l, fmt.Errorf("read %s: %w", latestFile, err)
 	}
-	// The version names a directory, so it must be nothing but a hash.
-	if !isHash(l.Version) {
-		return l, fmt.Errorf("%s names no commit", latestFile)
+	// Dir names a directory, so it must be nothing but a clone's name.
+	if !isHash(l.Version) || !cloneName.MatchString(l.Dir) || !strings.HasPrefix(l.Dir, l.Version+"-") {
+		return l, fmt.Errorf("%s names no clone", latestFile)
 	}
 	return l, nil
 }
 
 // writeLatest replaces a source's latest.json in one step, so that a reader
 // sees the old file or the new one, never part of one.
-func writeLatest(dir string, l latest) (err error) {
+func writeLatest(ctx context.Context, dir string, l latest) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
 		return fmt.Errorf("write %s: %w", latestFile, err)
@@ -127,42 +146,51 @@ func isHash(s string) bool {
 	return err == nil
 }
 
-// install moves a finished clone from tmp to the directory named for its
-// commit, replacing any clone of the same commit, which can only be one that
-// no longer fits the source's settings, or one a concurrent fetch made.
-func install(dir, tmp, version string) error {
-	final := filepath.Join(dir, version)
-	if err := os.RemoveAll(final); err != nil {
-		return fmt.Errorf("replace the cached clone of %s: %w", version, err)
+// install renames a finished clone from tmp, a directory os.MkdirTemp made
+// in the source's cache, to a name of its own, and returns that name.
+func install(ctx context.Context, dir, tmp, version string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	if err := os.Rename(tmp, final); err != nil {
-		if _, statErr := os.Stat(final); statErr == nil {
-			// A concurrent fetch installed the same commit first.
-			return os.RemoveAll(tmp)
-		}
-		return fmt.Errorf("install the clone of %s: %w", version, err)
+	name := version + "-" + strings.TrimPrefix(filepath.Base(tmp), tmpPrefix)
+	if !cloneName.MatchString(name) {
+		return "", fmt.Errorf("can't name the clone of %s: %s", version, name)
 	}
-	return nil
+	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+		return "", fmt.Errorf("install the clone of %s: %w", version, err)
+	}
+	return name, nil
 }
 
-// clean removes everything in a source's cache but latest.json and the
-// clone it names, leaving clones in progress unless they are stale. It logs
-// what it can't remove rather than failing: leftovers cost only disk.
-func clean(dir, keep string, now time.Time, log *slog.Logger) {
+// clean removes, from a source's cache, the clone that keep replaced, and
+// anything else but latest.json and keep that is stale: left by a fetch that
+// crashed. It leaves newer clones alone, since another fetch may be making
+// or reading them. It logs what it can't remove rather than failing:
+// leftovers cost only disk.
+func clean(ctx context.Context, dir, keep, replaced string, now time.Time, log *slog.Logger) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		log.Warn("can't clean the source cache", "dir", dir, "error", err)
 		return
 	}
 	for _, e := range entries {
+		if ctx.Err() != nil {
+			return // cleaning can wait for the next fetch
+		}
 		name := e.Name()
 		if name == latestFile || name == keep {
 			continue
 		}
-		if strings.HasPrefix(name, tmpPrefix) {
+		if name != replaced {
 			info, err := e.Info()
-			if errors.Is(err, fs.ErrNotExist) || err == nil && now.Sub(info.ModTime()) < staleAfter {
-				continue // gone already, or perhaps another fetch's
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				continue // gone already
+			case err != nil:
+				log.Warn("can't tell the age of an entry in the source cache, so leaving it", "path", filepath.Join(dir, name), "error", err)
+				continue
+			case now.Sub(info.ModTime()) < staleAfter:
+				continue // perhaps another fetch's
 			}
 		}
 		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {

@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +21,10 @@ func CacheDir(root, name string) string {
 // PruneCache removes the caches below root of sources not named in keep,
 // and returns the names it removed. A root that doesn't exist yet holds
 // nothing to remove.
-func PruneCache(root string, keep []string) (removed []string, err error) {
+func PruneCache(ctx context.Context, root string, keep []string) (removed []string, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -30,6 +34,9 @@ func PruneCache(root string, keep []string) (removed []string, err error) {
 	}
 	var errs []error
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return removed, errors.Join(append(errs, err)...)
+		}
 		if !e.IsDir() || slices.Contains(keep, e.Name()) {
 			continue
 		}

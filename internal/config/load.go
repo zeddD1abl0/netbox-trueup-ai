@@ -597,21 +597,6 @@ func (ld *loader) decodeSources(raw any, where string) ([]Source, bool) {
 			}
 			ok = ok && good
 		}
-		// Unset limits take their defaults, so that `config show` shows
-		// the limits that apply.
-		for _, f := range []struct {
-			v   *string
-			def string
-		}{
-			{&s.MaxFileSize, formatSize(defaultSourceMaxFileSize)},
-			{&s.MaxFiles, strconv.Itoa(defaultSourceMaxFiles)},
-			{&s.FetchTimeout, shortDuration(defaultSourceFetchTimeout)},
-			{&s.MaxFetchSize, formatSize(defaultSourceMaxFetchSize)},
-		} {
-			if *f.v == "" {
-				*f.v = f.def
-			}
-		}
 		out = append(out, s)
 	}
 	return out, ok
