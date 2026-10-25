@@ -66,13 +66,14 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - Integration tests against the NetBox from step 3, seeded through `netboxtest.Post`, with a restricted user's token for the permission check. Packages with integration tests now run one at a time.
    - [ADR 0019](adr/0019-own-netbox-rest-client.md): our own NetBox REST client, closing the spike in tooling.md §3.1.
 
-5. **`feat(source): fetch Git sources and read files at a commit`.**
-   - The source kind interface that later kinds implement: snapshots, file listings, path confinement and limits.
-   - The Git kind: a shallow go-git fetch into the data directory's cache, resolving the ref to a commit, then a tree walk with include and exclude patterns.
-   - `netbox-trueup-ai source fetch`.
-   - Measure fetching devicetype-library (time, disk, peak memory) and choose a mitigation if needed.
-   - ADR: Git sources with go-git.
-   - New dependency: go-git.
+5. **`feat(source): fetch Git sources and read files at a commit`.** Done in #8.
+   - `internal/source`, the source kind interface that later kinds implement: snapshots of a version, listing each file's path, size and SHA-256, with names checked and paths confined, include and exclude patterns, and limits on file size and count, applied before anything is parsed. `internal/glob` matches patterns with `**`.
+   - `internal/source/git`, the Git kind on go-git v6: the ref resolved to a commit, then a shallow, single-branch, bare clone into `<data_dir>/cache/sources/<name>/`, filtered to leave out files larger than `max_file_size`, made afresh when the commit changes and skipped when it doesn't. The commit's tree is read from the object store, never checked out. `https` only, with TLS verified, no redirects, and limits on fetch time, disk and objects.
+   - `netbox-trueup-ai source fetch`, which reports each source's version, file count and skipped files, and exits 4 when some sources fail.
+   - Fetching devicetype-library measured: 871 MB unfiltered, 489 MB at the default 1 MiB limit, 64 MB at 128 KiB, in 70 MiB of memory with v6 against 298 MiB with v5.
+   - New source fields: `max_file_size`, `max_files`, `fetch_timeout` and `max_fetch_size`.
+   - [ADR 0020](adr/0020-git-sources-with-go-git.md): Git sources with go-git v6, leaving out files larger than the limit.
+   - New dependency: go-git v6.0.0-beta.1, with go-billy v6.
 
 6. **`feat(store): set up SQLite with migrations and generated queries`.**
    - modernc.org/sqlite, goose migrations embedded in the binary, and sqlc with generated code checked by CI. A `migrate` command.

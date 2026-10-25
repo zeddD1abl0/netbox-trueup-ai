@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration, logging and the read-only NetBox client, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client and Git sources, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -209,10 +209,11 @@ Every kind does the same job behind one interface:
 
 ### Git sources (M1)
 
-- **Fetching** uses go-git, so neither the binary nor the container image needs a `git` executable. Each node keeps a cache in its data directory: one bare, shallow, single-branch clone per source. The cache is disposable; deleting it costs a re-fetch.
-- **Versions.** A fetch resolves the configured branch or tag to its latest commit, which becomes the snapshot's version.
+- **Fetching** uses go-git v6, so neither the binary nor the container image needs a `git` executable ([ADR 0020](adr/0020-git-sources-with-go-git.md)). Each node keeps a cache in its data directory, `<data_dir>/cache/sources/<name>/`: a bare, shallow, single-branch clone of the latest commit, in a directory named for it. A fetch that finds a new commit makes a new clone, and switches to it only once it is complete, so a failed fetch leaves the previous one. The cache is disposable; deleting it costs a re-fetch. `netbox-trueup-ai source fetch` fetches the configured sources.
+- **Versions.** A fetch resolves the configured branch or tag, or the default branch, to its latest commit, which becomes the snapshot's version. If the cache already holds that commit, nothing is downloaded.
+- **Repository size.** A clone asks the server to leave out files larger than the source's `max_file_size` (a `blob:limit` partial-clone filter), which TrueUp would skip anyway. At the default of 1 MiB, devicetype-library downloads 489 MB rather than 871 MB, and at 128 KiB 64 MB, with every YAML file still in. go-git can't fetch a left-out file later, so raising `max_file_size` means a new clone. A server that can't filter sends everything, up to `max_fetch_size`.
 - **Reading** walks the commit's tree in Git's object store. Nothing is checked out to disk, so hooks, filters and submodules never come into play, and a symlink is just a tree entry that TrueUp skips.
-- **Known risk: repository size.** Elevation images make up about 1 GB of devicetype-library's tree, and a depth-1 clone transferred about 830 MB in October 2026. go-git can fetch with a partial-clone filter, but it can't fetch skipped objects later, so TrueUp must never need them. The milestone 1 Git step measures time, disk and peak memory for this clone, and picks a mitigation if needed: for example a `blob:limit` filter that skips large blobs but keeps YAML, or an optional system `git`. The result is recorded in an ADR.
+- **Transport.** `https` only for now, with TLS always verified, no redirects, a proxy only from `HTTPS_PROXY`, and nothing read from Git's own configuration or credential helpers. Credentials for private repositories, and `ssh`, come later.
 
 ### Writing to sources (M10)
 
@@ -615,7 +616,7 @@ flowchart LR
 
 | | Boundary | What crosses it | Main threats | Controls |
 | --- | --- | --- | --- | --- |
-| B1 | Source to TrueUp | Content and metadata from Git repositories, URLs or directories, written by people TrueUp doesn't control | Oversized files, YAML bombs and deep nesting; archive bombs, and archive entries that escape their directory; symlinks and path tricks; hostile JSON schemas; values that become XSS in the UI or junk in NetBox; credentials leaking through source URLs | For every kind: only administrators add sources; limits on size, count, depth and aliases; paths confined to the snapshot; strict YAML; JSON Schema with remote references off; spec validation; templ escaping; credentials by reference, with user info stripped from logged URLs. Git: read from Git objects, never a checkout; `https` and `ssh` URLs only. HTTP: TLS verification, few redirects, limits on response size and decompression. Local files: only under directories the configuration allows |
+| B1 | Source to TrueUp | Content and metadata from Git repositories, URLs or directories, written by people TrueUp doesn't control | Oversized files, YAML bombs and deep nesting; archive bombs, and archive entries that escape their directory; symlinks and path tricks; hostile JSON schemas; values that become XSS in the UI or junk in NetBox; credentials leaking through source URLs | For every kind: only administrators add sources; limits on size, count, depth and aliases; paths confined to the snapshot; strict YAML; JSON Schema with remote references off; spec validation; templ escaping; credentials by reference, with user info stripped from logged URLs. Git: read from Git objects, never a checkout; `https` and `ssh` URLs only, and `https` alone until credentials are supported; TLS verification and no redirects; limits on fetch time, disk written and objects fetched. HTTP: TLS verification, few redirects, limits on response size and decompression. Local files: only under directories the configuration allows |
 | B2 | NetBox to TrueUp | API responses | A compromised or impersonated NetBox sending hostile values or huge responses, or leading the token elsewhere | TLS verification, with a custom CA allowed but no way to turn it off; redirects never followed; version check, and the API version checked on every answer, so that a proxy's 403 isn't taken for NetBox's; response size limits; JSON only; listings checked for rising IDs and the parents asked for; NetBox's text quoted, cut short and stripped of the token in errors; decoding through specs; escaping in the UI |
 | B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a merge that overrides someone else's change | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them; merge conflicts never acknowledged automatically; changelog messages for audit |
 | B4 | Browser to TrueUp | Logins, form posts, override choices, live YAML edits | Credential stuffing, CSRF, XSS, privilege escalation; hostile or oversized YAML, and floods of live-edit requests | argon2id hashes and login rate limits; hardened session cookies; cross-origin protection; Content Security Policy; role checks in every handler; identity never taken from proxy-set headers; live edits parsed and validated like source files, with limits on request size and rate; audit log |
@@ -637,8 +638,9 @@ cmd/netbox-trueup-ai/     entry point and cobra commands
 internal/
   config/                 declared and runtime settings (declared settings exist)
   telemetry/              logging, metrics and tracing setup (logging exists)
-  source/                 source kind interface, snapshots
-  source/git/             Git source kind (HTTP and file kinds join in M9)
+  glob/                   include and exclude patterns, with ** (exists)
+  source/                 source kind interface, snapshots (exists)
+  source/git/             Git source kind (exists; HTTP and file kinds join in M9)
   format/devicetypelib/   devicetype-library format adapter
   model/                  generic objects, values and specs
   model/dcim/             specs for dcim object types
@@ -681,12 +683,12 @@ ADRs that record this design:
 | [0017](adr/0017-netbox-branches.md) | Write plans through NetBox branches where teams want them |
 | [0018](adr/0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output |
 | [0019](adr/0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http |
+| [0020](adr/0020-git-sources-with-go-git.md) | Fetch Git sources with go-git v6, leaving out files larger than the limit |
 
 ADRs still to write, with the work that needs each one:
 
 | Decision | When |
 | --- | --- |
-| Fetching Git sources with go-git, given devicetype-library's size | M1, with Git sources |
 | How specs are checked against the OpenAPI schema (closes the kin-openapi spike) | M1, with the object model |
 | Web UI sessions and the OpenID Connect library (closes the scs spike) | M3 |
 | The SAML library, and implementing SCIM | M4 |
@@ -733,7 +735,7 @@ A change reference is recorded but not checked today. TrueUp could ask the organ
 
 ## Open questions and risks
 
-- **Git repository size.** See [Git sources](#git-sources-m1). Resolved in milestone 1.
+- **Git repository size.** See [Git sources](#git-sources-m1). Resolved by [ADR 0020](adr/0020-git-sources-with-go-git.md): a partial-clone filter at each source's `max_file_size`.
 - **Two sets of defaults.** NetBox's YAML import fills a component's omitted fields from the import form's initial values (`_save_object` in `netbox/views/generic/bulk_views.py`), while the REST API applies model defaults. Where the two differ, a device type created by TrueUp could differ from one created by NetBox's import. Specs must record which applies. Milestone 2 adds a parity test that creates the same files both ways and compares the results.
 - **Manufacturer slugs.** The manufacturer definitions derived from devicetype-library need slugs that match what NetBox's UI would generate from the name. The exact rule is confirmed in milestone 1, with the library format.
 - **Library changes.** A key the library adds before TrueUp supports it is reported as a warning and ignored ([ADR 0009](adr/0009-source-kinds-and-format-adapters.md)). Such warnings are the signal to update the format adapter.

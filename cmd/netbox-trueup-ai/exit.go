@@ -20,7 +20,8 @@ const (
 	exitUsage   = 2 // unknown command or flag, or bad arguments
 	exitConfig  = 3 // the configuration is invalid or can't be read
 
-	exitCannotRead = 4 // netbox check: the token can't read every object type TrueUp reads
+	exitCannotRead  = 4 // netbox check: the token can't read every object type TrueUp reads
+	exitFetchFailed = 4 // source fetch: some sources couldn't be fetched
 )
 
 // outcomeError is an outcome particular to one command, with an exit code of

@@ -25,6 +25,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0017](0017-netbox-branches.md) | Write plans through NetBox branches where teams want them | Accepted |
 | [0018](0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output | Accepted |
 | [0019](0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http | Accepted |
+| [0020](0020-git-sources-with-go-git.md) | Fetch Git sources with go-git v6, leaving out files larger than the limit | Accepted |
 
 ## When to write one
 

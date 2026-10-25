@@ -62,6 +62,23 @@ const (
 	maxNetBoxMaxResponse     = 1 << 30  // 1 GiB
 )
 
+// Defaults and bounds of each source's limits (docs/configuration.md).
+// devicetype-library's largest YAML file is 19 KB, and the library has
+// about 17,600 files.
+const (
+	defaultSourceMaxFileSize  = 1 << 20 // 1 MiB
+	minSourceMaxFileSize      = 1 << 10 // 1 KiB
+	maxSourceMaxFileSize      = 64 << 20
+	defaultSourceMaxFiles     = 50000
+	maxSourceMaxFiles         = 1000000
+	defaultSourceFetchTimeout = 15 * time.Minute
+	minSourceFetchTimeout     = 10 * time.Second
+	maxSourceFetchTimeout     = 2 * time.Hour
+	defaultSourceMaxFetchSize = 2 << 30 // 2 GiB
+	minSourceMaxFetchSize     = 16 << 20
+	maxSourceMaxFetchSize     = 64 << 30
+)
+
 // settings lists every setting, in the order `config show` prints them.
 // Environment variable and flag names are derived from the keys, and a test
 // checks that no two settings share one.

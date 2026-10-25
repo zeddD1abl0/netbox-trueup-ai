@@ -68,6 +68,29 @@ type Source struct {
 	Format  string   `json:"format"`
 	Include []string `json:"include"`
 	Exclude []string `json:"exclude"`
+	// The source's limits as given, or their defaults, such as "1MiB" or
+	// "15m". Limits holds them read.
+	MaxFileSize  string `json:"max_file_size"`
+	MaxFiles     string `json:"max_files"`
+	FetchTimeout string `json:"fetch_timeout"`
+	MaxFetchSize string `json:"max_fetch_size"`
+	// Limits is set in Settings.Sources, once the limits above have been
+	// checked. It is zero in the sources that Entries returns.
+	Limits SourceLimits `json:"-"`
+}
+
+// SourceLimits bound what fetching and reading a source may cost.
+type SourceLimits struct {
+	// MaxFileSize is the most bytes a file may hold. Larger files are
+	// skipped, and a Git fetch doesn't download them.
+	MaxFileSize int64
+	// MaxFiles is the most files the source may hold once its include and
+	// exclude patterns apply.
+	MaxFiles int
+	// FetchTimeout limits one fetch of the source.
+	FetchTimeout time.Duration
+	// MaxFetchSize is the most bytes one fetch may write to disk.
+	MaxFetchSize int64
 }
 
 // Source kinds and formats that milestone 1 supports.

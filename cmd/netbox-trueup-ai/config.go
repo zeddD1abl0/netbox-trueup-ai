@@ -122,6 +122,10 @@ func writeShowText(w io.Writer, cfg *config.Config) error {
 					{"format", s.Format},
 					{"include", list(s.Include)},
 					{"exclude", list(s.Exclude)},
+					{"max_file_size", s.MaxFileSize},
+					{"max_files", s.MaxFiles},
+					{"fetch_timeout", s.FetchTimeout},
+					{"max_fetch_size", s.MaxFetchSize},
 				} {
 					add(fmt.Sprintf("%s[%d].%s", e.Key, i, f[0]), f[1])
 				}
