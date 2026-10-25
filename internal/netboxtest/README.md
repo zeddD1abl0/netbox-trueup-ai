@@ -3,7 +3,7 @@
 This directory runs a throwaway NetBox 4.7.2 on your machine, for integration tests and for trying TrueUp by hand. It holds:
 
 - `compose.yaml`, the only definition of the stack: PostgreSQL, Valkey and NetBox from [netbox-docker](https://github.com/netbox-community/netbox-docker)'s image;
-- the `netboxtest` Go package, which starts that stack for tests with [testcontainers-go](https://golang.testcontainers.org) and provisions an API token;
+- the `netboxtest` Go package, which starts that stack for tests with [testcontainers-go](https://golang.testcontainers.org), provisions an API token, and seeds NetBox with test data;
 - `cmd/netbox-token`, which provisions a token for the stack `make netbox-up` starts.
 
 You need Docker with Compose, running on this machine: through a local socket, or TCP on loopback. In a dev container, Docker-in-Docker works. A Docker socket mounted from the host doesn't, because NetBox's port is then on the host's 127.0.0.1, which the container can't reach.
@@ -65,11 +65,22 @@ func runTests(m *testing.M) int {
 }
 ```
 
-Give `Start` at least 20 minutes. `compose.yaml`'s health checks allow up to 15m45s for the three services to become ready, and images may need pulling first. `make test-integration` runs `go test` with `-timeout 30m`.
+Give `Start` at least 20 minutes. `compose.yaml`'s health checks allow up to 15m45s for the three services to become ready, and images may need pulling first. `make test-integration` runs `go test` with `-timeout 30m`, which applies to each package.
+
+Each package with integration tests starts a NetBox of its own, which takes about 4 minutes and 1 GB of memory, so `make test-integration` runs packages one at a time (`go test -p 1`). With `internal/netboxtest` and `internal/netbox`, that is about 10 minutes.
 
 `nb.URL` is NetBox's base URL, on a random port of 127.0.0.1. `nb.Token` is a write-enabled v2 token for the superuser, as `nbt_<key>.<token>`, in a `config.Secret` so that it can't be logged by mistake. Call `nb.Token.Reveal()` to use it. Every test binary gets an empty NetBox of its own, and tests within one binary share it, so make test data that can't collide, or clean it up.
 
 `Start` returns once NetBox passes its health check and has provisioned the token, so NetBox answers API requests by then. As each container starts, it checks that Docker published its ports on 127.0.0.1 only and put it on the stack's network. If anything fails, the error ends with the failing container's last health check results and the end of its log. If a test binary dies without calling `Stop`, for example on Ctrl-C, testcontainers-go's reaper removes the containers.
+
+### Seeding NetBox
+
+TrueUp's NetBox client never writes, so tests create what they need through `netboxtest`:
+
+- `nb.Post(ctx, path, body, out)` sends `body` as JSON to an API path, such as `/api/dcim/manufacturers/`, with the superuser's token, and decodes the answer into `out`. A list creates many objects at once.
+- `nb.UserToken(ctx, username, password)` provisions a read-only v2 token for another user, such as one a test made with `Post` and gave a single permission, to see what a token without the others can do.
+
+`internal/netbox`'s integration tests show both: they seed device types with interface templates, and a user who may view only manufacturers.
 
 ### The reaper
 

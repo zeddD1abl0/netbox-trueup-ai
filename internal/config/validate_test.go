@@ -1,8 +1,103 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 )
+
+// testCertPEM returns a self-signed CA certificate, made afresh, in PEM form.
+func testCertPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "TrueUp test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestSize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   string
+		want int64 // 0 for a problem
+	}{
+		{in: "32MiB", want: 32 << 20},
+		{in: "32 MiB", want: 32 << 20},
+		{in: "32mib", want: 32 << 20},
+		{in: "1048576", want: 1 << 20},
+		{in: "1048576B", want: 1 << 20},
+		{in: "1024KiB", want: 1 << 20},
+		{in: "1GiB", want: 1 << 30},
+		{in: "1048575"},
+		{in: "2GiB"},
+		{in: "99999999999999999999GiB"},
+		{in: "32MB"},
+		{in: "32  MiB"},
+		{in: "-1MiB"},
+		{in: "MiB"},
+		{in: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			ld := &loader{}
+			got := ld.size(resolved{key: "k", str: tt.in}, 1<<20, 1<<30, -1)
+			if tt.want == 0 {
+				if got != -1 || len(ld.problems) != 1 {
+					t.Errorf("size(%q) = %d with problems %v, want the default and one problem", tt.in, got, ld.problems)
+				}
+				return
+			}
+			if got != tt.want || len(ld.problems) != 0 {
+				t.Errorf("size(%q) = %d with problems %v, want %d", tt.in, got, ld.problems, tt.want)
+			}
+		})
+	}
+}
+
+// The default maximum response size is written as text in the schema.
+func TestDefaultMaxResponseSize(t *testing.T) {
+	t.Parallel()
+
+	ld := &loader{}
+	s := byKey["netbox.max_response_size"].setting
+	if got := ld.size(resolved{key: s.key, str: s.def}, minNetBoxMaxResponse, maxNetBoxMaxResponse, 0); got != defaultNetBoxMaxResponse {
+		t.Errorf("default %q is %d bytes, want %d", s.def, got, defaultNetBoxMaxResponse)
+	}
+}
+
+func TestShortDuration(t *testing.T) {
+	t.Parallel()
+
+	for d, want := range map[time.Duration]string{
+		time.Second: "1s", 10 * time.Minute: "10m", 90 * time.Second: "1m30s", time.Hour: "1h", 90 * time.Minute: "1h30m",
+	} {
+		if got := shortDuration(d); got != want {
+			t.Errorf("shortDuration(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
 
 func TestCheckGitURL(t *testing.T) {
 	t.Parallel()

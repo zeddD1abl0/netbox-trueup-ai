@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
 )
@@ -27,6 +29,8 @@ type kind int
 const (
 	kindString  kind = iota
 	kindPath         // a file system path, made absolute when it is loaded
+	kindFile         // a path, like kindPath, to a file that is read when settings load
+	kindScalar       // a string, or in the config file a number, which is read as its decimal text
 	kindSources      // the list of sources
 )
 
@@ -41,6 +45,22 @@ type setting struct {
 	// apply validates the resolved value and stores it in Settings.
 	apply func(ld *loader, st *Settings, r resolved)
 }
+
+// NetBox client defaults and limits. The client's defaults for options left
+// at zero match these, apart from retries, which a test in internal/netbox
+// checks.
+const (
+	defaultNetBoxTimeout     = 30 * time.Second
+	minNetBoxTimeout         = time.Second
+	maxNetBoxTimeout         = 10 * time.Minute
+	defaultNetBoxMaxRequests = 4
+	maxNetBoxMaxRequests     = 32
+	defaultNetBoxRetries     = 3
+	maxNetBoxRetries         = 10
+	defaultNetBoxMaxResponse = 32 << 20 // 32 MiB
+	minNetBoxMaxResponse     = 1 << 20  // 1 MiB
+	maxNetBoxMaxResponse     = 1 << 30  // 1 GiB
+)
 
 // settings lists every setting, in the order `config show` prints them.
 // Environment variable and flag names are derived from the keys, and a test
@@ -75,6 +95,41 @@ var settings = []setting{
 		key: "netbox.token", kind: kindString, secret: true, flag: true,
 		usage: "file to read the NetBox API token from",
 		apply: func(ld *loader, st *Settings, r resolved) { st.NetBox.Token = ld.netboxToken(r) },
+	},
+	{
+		key: "netbox.ca_bundle", kind: kindFile, flag: true,
+		usage: "PEM file of CA certificates to trust for NetBox, as well as the system's",
+		apply: func(ld *loader, st *Settings, r resolved) {
+			st.NetBox.CABundle, st.NetBox.CACerts = r.str, ld.caBundle(r)
+		},
+	},
+	{
+		key: "netbox.timeout", kind: kindScalar, flag: true, def: defaultNetBoxTimeout.String(),
+		usage: "limit on each NetBox request, reading the answer included",
+		apply: func(ld *loader, st *Settings, r resolved) {
+			st.NetBox.Timeout = ld.duration(r, minNetBoxTimeout, maxNetBoxTimeout, defaultNetBoxTimeout)
+		},
+	},
+	{
+		key: "netbox.max_requests", kind: kindScalar, flag: true, def: strconv.Itoa(defaultNetBoxMaxRequests),
+		usage: "how many NetBox requests may be in flight at once",
+		apply: func(ld *loader, st *Settings, r resolved) {
+			st.NetBox.MaxRequests = ld.integer(r, 1, maxNetBoxMaxRequests, defaultNetBoxMaxRequests)
+		},
+	},
+	{
+		key: "netbox.retries", kind: kindScalar, flag: true, def: strconv.Itoa(defaultNetBoxRetries),
+		usage: "how many more times a failed NetBox read is tried",
+		apply: func(ld *loader, st *Settings, r resolved) {
+			st.NetBox.Retries = ld.integer(r, 0, maxNetBoxRetries, defaultNetBoxRetries)
+		},
+	},
+	{
+		key: "netbox.max_response_size", kind: kindScalar, flag: true, def: "32MiB",
+		usage: "the most TrueUp reads of one NetBox answer, such as 32MiB",
+		apply: func(ld *loader, st *Settings, r resolved) {
+			st.NetBox.MaxResponseSize = ld.size(r, minNetBoxMaxResponse, maxNetBoxMaxResponse, defaultNetBoxMaxResponse)
+		},
 	},
 	{
 		key: "sources", kind: kindSources,
@@ -118,10 +173,16 @@ func init() {
 
 // want describes the value the key takes, for messages.
 func (r keyRef) want() string {
-	if r.setting.kind == kindSources && !r.file {
+	switch {
+	case r.file:
+		return "a string"
+	case r.setting.kind == kindSources:
 		return "a list of sources"
+	case r.setting.kind == kindScalar:
+		return "a string or a number"
+	default:
+		return "a string"
 	}
-	return "a string"
 }
 
 // settingAbove returns the key of the setting that key lies below, and what

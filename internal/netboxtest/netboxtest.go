@@ -115,7 +115,7 @@ func start(ctx context.Context, compose []byte) (_ *NetBox, err error) {
 	nb.URL = "http://" + net.JoinHostPort("127.0.0.1", port.Port())
 
 	env := st.Services[netboxService].Environment
-	nb.Token, err = provisionToken(ctx, nb.URL, env["SUPERUSER_NAME"], env["SUPERUSER_PASSWORD"], "netboxtest")
+	nb.Token, err = provisionToken(ctx, nb.URL, env["SUPERUSER_NAME"], env["SUPERUSER_PASSWORD"], "netboxtest", true)
 	if err != nil {
 		return nil, fmt.Errorf("%w%s", err, diagnose(ctx, web))
 	}

@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration and logging, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging and the read-only NetBox client, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -291,17 +291,18 @@ The comparison engine is pure: it takes objects and specs and returns difference
 
 ## NetBox client
 
-TrueUp uses its own thin REST client built on `net/http` (tooling.md §3.1). An ADR confirms it after the milestone 1 prototype. The client covers exactly what TrueUp needs:
+TrueUp uses its own thin REST client, `internal/netbox`, built on `net/http` alone ([ADR 0019](adr/0019-own-netbox-rest-client.md)). The client covers exactly what TrueUp needs, and `netbox-trueup-ai netbox check` uses it to check that NetBox is supported and that the token can read every object type TrueUp reads:
 
-- **Version check.** It calls `GET /api/status/` on connect, and refuses to work with a NetBox version TrueUp doesn't support ([ADR 0003](adr/0003-initial-netbox-target.md)).
-- **Authentication.** v2 tokens (`Authorization: Bearer nbt_…`). v1 tokens still work on 4.7 but are deprecated and removed in NetBox 5.0, so TrueUp warns when one is used. The token is never logged, and request logging redacts the `Authorization` header.
-- **Reads.** Cursor pagination (`?start=`) for full listings. Children are read with filters covering many parents per request, not one request per object, so read cost scales with the selection, not the library.
+- **Version check.** It calls `GET /api/status/` on connect, and refuses to work with any NetBox release but 4.7.x ([ADR 0003](adr/0003-initial-netbox-target.md)). Every later answer must carry the same `API-Version` header, `4.7`, so a NetBox upgraded mid-run is noticed.
+- **Authentication.** v2 tokens (`Authorization: Bearer nbt_…`). v1 tokens still work on 4.7 but are deprecated and removed in NetBox 5.0, so TrueUp warns when one is used. On connect, `/api/authentication-check/` confirms the token: NetBox refuses a bad token everywhere, but a proxy that drops the `Authorization` header leaves a request without one, which `/api/status/` answers when `LOGIN_REQUIRED` is off. The token is never logged, request logging redacts the `Authorization` header, and the token is removed from any text NetBox sends back before it reaches an error.
+- **Reads.** Cursor pagination (`?start=`) for full listings, following NetBox's next link rather than page sizes, since NetBox quietly caps pages at its own `MAX_PAGE_SIZE`. Children are read with filters covering many parents per request, not one request per object, so read cost scales with the selection, not the library. NetBox ignores filters it doesn't know, so the client checks that each child belongs to a parent it asked for.
+- **Permissions.** NetBox answers 403 for a list the token's user may not view, so the client can tell which object types a token can read. Only a 403 with NetBox's `API-Version` header counts; one from a proxy or firewall is an error.
 - **Writes (M2).** `POST` and `PATCH` with a `changelog_message`, and `If-Match` on updates. Bulk creates send JSON arrays, which NetBox applies atomically, and NetBox 4.7's per-object bulk errors are mapped back to the operations that caused them. TrueUp never uses `?background=true`: NetBox runs those writes without the branch header, so they would land in main ([Change management](#change-management)).
 - **Branches (M2).** Where the netbox-branching plugin (1.2.x for NetBox 4.7) is installed: creating a branch and waiting until it is ready, reading and writing in it with the `X-NetBox-Branch` header, merging it, and following the asynchronous jobs that sync and merge run as. TrueUp checks for the plugin when it connects.
-- **Resilience.** A timeout on every request, a cap on concurrent requests, and a response size limit. Reads are retried with backoff and jitter, honouring `Retry-After` on 429 and 503 responses. Writes are never retried automatically: a failed or uncertain write ends its operation, and the executor decides what happens next.
-- **TLS.** The system trust store, plus an optional CA bundle for private CAs.
+- **Resilience.** A timeout on every request, a cap on concurrent requests, and a response size limit (`netbox.timeout`, `netbox.max_requests` and `netbox.max_response_size`). Reads are retried (`netbox.retries`) after connection failures, timeouts and 429, 500, 502, 503 and 504 answers, with backoff and jitter, honouring `Retry-After` on 429 and 503 up to a minute. Failures that would only repeat, such as a certificate that doesn't verify, aren't retried. Writes are never retried automatically: a failed or uncertain write ends its operation, and the executor decides what happens next.
+- **TLS.** The system trust store, plus an optional CA bundle for private CAs (`netbox.ca_bundle`). Verification can't be turned off. Redirects are never followed, so the token goes only to `netbox.url`. Proxies come from `HTTPS_PROXY` and `NO_PROXY`, for `https` only, since a proxy would see a plain `http` request's token.
 
-The client speaks JSON, and the object model owns the types. In milestone 1 the client has no write methods at all.
+The client speaks JSON, and the object model owns the types. In milestone 1 the client has no write methods at all: every request it sends is a GET, and tests seed NetBox through `internal/netboxtest` instead.
 
 ## Storage
 
@@ -615,7 +616,7 @@ flowchart LR
 | | Boundary | What crosses it | Main threats | Controls |
 | --- | --- | --- | --- | --- |
 | B1 | Source to TrueUp | Content and metadata from Git repositories, URLs or directories, written by people TrueUp doesn't control | Oversized files, YAML bombs and deep nesting; archive bombs, and archive entries that escape their directory; symlinks and path tricks; hostile JSON schemas; values that become XSS in the UI or junk in NetBox; credentials leaking through source URLs | For every kind: only administrators add sources; limits on size, count, depth and aliases; paths confined to the snapshot; strict YAML; JSON Schema with remote references off; spec validation; templ escaping; credentials by reference, with user info stripped from logged URLs. Git: read from Git objects, never a checkout; `https` and `ssh` URLs only. HTTP: TLS verification, few redirects, limits on response size and decompression. Local files: only under directories the configuration allows |
-| B2 | NetBox to TrueUp | API responses | A compromised or impersonated NetBox sending hostile values or huge responses | TLS verification, with a custom CA allowed but no way to turn it off; version check; response size limits; decoding through specs; escaping in the UI |
+| B2 | NetBox to TrueUp | API responses | A compromised or impersonated NetBox sending hostile values or huge responses, or leading the token elsewhere | TLS verification, with a custom CA allowed but no way to turn it off; redirects never followed; version check, and the API version checked on every answer, so that a proxy's 403 isn't taken for NetBox's; response size limits; JSON only; listings checked for rising IDs and the parents asked for; NetBox's text quoted, cut short and stripped of the token in errors; decoding through specs; escaping in the UI |
 | B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a merge that overrides someone else's change | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them; merge conflicts never acknowledged automatically; changelog messages for audit |
 | B4 | Browser to TrueUp | Logins, form posts, override choices, live YAML edits | Credential stuffing, CSRF, XSS, privilege escalation; hostile or oversized YAML, and floods of live-edit requests | argon2id hashes and login rate limits; hardened session cookies; cross-origin protection; Content Security Policy; role checks in every handler; identity never taken from proxy-set headers; live edits parsed and validated like source files, with limits on request size and rate; audit log |
 | B5 | Operator to TrueUp | Config file, environment, secret files | Secrets leaking through logs, `config show`, error messages or the UI | Secrets only from the environment or files, never from command-line flags; redaction everywhere, error messages included; a warning when a file holding secrets is readable by every user; no config file read from the working directory |
@@ -642,7 +643,7 @@ internal/
   model/                  generic objects, values and specs
   model/dcim/             specs for dcim object types
   compare/                grouping, matching, normalization, side-by-side diffs
-  netbox/                 REST client
+  netbox/                 REST client (reads exist)
   store/                  storage interface
   store/sqlite/           SQLite migrations and queries
   store/postgres/         PostgreSQL migrations and queries
@@ -679,12 +680,12 @@ ADRs that record this design:
 | [0016](adr/0016-permissions-and-approval-policies.md) | Scoped permissions, and approval policies and change references that can be turned on |
 | [0017](adr/0017-netbox-branches.md) | Write plans through NetBox branches where teams want them |
 | [0018](adr/0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output |
+| [0019](adr/0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http |
 
 ADRs still to write, with the work that needs each one:
 
 | Decision | When |
 | --- | --- |
-| Own NetBox REST client (closes the spike in tooling.md §3.1) | M1, with the read-only client |
 | Fetching Git sources with go-git, given devicetype-library's size | M1, with Git sources |
 | How specs are checked against the OpenAPI schema (closes the kin-openapi spike) | M1, with the object model |
 | Web UI sessions and the OpenID Connect library (closes the scs spike) | M3 |

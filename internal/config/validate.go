@@ -1,13 +1,19 @@
 package config
 
 import (
+	"bytes"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -105,23 +111,31 @@ func (ld *loader) netboxURL(r resolved) string {
 	if r.str == "" {
 		return ""
 	}
-	u, err := url.Parse(r.str)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		ld.problem(r.key, r.where, "must be an https or http URL, such as https://netbox.example.com")
+	if problem := NetBoxURLProblem(r.str); problem != "" {
+		ld.problem(r.key, r.where, problem)
 		return ""
 	}
-	if u.User != nil {
-		ld.problem(r.key, r.where, "must not contain a user name or password: set netbox.token instead")
-		return ""
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		ld.problem(r.key, r.where, "must not have a query or fragment")
-		return ""
-	}
+	u, _ := url.Parse(r.str) // NetBoxURLProblem parsed it
 	if u.Scheme == "http" && !isLoopback(u.Hostname()) {
 		ld.warn(r.key, fmt.Sprintf("netbox.url uses http, so the NetBox token crosses the network to %s unencrypted: use https", u.Host))
 	}
 	return r.str
+}
+
+// NetBoxURLProblem returns what is wrong with a NetBox URL, or "" if
+// nothing is. The NetBox client checks its URL with it too, so that the two
+// agree. The message never repeats the URL, which could hold a password.
+func NetBoxURLProblem(raw string) string {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "":
+		return "must be an https or http URL, such as https://netbox.example.com"
+	case u.User != nil:
+		return "must not contain a user name or password: set netbox.token instead"
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return "must not have a query or fragment"
+	}
+	return ""
 }
 
 func isLoopback(host string) bool {
@@ -136,12 +150,165 @@ func isLoopback(host string) bool {
 // token is made of. That catches what a token file or a paste can carry
 // unseen, such as whitespace, a byte-order mark or a zero-width space, which
 // NetBox would reject later with no pointer to the file.
+//
+// NetBox reads a token that starts with nbt_ as a v2 token, nbt_<key>.<token>,
+// and refuses one without both parts (TokenAuthentication in
+// netbox/netbox/api/authentication.py), so a token cut short on copying is
+// caught here too.
 func (ld *loader) netboxToken(r resolved) Secret {
-	if strings.ContainsFunc(r.str, func(c rune) bool { return c < 0x21 || c > 0x7e }) {
-		ld.problem(r.key, r.where, "contains characters a token can't, such as whitespace, control characters or a byte-order mark")
+	if problem := NetBoxTokenProblem(r.str); problem != "" {
+		ld.problem(r.key, r.where, problem)
 		return Secret{}
 	}
 	return NewSecret(r.str)
+}
+
+// NetBoxTokenProblem returns what is wrong with a NetBox token, or "" if
+// nothing is. The NetBox client checks its token with it too, so that the
+// two agree. The message never repeats the token.
+func NetBoxTokenProblem(token string) string {
+	if strings.ContainsFunc(token, func(c rune) bool { return c < 0x21 || c > 0x7e }) {
+		return "contains characters a token can't, such as whitespace, control characters or a byte-order mark"
+	}
+	if rest, v2 := strings.CutPrefix(token, "nbt_"); v2 {
+		if key, secret, ok := strings.Cut(rest, "."); !ok || key == "" || secret == "" {
+			return "starts with nbt_, so it is a v2 token, but isn't in the form nbt_<key>.<token>: check that it was copied whole"
+		}
+	}
+	return ""
+}
+
+// caBundle reads the certificates in a PEM file. Every block in it must be a
+// certificate. A private key, say, is refused, since it doesn't belong there
+// and its file was probably named by mistake; its content is never repeated.
+// A block that can't be read, such as one cut short, is refused too, rather
+// than quietly trusting only the others: pem.Decode skips such a block
+// without a word, so the blocks it finds are counted against the lines that
+// begin one.
+func (ld *loader) caBundle(r resolved) []*x509.Certificate {
+	if r.data == nil {
+		return nil
+	}
+	var certs []*x509.Certificate
+	rest := r.data
+	for {
+		var block *pem.Block
+		if block, rest = pem.Decode(rest); block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			ld.problem(r.key, r.where, fmt.Sprintf("file %s holds a %q block: a CA bundle holds only certificates", r.str, block.Type))
+			return nil
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			ld.problem(r.key, r.where, fmt.Sprintf("certificate %d in file %s can't be read: %v", len(certs)+1, r.str, err))
+			return nil
+		}
+		certs = append(certs, cert)
+	}
+	switch {
+	case pemBegins(r.data) != len(certs):
+		ld.problem(r.key, r.where, fmt.Sprintf("file %s has a PEM block that can't be read, such as one cut short", r.str))
+		return nil
+	case len(certs) == 0:
+		ld.problem(r.key, r.where, fmt.Sprintf("file %s holds no PEM certificates", r.str))
+	}
+	return certs
+}
+
+// pemBegins counts the lines in data that begin a PEM block.
+func pemBegins(data []byte) int {
+	n := 0
+	for line := range bytes.Lines(data) {
+		if bytes.HasPrefix(bytes.TrimLeft(line, " \t"), []byte("-----BEGIN ")) {
+			n++
+		}
+	}
+	return n
+}
+
+// duration reads a Go duration, such as 30s, between lo and hi. After a
+// problem it returns def, so that loading can go on to find the others.
+func (ld *loader) duration(r resolved, lo, hi, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(r.str)
+	if err != nil {
+		ld.problem(r.key, r.where, fmt.Sprintf("%q is not a duration: use a number and a unit, such as 30s or 2m", r.str))
+		return def
+	}
+	if d < lo || d > hi {
+		ld.problem(r.key, r.where, fmt.Sprintf("%s is out of range: use %s to %s", r.str, shortDuration(lo), shortDuration(hi)))
+		return def
+	}
+	return d
+}
+
+// shortDuration writes 10m rather than time.Duration's 10m0s.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
+// integer reads a whole number between lo and hi.
+func (ld *loader) integer(r resolved, lo, hi, def int) int {
+	n, err := strconv.Atoi(r.str)
+	if errors.Is(err, strconv.ErrRange) {
+		ld.problem(r.key, r.where, fmt.Sprintf("%s is out of range: use %d to %d", r.str, lo, hi))
+		return def
+	}
+	if err != nil {
+		ld.problem(r.key, r.where, fmt.Sprintf("%q is not a whole number", r.str))
+		return def
+	}
+	if n < lo || n > hi {
+		ld.problem(r.key, r.where, fmt.Sprintf("%d is out of range: use %d to %d", n, lo, hi))
+		return def
+	}
+	return n
+}
+
+// sizeUnits are the units a size can be given in, in upper case. Only binary
+// units are accepted, so that MB can't be read two ways.
+var sizeUnits = map[string]int64{"": 1, "B": 1, "KIB": 1 << 10, "MIB": 1 << 20, "GIB": 1 << 30}
+
+var sizePattern = regexp.MustCompile(`^([0-9]+) ?([A-Za-z]*)$`)
+
+// size reads a number of bytes, such as 33554432 or 32MiB, between lo and hi.
+func (ld *loader) size(r resolved, lo, hi, def int64) int64 {
+	m := sizePattern.FindStringSubmatch(r.str)
+	var unit int64
+	if m != nil {
+		unit = sizeUnits[strings.ToUpper(m[2])]
+	}
+	if unit == 0 {
+		ld.problem(r.key, r.where, fmt.Sprintf("%q is not a size: use a number of bytes, or one with KiB, MiB or GiB, such as 32MiB", r.str))
+		return def
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || n > hi/unit || n*unit < lo {
+		ld.problem(r.key, r.where, fmt.Sprintf("%s is out of range: use %s to %s", r.str, formatSize(lo), formatSize(hi)))
+		return def
+	}
+	return n * unit
+}
+
+// formatSize writes a size in the largest binary unit that divides it.
+func formatSize(n int64) string {
+	for _, u := range []struct {
+		name string
+		size int64
+	}{{"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}} {
+		if n >= u.size && n%u.size == 0 {
+			return strconv.FormatInt(n/u.size, 10) + u.name
+		}
+	}
+	return strconv.FormatInt(n, 10)
 }
 
 // sourceName keeps source names safe to use as directory names, in command

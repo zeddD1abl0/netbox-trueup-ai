@@ -34,7 +34,7 @@ func ProvisionToken(ctx context.Context, baseURL, description string) (config.Se
 	if err != nil {
 		return config.Secret{}, err
 	}
-	return provisionToken(ctx, baseURL, username, password, description)
+	return provisionToken(ctx, baseURL, username, password, description, true)
 }
 
 // Superuser returns the user name and password of the superuser that
@@ -49,12 +49,13 @@ func Superuser() (username, password string, err error) {
 }
 
 // provisionToken uses NetBox's token provisioning endpoint, which exchanges a
-// user name and password for a new token. In NetBox 4.7 a new token is v2
-// unless the request asks for v1, and NetBox generates its value
-// (TokenProvisionView and TokenProvisionSerializer in
-// netbox/users/api/views.py and serializers_/tokens.py). v2 tokens need
-// API_TOKEN_PEPPERS, which compose.yaml sets.
-func provisionToken(ctx context.Context, baseURL, username, password, description string) (config.Secret, error) {
+// user name and password for a new token, write-enabled or read-only as
+// write says. In NetBox 4.7 a new token is v2 unless the request asks for
+// v1, and NetBox generates its value (TokenProvisionView and
+// TokenProvisionSerializer in netbox/users/api/views.py and
+// serializers_/tokens.py). v2 tokens need API_TOKEN_PEPPERS, which
+// compose.yaml sets.
+func provisionToken(ctx context.Context, baseURL, username, password, description string, write bool) (config.Secret, error) {
 	endpoint, err := localEndpoint(baseURL, "/api/users/tokens/provision/")
 	if err != nil {
 		return config.Secret{}, err
@@ -63,7 +64,7 @@ func provisionToken(ctx context.Context, baseURL, username, password, descriptio
 		"username":      username,
 		"password":      password,
 		"description":   description,
-		"write_enabled": true, // tests seed NetBox with it
+		"write_enabled": write,
 	})
 	if err != nil {
 		return config.Secret{}, fmt.Errorf("encode token request: %w", err)
@@ -104,12 +105,15 @@ func provisionToken(ctx context.Context, baseURL, username, password, descriptio
 	case !isTokenPart(tok.Key) || !isTokenPart(tok.Token):
 		// Don't quote them: one of them is the secret.
 		return config.Secret{}, errors.New("provision a token: NetBox's answer has no usable key and token")
-	// A token that is disabled, read-only or expiring would fail tests later
-	// with a 403 that doesn't say why.
+	// A token that is disabled, expiring or can't write as asked would fail
+	// tests later with a 403 that doesn't say why, or let them write what
+	// they shouldn't.
 	case tok.Enabled == nil || !*tok.Enabled:
 		return config.Secret{}, errors.New("provision a token: NetBox made a disabled token")
-	case tok.WriteEnabled == nil || !*tok.WriteEnabled:
+	case write && (tok.WriteEnabled == nil || !*tok.WriteEnabled):
 		return config.Secret{}, errors.New("provision a token: NetBox made a read-only token")
+	case !write && (tok.WriteEnabled == nil || *tok.WriteEnabled):
+		return config.Secret{}, errors.New("provision a token: NetBox made a token that can write, not a read-only one")
 	case tok.Expires != nil:
 		return config.Secret{}, fmt.Errorf("provision a token: NetBox made a token that expires at %q", *tok.Expires)
 	}

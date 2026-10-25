@@ -97,6 +97,12 @@ func TestExitCodes(t *testing.T) {
 			name: "version doesn't read the configuration", args: []string{"version"}, env: []string{"TRUEUP_LOG_LEVEL=loud"},
 			wantCode: exitOK,
 		},
+		{name: "the netbox group prints its help", args: []string{"netbox"}, wantCode: exitOK, wantStdout: "netbox-trueup-ai netbox [command]"},
+		{
+			name: "netbox check takes no arguments", args: []string{"netbox", "check", "extra"}, wantCode: exitUsage,
+			wantStderr: `"netbox-trueup-ai netbox check" takes no arguments, but got "extra"`,
+		},
+		{name: "netbox check documents its exit codes", args: []string{"help", "netbox", "check"}, wantCode: exitOK, wantStdout: "4  The token can't read some object types."},
 		{name: "help for a command", args: []string{"help", "config", "show"}, wantCode: exitOK, wantStdout: "Print every setting's effective value"},
 		{name: "help for an unknown topic", args: []string{"help", "config", "bogus"}, wantCode: exitUsage, wantStderr: `Error: unknown help topic "config bogus"`},
 		{name: "completion script", args: []string{"completion", "bash"}, wantCode: exitOK, wantStdout: "bash completion"},
@@ -177,20 +183,25 @@ func TestConfigShowText(t *testing.T) {
 	}
 	want := strings.ReplaceAll(`Config file: {dir}/config.yaml (from --config)
 
-SETTING             FROM                        VALUE
-log.level           env TRUEUP_LOG_LEVEL        error
-log.format          default                     text
-data_dir            flag --data-dir             /srv/trueup
-database.url        env TRUEUP_DATABASE_URL     [redacted]
-netbox.url          file                        https://netbox.example.com
-netbox.token        file, as netbox.token_file  [redacted] (read from {dir}/token)
-sources[0].name     file                        devicetype-library
-sources[0].kind     file                        git
-sources[0].url      file                        https://github.com/netbox-community/devicetype-library.git
-sources[0].ref      file                        master
-sources[0].format   file                        devicetype-library
-sources[0].include  file                        ["device-types/Juniper/**"]
-sources[0].exclude  file                        []
+SETTING                   FROM                        VALUE
+log.level                 env TRUEUP_LOG_LEVEL        error
+log.format                default                     text
+data_dir                  flag --data-dir             /srv/trueup
+database.url              env TRUEUP_DATABASE_URL     [redacted]
+netbox.url                file                        https://netbox.example.com
+netbox.token              file, as netbox.token_file  [redacted] (read from {dir}/token)
+netbox.ca_bundle          default                     (not set)
+netbox.timeout            default                     30s
+netbox.max_requests       default                     4
+netbox.retries            default                     3
+netbox.max_response_size  default                     32MiB
+sources[0].name           file                        devicetype-library
+sources[0].kind           file                        git
+sources[0].url            file                        https://github.com/netbox-community/devicetype-library.git
+sources[0].ref            file                        master
+sources[0].format         file                        devicetype-library
+sources[0].include        file                        ["device-types/Juniper/**"]
+sources[0].exclude        file                        []
 `, "{dir}", dir)
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("config show (-want +got):\n%s", diff)
@@ -221,6 +232,11 @@ func TestConfigShowJSON(t *testing.T) {
 				Key: "netbox.token", Value: "[redacted]", Secret: true, Origin: "file", Name: "netbox.token_file",
 				File: filepath.Join(dir, "token"),
 			},
+			{Key: "netbox.ca_bundle", Value: "", Origin: "default"},
+			{Key: "netbox.timeout", Value: "30s", Origin: "default"},
+			{Key: "netbox.max_requests", Value: "4", Origin: "default"},
+			{Key: "netbox.retries", Value: "3", Origin: "default"},
+			{Key: "netbox.max_response_size", Value: "32MiB", Origin: "default"},
 			{
 				Key: "sources", Origin: "file", Name: "sources",
 				Value: []any{map[string]any{
@@ -247,14 +263,19 @@ func TestConfigShowWithNoFile(t *testing.T) {
 	r := runCLI(t, nil, nil, "config", "show")
 	want := `Config file: none
 
-SETTING       FROM     VALUE
-log.level     default  info
-log.format    default  text
-data_dir      default  ` + config.DefaultDataDir() + `
-database.url  default  (not set)
-netbox.url    default  (not set)
-netbox.token  default  (not set)
-sources       default  []
+SETTING                   FROM     VALUE
+log.level                 default  info
+log.format                default  text
+data_dir                  default  ` + config.DefaultDataDir() + `
+database.url              default  (not set)
+netbox.url                default  (not set)
+netbox.token              default  (not set)
+netbox.ca_bundle          default  (not set)
+netbox.timeout            default  30s
+netbox.max_requests       default  4
+netbox.retries            default  3
+netbox.max_response_size  default  32MiB
+sources                   default  []
 `
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("config show (-want +got):\n%s", diff)

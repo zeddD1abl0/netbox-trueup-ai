@@ -66,9 +66,11 @@ jobs:
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    # A fresh NetBox spends about 4 minutes on migrations. `go test -timeout 30m`
-    # gives up first, with a stack dump.
-    timeout-minutes: 35
+    # Each package with integration tests starts a fresh NetBox, which spends
+    # about 4 minutes on migrations, and packages run one at a time. Two
+    # packages have them, and `go test -timeout 30m` gives up on either with a
+    # stack dump before this does.
+    timeout-minutes: 65
     permissions:
       contents: read
     steps:

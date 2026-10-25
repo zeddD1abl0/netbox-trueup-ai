@@ -74,7 +74,7 @@ func TestProvisionToken(t *testing.T) {
 	t.Parallel()
 	srv, rec := fakeNetBox(t, http.StatusCreated, tokenAnswer(t, ""))
 
-	tok, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test")
+	tok, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test", true)
 	if err != nil {
 		t.Fatalf("provisionToken: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestProvisionTokenFails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			srv, _ := fakeNetBox(t, tt.status, tt.body)
-			_, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test")
+			_, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test", true)
 			if err == nil {
 				t.Fatalf("provisionToken succeeded, want an error containing %q", tt.want)
 			}
@@ -221,7 +221,7 @@ func TestProvisionTokenRefusesURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
 			t.Parallel()
-			_, err := provisionToken(t.Context(), tt.url, testUser, testPassword, "a test")
+			_, err := provisionToken(t.Context(), tt.url, testUser, testPassword, "a test", true)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("provisionToken(%q) error = %v, want it to contain %q", tt.url, err, tt.want)
 			}
@@ -246,7 +246,7 @@ func TestProvisionTokenDoesNotFollowRedirects(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test")
+	_, err := provisionToken(t.Context(), srv.URL, testUser, testPassword, "a test", true)
 	if err == nil || !strings.Contains(err.Error(), "NetBox answered 307") {
 		t.Errorf("provisionToken error = %v, want NetBox answered 307", err)
 	}
@@ -274,7 +274,7 @@ func TestProvisionTokenCanceled(t *testing.T) {
 	srv, _ := fakeNetBox(t, http.StatusCreated, `{}`)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := provisionToken(ctx, srv.URL, testUser, testPassword, "a test"); err == nil || !strings.Contains(err.Error(), "context canceled") {
+	if _, err := provisionToken(ctx, srv.URL, testUser, testPassword, "a test", true); err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Errorf("provisionToken error = %v, want context canceled", err)
 	}
 }
