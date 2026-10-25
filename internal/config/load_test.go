@@ -327,6 +327,70 @@ func TestLoadNetBoxClientSettings(t *testing.T) {
 	}
 }
 
+func TestLoadSourceLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		in          input
+		want        SourceLimits
+		wantEntries [4]string // max_file_size, max_files, fetch_timeout, max_fetch_size, as Entries shows them
+	}{
+		{
+			name:        "defaults",
+			in:          input{env: []string{`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`}},
+			want:        SourceLimits{MaxFileSize: 1 << 20, MaxFiles: 50000, FetchTimeout: 15 * time.Minute, MaxFetchSize: 2 << 30},
+			wantEntries: [4]string{"", "", "", ""}, // unset, so the defaults apply
+		},
+		{
+			name: "numbers and text in the file",
+			in: input{files: map[string]string{"config.yaml": `
+sources:
+  - name: lib
+    kind: git
+    url: https://example.com/lib.git
+    format: devicetype-library
+    max_file_size: 65536
+    max_files: 100
+    fetch_timeout: 90s
+    max_fetch_size: 64 MiB
+`}, args: withConfig},
+			want:        SourceLimits{MaxFileSize: 64 << 10, MaxFiles: 100, FetchTimeout: 90 * time.Second, MaxFetchSize: 64 << 20},
+			wantEntries: [4]string{"65536", "100", "90s", "64 MiB"},
+		},
+		{
+			name:        "text in the environment",
+			in:          input{env: []string{`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library","max_files":"1000000","max_file_size":"64MiB","fetch_timeout":"2h","max_fetch_size":"16MiB"}]`}},
+			want:        SourceLimits{MaxFileSize: 64 << 20, MaxFiles: 1000000, FetchTimeout: 2 * time.Hour, MaxFetchSize: 16 << 20},
+			wantEntries: [4]string{"64MiB", "1000000", "2h", "16MiB"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, _, err := tt.in.load(t)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, cfg.Settings.Sources[0].Limits); diff != "" {
+				t.Errorf("limits (-want +got):\n%s", diff)
+			}
+			for _, e := range cfg.Entries() {
+				if sources, ok := e.Value.([]Source); ok {
+					s := sources[0]
+					got := [4]string{s.MaxFileSize, s.MaxFiles, s.FetchTimeout, s.MaxFetchSize}
+					if got != tt.wantEntries {
+						t.Errorf("Entries shows the limits as %q, want %q", got, tt.wantEntries)
+					}
+					if s.Limits != (SourceLimits{}) {
+						t.Errorf("Entries holds Limits %+v, want none", s.Limits)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestLoadSecrets(t *testing.T) {
 	t.Parallel()
 
@@ -851,6 +915,39 @@ func TestLoadProblems(t *testing.T) {
 			},
 		},
 		{
+			name: "a source with limits out of range or of the wrong type",
+			in: input{files: map[string]string{"config.yaml": `
+sources:
+  - name: a
+    kind: git
+    url: https://example.com/a.git
+    format: devicetype-library
+    max_file_size: 128MiB
+    max_files: 0
+    fetch_timeout: 900
+    max_fetch_size: 2GB
+  - name: b
+    kind: git
+    url: https://example.com/b.git
+    format: devicetype-library
+    fetch_timeout: 5s
+    max_fetch_size: 1MiB
+`}, args: withConfig},
+			want: []string{
+				"sources[0].max_file_size (file {dir}/config.yaml): 128MiB is out of range: use 1KiB to 64MiB",
+				"sources[0].max_files (file {dir}/config.yaml): 0 is out of range: use 1 to 1000000",
+				`sources[0].fetch_timeout (file {dir}/config.yaml): "900" is not a duration: use a number and a unit, such as 30s or 2m`,
+				`sources[0].max_fetch_size (file {dir}/config.yaml): "2GB" is not a size: use a number of bytes, or one with KiB, MiB or GiB, such as 32MiB`,
+				"sources[1].fetch_timeout (file {dir}/config.yaml): 5s is out of range: use 10s to 2h",
+				"sources[1].max_fetch_size (file {dir}/config.yaml): 1MiB is out of range: use 16MiB to 64GiB",
+			},
+		},
+		{
+			name: "a source limit of the wrong type",
+			in:   input{env: []string{`TRUEUP_SOURCES=[{"name":"a","kind":"git","url":"https://example.com/a.git","format":"devicetype-library","max_files":[1]}]`}},
+			want: []string{"sources[0].max_files (env TRUEUP_SOURCES): must be a string or a number"},
+		},
+		{
 			name: "a source missing its required fields",
 			in:   input{env: []string{`TRUEUP_SOURCES=[{}]`}},
 			want: []string{
@@ -869,7 +966,7 @@ func TestLoadProblems(t *testing.T) {
 				`sources[0].ref (file {dir}/config.yaml): "-main" is not a valid Git branch or tag name`,
 				`sources[0].format (file {dir}/config.yaml): unknown format "netbox": use devicetype-library`,
 				`sources[0].include[0] (file {dir}/config.yaml): must be relative to the top of the source, with no leading /`,
-				`sources[0].include[1] (file {dir}/config.yaml): must not contain ..`,
+				`sources[0].include[1] (file {dir}/config.yaml): must not contain . or .. as a segment`,
 				`sources[0].exclude[0] (file {dir}/config.yaml): must not be empty`,
 				`sources[1].url (file {dir}/config.yaml): must use https or ssh`,
 				`sources[2].name (file {dir}/config.yaml): "lib" is the name of another source`,

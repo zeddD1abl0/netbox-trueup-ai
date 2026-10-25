@@ -3,7 +3,7 @@
 This document lists the tools, libraries, and AI skills used to build NetBox TrueUp AI, and why each was chosen. It doubles as a reference for setting up a complete development environment, including AI-assisted development with your own Claude account.
 
 **Audience:** human contributors and AI coding agents.
-**Last reviewed:** 2026-10-24. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
+**Last reviewed:** 2026-10-26. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
 
 ## Status legend
 
@@ -183,7 +183,7 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | --- | --- | --- |
 | [go.yaml.in/yaml/v3](https://github.com/yaml/go-yaml) | Use | Maintained path of the de-facto Go YAML library. Its `yaml.Node` API keeps comments and key order, which we need when users edit YAML in the UI and we write it back. `gopkg.in/yaml.v3` is frozen. Move to v4 once it leaves release candidate (v4.0.0-rc.6 as of June 2026). Already used by the config loader to check that the config file is a mapping, and by koanf's YAML parser. |
 | [santhosh-tekuri/jsonschema](https://github.com/santhosh-tekuri/jsonschema) (v6) | Use | Validates source YAML, such as devicetype-library files against that library's JSON schemas, before anything reaches NetBox. |
-| [go-git](https://github.com/go-git/go-git) | Use | Clones and fetches source repositories in pure Go, so the container image and Windows builds don't need a `git` binary. Records the commit that produced each object. |
+| [go-git](https://github.com/go-git/go-git) (v6, beta) | Use | Clones source repositories in pure Go, so the container image and Windows builds don't need a `git` binary, and reads a commit's files from Git's object store without checking them out. v6 rather than the stable v5, because only v6 can ask a server to leave out large files (a partial-clone filter), which cuts devicetype-library's download from 871 MB to 489 MB at the default limit, and lets TrueUp set its HTTP client, redirect policy and allowed schemes for each fetch rather than for the whole process. Pinned at 6.0.0-beta.1 until 6.0.0, with betas taken through Dependabot. Measurements and the alternatives are in [ADR 0020](adr/0020-git-sources-with-go-git.md). Its go-billy v6 filesystem confines clones to their directory through `os.Root`. Tests serve repositories with go-git's own server, and with `git http-backend` where `git` is installed, since go-git's server can't filter. |
 
 ### 3.3 Storage
 

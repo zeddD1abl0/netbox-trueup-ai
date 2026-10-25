@@ -584,6 +584,14 @@ func (ld *loader) decodeSources(raw any, where string) ([]Source, bool) {
 				s.Include, good = ld.strs(key, where, v)
 			case "exclude":
 				s.Exclude, good = ld.strs(key, where, v)
+			case "max_file_size":
+				s.MaxFileSize, good = ld.scalar(key, where, v)
+			case "max_files":
+				s.MaxFiles, good = ld.scalar(key, where, v)
+			case "fetch_timeout":
+				s.FetchTimeout, good = ld.scalar(key, where, v)
+			case "max_fetch_size":
+				s.MaxFetchSize, good = ld.scalar(key, where, v)
 			default:
 				ld.problem(key, where, "unknown field")
 			}
@@ -603,6 +611,22 @@ func (ld *loader) str(key, where string, v any) (string, bool) {
 		ld.problem(key, where, "must be a string")
 	}
 	return s, ok
+}
+
+// scalar reads a field that takes a string or a number, as a kindScalar
+// setting does, and returns the number as its decimal text.
+func (ld *loader) scalar(key, where string, v any) (string, bool) {
+	if v == nil {
+		return "", true
+	}
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	if s, ok := numberText(v); ok {
+		return s, true
+	}
+	ld.problem(key, where, "must be a string or a number")
+	return "", false
 }
 
 func (ld *loader) strs(key, where string, v any) ([]string, bool) {
@@ -752,11 +776,13 @@ func readFile(ctx context.Context, path string, limit int64) (data []byte, world
 	return data, worldReadable, nil
 }
 
+// cloneSources copies sources for Entries, without their Limits.
 func cloneSources(in []Source) []Source {
 	out := make([]Source, len(in))
 	for i, s := range in {
 		s.Include = slices.Clone(s.Include)
 		s.Exclude = slices.Clone(s.Exclude)
+		s.Limits = SourceLimits{}
 		out[i] = s
 	}
 	return out

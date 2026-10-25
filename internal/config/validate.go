@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -10,11 +11,12 @@ import (
 	"net"
 	"net/url"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/glob"
 )
 
 // Problem is one thing wrong with the configuration. Its message never
@@ -357,7 +359,7 @@ func (ld *loader) sources(r resolved) []Source {
 		case s.URL == "":
 			ld.problem(at("url"), r.where, "is required")
 		case s.Kind == SourceKindGit:
-			if msg := checkGitURL(s.URL); msg != "" {
+			if msg := GitURLProblem(s.URL); msg != "" {
 				ld.problem(at("url"), r.where, msg)
 			}
 		}
@@ -379,10 +381,25 @@ func (ld *loader) sources(r resolved) []Source {
 			patterns []string
 		}{{"include", s.Include}, {"exclude", s.Exclude}} {
 			for j, p := range list.patterns {
-				if msg := checkPattern(p); msg != "" {
+				if msg := glob.Problem(p); msg != "" {
 					ld.problem(fmt.Sprintf("%s[%d]", at(list.field), j), r.where, msg)
 				}
 			}
+		}
+
+		// An unset limit takes its default.
+		limit := func(field, value string) resolved {
+			return resolved{key: at(field), where: r.where, str: cmp.Or(value, DefaultSourceLimit(field))}
+		}
+		r.sources[i].Limits = SourceLimits{
+			MaxFileSize: ld.size(limit("max_file_size", s.MaxFileSize),
+				minSourceMaxFileSize, maxSourceMaxFileSize, defaultSourceMaxFileSize),
+			MaxFiles: ld.integer(limit("max_files", s.MaxFiles),
+				1, maxSourceMaxFiles, defaultSourceMaxFiles),
+			FetchTimeout: ld.duration(limit("fetch_timeout", s.FetchTimeout),
+				minSourceFetchTimeout, maxSourceFetchTimeout, defaultSourceFetchTimeout),
+			MaxFetchSize: ld.size(limit("max_fetch_size", s.MaxFetchSize),
+				minSourceMaxFetchSize, maxSourceMaxFetchSize, defaultSourceMaxFetchSize),
 		}
 	}
 	return r.sources
@@ -392,14 +409,15 @@ func (ld *loader) sources(r resolved) []Source {
 // Neither the user nor the host may start with a hyphen.
 var scpURL = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:\S+$`)
 
-// checkGitURL returns what is wrong with a Git source URL, or "". Only https
-// and ssh are allowed (B1 in docs/architecture.md), and credentials don't
-// belong in the URL: an https URL can't have a user name, which GitHub and
-// GitLab accept as a token, and an ssh URL can name a user but not a
-// password. A host or user starting with a hyphen is refused, because git
-// and ssh would read it as an option. Messages never repeat the URL, which
-// could hold a secret.
-func checkGitURL(raw string) string {
+// GitURLProblem returns what is wrong with a Git source URL, or "" if nothing
+// is. Only https and ssh are allowed (B1 in docs/architecture.md), and
+// credentials don't belong in the URL: an https URL can't have a user name,
+// which GitHub and GitLab accept as a token, and an ssh URL can name a user
+// but not a password. A host or user starting with a hyphen is refused,
+// because git and ssh would read it as an option. The Git source kind checks
+// its URL with it too, so that the two agree. Messages never repeat the URL,
+// which could hold a secret.
+func GitURLProblem(raw string) string {
 	if !strings.Contains(raw, "://") {
 		if scpURL.MatchString(raw) {
 			return ""
@@ -448,18 +466,4 @@ func validRef(ref string) bool {
 	return !strings.ContainsFunc(ref, func(c rune) bool {
 		return unicode.IsSpace(c) || unicode.IsControl(c) || strings.ContainsRune(`~^:?*[\`, c)
 	})
-}
-
-// checkPattern returns what is wrong with an include or exclude pattern, or
-// "". Patterns are matched against paths inside the source.
-func checkPattern(p string) string {
-	switch {
-	case p == "":
-		return "must not be empty"
-	case strings.HasPrefix(p, "/"):
-		return "must be relative to the top of the source, with no leading /"
-	case slices.Contains(strings.Split(p, "/"), ".."):
-		return "must not contain .."
-	}
-	return ""
 }

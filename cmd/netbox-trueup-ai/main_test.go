@@ -27,6 +27,12 @@ type result struct {
 // never read.
 func runCLI(t *testing.T, stdout io.Writer, env []string, args ...string) result {
 	t.Helper()
+	return runCLIApp(t, stdout, func(*app) {}, env, args...)
+}
+
+// runCLIApp is runCLI with the app adjusted by configure before it runs.
+func runCLIApp(t *testing.T, stdout io.Writer, configure func(*app), env []string, args ...string) result {
+	t.Helper()
 	var out, errOut bytes.Buffer
 	if stdout == nil {
 		stdout = &out
@@ -37,6 +43,7 @@ func runCLI(t *testing.T, stdout io.Writer, env []string, args ...string) result
 		environ:           env,
 		defaultConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
 	}
+	configure(a)
 	code := run(t.Context(), a, args)
 	return result{code: code, stdout: out.String(), stderr: errOut.String()}
 }
@@ -167,6 +174,7 @@ sources:
     ref: master
     format: devicetype-library
     include: ["device-types/Juniper/**"]
+    max_file_size: 64KiB
 `)
 	args = []string{"config", "show", "--config", filepath.Join(dir, "config.yaml"), "--data-dir", "/srv/trueup"}
 	env = []string{"TRUEUP_LOG_LEVEL=error", "TRUEUP_DATABASE_URL=postgres://trueup:s3cret@db.example.com/trueup"}
@@ -183,25 +191,29 @@ func TestConfigShowText(t *testing.T) {
 	}
 	want := strings.ReplaceAll(`Config file: {dir}/config.yaml (from --config)
 
-SETTING                   FROM                        VALUE
-log.level                 env TRUEUP_LOG_LEVEL        error
-log.format                default                     text
-data_dir                  flag --data-dir             /srv/trueup
-database.url              env TRUEUP_DATABASE_URL     [redacted]
-netbox.url                file                        https://netbox.example.com
-netbox.token              file, as netbox.token_file  [redacted] (read from {dir}/token)
-netbox.ca_bundle          default                     (not set)
-netbox.timeout            default                     30s
-netbox.max_requests       default                     4
-netbox.retries            default                     3
-netbox.max_response_size  default                     32MiB
-sources[0].name           file                        devicetype-library
-sources[0].kind           file                        git
-sources[0].url            file                        https://github.com/netbox-community/devicetype-library.git
-sources[0].ref            file                        master
-sources[0].format         file                        devicetype-library
-sources[0].include        file                        ["device-types/Juniper/**"]
-sources[0].exclude        file                        []
+SETTING                    FROM                        VALUE
+log.level                  env TRUEUP_LOG_LEVEL        error
+log.format                 default                     text
+data_dir                   flag --data-dir             /srv/trueup
+database.url               env TRUEUP_DATABASE_URL     [redacted]
+netbox.url                 file                        https://netbox.example.com
+netbox.token               file, as netbox.token_file  [redacted] (read from {dir}/token)
+netbox.ca_bundle           default                     (not set)
+netbox.timeout             default                     30s
+netbox.max_requests        default                     4
+netbox.retries             default                     3
+netbox.max_response_size   default                     32MiB
+sources[0].name            file                        devicetype-library
+sources[0].kind            file                        git
+sources[0].url             file                        https://github.com/netbox-community/devicetype-library.git
+sources[0].ref             file                        master
+sources[0].format          file                        devicetype-library
+sources[0].include         file                        ["device-types/Juniper/**"]
+sources[0].exclude         file                        []
+sources[0].max_file_size   file                        64KiB
+sources[0].max_files       default                     50000
+sources[0].fetch_timeout   default                     15m
+sources[0].max_fetch_size  default                     2GiB
 `, "{dir}", dir)
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("config show (-want +got):\n%s", diff)
@@ -240,13 +252,17 @@ func TestConfigShowJSON(t *testing.T) {
 			{
 				Key: "sources", Origin: "file", Name: "sources",
 				Value: []any{map[string]any{
-					"name":    "devicetype-library",
-					"kind":    "git",
-					"url":     "https://github.com/netbox-community/devicetype-library.git",
-					"ref":     "master",
-					"format":  "devicetype-library",
-					"include": []any{"device-types/Juniper/**"},
-					"exclude": []any{},
+					"name":           "devicetype-library",
+					"kind":           "git",
+					"url":            "https://github.com/netbox-community/devicetype-library.git",
+					"ref":            "master",
+					"format":         "devicetype-library",
+					"include":        []any{"device-types/Juniper/**"},
+					"exclude":        []any{},
+					"max_file_size":  "64KiB",
+					"max_files":      "",
+					"fetch_timeout":  "",
+					"max_fetch_size": "",
 				}},
 			},
 		},

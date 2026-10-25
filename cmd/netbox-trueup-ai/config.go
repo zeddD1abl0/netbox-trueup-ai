@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -122,8 +123,18 @@ func writeShowText(w io.Writer, cfg *config.Config) error {
 					{"format", s.Format},
 					{"include", list(s.Include)},
 					{"exclude", list(s.Exclude)},
+					{"max_file_size", s.MaxFileSize},
+					{"max_files", s.MaxFiles},
+					{"fetch_timeout", s.FetchTimeout},
+					{"max_fetch_size", s.MaxFetchSize},
 				} {
-					add(fmt.Sprintf("%s[%d].%s", e.Key, i, f[0]), f[1])
+					key := fmt.Sprintf("%s[%d].%s", e.Key, i, f[0])
+					// An unset limit takes its default, so show that.
+					if def := config.DefaultSourceLimit(f[0]); def != "" && f[1] == "" {
+						rows = append(rows, [3]string{key, config.OriginDefault.String(), def})
+						continue
+					}
+					add(key, f[1])
 				}
 			}
 		case string:
@@ -205,9 +216,10 @@ func list(items []string) string {
 }
 
 // cell quotes a value holding characters that would break the table or
-// mislead the terminal (see unsafeRune). strconv.Quote escapes them all.
+// mislead the terminal (see unsafeRune), or bytes that aren't UTF-8.
+// strconv.Quote escapes them all.
 func cell(s string) string {
-	if strings.ContainsFunc(s, unsafeRune) {
+	if !utf8.ValidString(s) || strings.ContainsFunc(s, unsafeRune) {
 		return strconv.Quote(s)
 	}
 	return s

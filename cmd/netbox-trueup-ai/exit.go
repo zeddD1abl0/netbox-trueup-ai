@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -20,7 +21,8 @@ const (
 	exitUsage   = 2 // unknown command or flag, or bad arguments
 	exitConfig  = 3 // the configuration is invalid or can't be read
 
-	exitCannotRead = 4 // netbox check: the token can't read every object type TrueUp reads
+	exitCannotRead  = 4 // netbox check: the token can't read every object type TrueUp reads
+	exitFetchFailed = 4 // source fetch: some sources couldn't be fetched
 )
 
 // outcomeError is an outcome particular to one command, with an exit code of
@@ -73,22 +75,29 @@ func (a *app) reportError(cmd *cobra.Command, err error, code int) {
 }
 
 // escapeControls escapes the characters in an error's message that could
-// drive or mislead a terminal (see unsafeRune), since it can hold text from
-// NetBox or a certificate. Line breaks stay, for errors that list several
+// drive or mislead a terminal (see unsafeRune), and bytes that aren't UTF-8,
+// since it can hold text from NetBox, a certificate or a Git repository. Line breaks stay, for errors that list several
 // problems.
 func escapeControls(msg string) string {
 	unsafe := func(r rune) bool { return r != '\n' && unsafeRune(r) }
-	if !strings.ContainsFunc(msg, unsafe) {
+	if utf8.ValidString(msg) && !strings.ContainsFunc(msg, unsafe) {
 		return msg
 	}
 	var b strings.Builder
-	for _, r := range msg {
-		if unsafe(r) {
+	for len(msg) > 0 {
+		r, size := utf8.DecodeRuneInString(msg)
+		switch {
+		case r == utf8.RuneError && size == 1:
+			// A byte that isn't UTF-8, such as 0x9b, which some
+			// terminals read as a control sequence.
+			fmt.Fprintf(&b, `\x%02x`, msg[0])
+		case unsafe(r):
 			q := strconv.QuoteRune(r)
 			b.WriteString(q[1 : len(q)-1])
-			continue
+		default:
+			b.WriteString(msg[:size])
 		}
-		b.WriteRune(r)
+		msg = msg[size:]
 	}
 	return b.String()
 }

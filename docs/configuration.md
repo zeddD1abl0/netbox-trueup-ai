@@ -105,8 +105,25 @@ Each source in the `sources` list has these fields:
 | `url` | Yes | For Git, an `https` or `ssh` URL, such as `https://github.com/netbox-community/devicetype-library.git` or `git@github.com:netbox-community/devicetype-library.git`. An `https` URL can't hold a user name or password, since a token can pass as a user name. An `ssh` URL can name a user, but not a password. Neither can have a query or fragment. |
 | `ref` | No | The Git branch or tag to follow. When it isn't set, TrueUp follows the repository's default branch. |
 | `format` | Yes | How the source's files are laid out. Only `devicetype-library` for now. |
-| `include` | No | Patterns of paths to read, relative to the top of the source, such as `device-types/Juniper/**`. When it isn't set, TrueUp reads everything. |
-| `exclude` | No | Patterns of paths to skip. |
+| `include` | No | [Patterns](#patterns) of paths to read, relative to the top of the source, such as `device-types/Juniper/**`. When it isn't set, TrueUp reads everything. |
+| `exclude` | No | Patterns of paths to skip, even ones `include` chooses. |
+| `max_file_size` | No | The largest file to read: a number of bytes, or one with `KiB`, `MiB` or `GiB`, from `1KiB` to `64MiB`. Default `1MiB`. Larger files are skipped and reported, and a Git fetch doesn't download them. |
+| `max_files` | No | The most files the source may hold once its patterns apply, from 1 to 1000000. Default `50000`. A source with more fails to fetch. |
+| `fetch_timeout` | No | The limit on one fetch of the source: a number and a unit, such as `15m`, from `10s` to `2h`. Default `15m`. |
+| `max_fetch_size` | No | The most one fetch of the source may download, and write to disk, as a size from `16MiB` to `64GiB`. Default `2GiB`. |
+
+A limit can be a YAML number or a string, like other settings that take numbers. `config show` shows each source's limits, with `default` as where a limit came from when the source doesn't set it.
+
+### Patterns
+
+`include` and `exclude` hold patterns, matched against each file's path from the top of the source, with `/` between directories:
+
+- `*` matches any characters within one directory or file name, `?` any one character, and `[...]` one character of a class, such as `[A-C]`, or `[^...]` one character outside it. A backslash makes the character after it match itself.
+- `**`, as a whole name between slashes, matches any number of directories, none included: `device-types/**/*.yaml` matches `device-types/x.yaml` and `device-types/Juniper/x.yaml`.
+- A pattern that matches a directory matches everything in it, so `device-types/Juniper` chooses the same files as `device-types/Juniper/**`.
+- Matching is case-sensitive.
+
+A file is read when an `include` pattern matches it, or `include` isn't set, and no `exclude` pattern does. A pattern can't start or end with `/`, or contain `.` or `..` as a name.
 
 ## Connecting to NetBox
 
@@ -136,6 +153,34 @@ dcim.consoleporttemplate        /api/dcim/console-port-templates/         no
 - **Proxies and redirects.** For an `https` NetBox, TrueUp uses the proxy that `HTTPS_PROXY` names, except for hosts in `NO_PROXY` and this machine. It never sends plain `http` through a proxy, which would see the token, so an `http` NetBox is reached directly. It never follows a redirect, so that the token can't be led elsewhere: point `netbox.url` at the address NetBox's API answers on. A reverse proxy in front of NetBox must pass the `Authorization` header on; Apache, for one, needs `WSGIPassAuthorization On`. An answer that a proxy or firewall gives instead of NetBox, without NetBox's `API-Version` header, is reported as such, never as a missing permission.
 - **Retries.** A read that fails because NetBox couldn't be reached, didn't answer within `netbox.timeout`, or answered 429, 500, 502, 503 or 504 is tried again, up to `netbox.retries` more times. The waits start at 1 second and double each time up to 30 seconds, with some randomness. When NetBox answers 429 or 503 with `Retry-After`, TrueUp waits as long as it asks, but gives up at once if that is more than a minute. Other failures, such as a certificate that doesn't verify or a TLS handshake the server refuses, aren't retried. Each retry is logged as a warning.
 
+## Fetching sources
+
+To fetch the latest version of every configured source, or of those named, run:
+
+```sh
+netbox-trueup-ai source fetch [source...]
+```
+
+It reports each source's version and the files it holds once its patterns apply, and what it skipped:
+
+```text
+SOURCE              REF     VERSION                                   FILES  SKIPPED
+devicetype-library  master  19470a551058fc9207f036371beefc41b197202e  17413  174
+
+Skipped files (--output json lists them all):
+  devicetype-library: 174 larger than max_file_size, such as elevation-images/Arista/arista-awe-5510.front.png
+```
+
+- **What a fetch does.** TrueUp asks the repository which commit its branch or tag is at: `ref`, or the default branch when `ref` isn't set. A name that is both a branch and a tag means the branch, as with `git clone --branch`. If the cache already holds that commit, nothing is downloaded. Otherwise TrueUp clones that one commit, without its history and without files larger than `max_file_size`, and reads the commit's files from Git's own storage without checking them out, so Git hooks, filters and submodules never run. TrueUp needs no `git` executable ([ADR 0020](adr/0020-git-sources-with-go-git.md)).
+- **The cache.** Each source has its own cache in `<data_dir>/cache/sources/<name>/`: a clone, in a directory named for its commit and a number, and `latest.json`, which names it. A new clone replaces the old one only once it is complete and its files have passed every check, so a fetch that fails leaves the previous version in place. The cache is disposable: delete it, and the next fetch downloads the source again. If a clone in the cache is damaged, the error says which directory to delete. `source fetch` removes the caches of sources that are no longer configured. Changing `url` or `ref`, or raising `max_file_size`, means a new clone at the next fetch; changing patterns or lowering a limit doesn't.
+- **Files.** Only plain files are read. These are skipped and reported, if the patterns choose them: files larger than `max_file_size`, symbolic links, which are never followed, Git submodules, and entries whose names are unsafe: empty, `.` or `..`, holding a slash, a backslash, a control character or invalid UTF-8, named `.git`, given twice in a directory, or more than 128 directories deep or 4096 bytes long. Nothing inside an unsafe directory is read.
+- **Limits.** A fetch stops after `fetch_timeout`; when the server sends more than `max_fetch_size`, or the fetch would write more than that to disk; when the repository's list of branches and tags is larger than 32 MiB; or when the server sends more than 1,100,000 objects. A source whose patterns choose more than `max_files` files fails, as does one holding more than a million entries in all, or a directory whose Git tree is larger than 32 MiB. Each fails the source, and leaves its previous version in the cache.
+- **Cost.** Each file is read once, after each fetch, to give its size and SHA-256 digest. Fetched whole at the defaults, devicetype-library downloads about 490 MB in about 35 seconds, and every fetch spends about 13 seconds reading its 17,000 files, mostly images. With `include: ["device-types", "schema"]`, the same reading takes about a second. Patterns don't shrink the download, since Git servers can't leave files out by path, but a smaller `max_file_size` does: at `128KiB`, the library downloads 64 MB in 6 seconds, with every YAML file still in.
+- **Private repositories.** Not yet. TrueUp fetches over `https` only, without credentials. An `ssh` URL, which the configuration accepts, fails to fetch until credentials are supported.
+- **TLS, proxies and redirects.** TrueUp verifies the server's certificate against the system's trust store, and nothing turns verification off. It uses the proxy that `HTTPS_PROXY` names, except for hosts in `NO_PROXY` and this machine. It never follows a redirect: use the repository's own URL. It reads nothing from Git's configuration, credential helpers, `~/.ssh` or `~/.netrc`.
+- **Exit codes.** 0 when every source was fetched. 4 when some couldn't be, with the result printed as usual and each one's error. 2 when a name given isn't a configured source, 3 for a configuration problem or no sources at all, and 1 when the command couldn't run, such as when the data directory can't be written to ([ADR 0018](adr/0018-cli-conventions.md)).
+- **JSON.** With `--output json`, the result is one document whose fields scripts can rely on: `ok` (whether every source was fetched), and `sources`, with for each one `name`, `kind`, `url`, `ref` (the branch or tag followed, the default branch's name when `ref` isn't set), `ok`, `version` (the commit), `files` (how many it holds), `skipped`, each with `path` and `reason` (`too_large`, `symlink`, `submodule`, `unsafe_path` or `not_a_file`), and `error`. `ref`, `version`, `files` and `error` are `null` where they don't apply.
+
 ## `config show`
 
 `config show` prints each setting, the layer it came from and its value:
@@ -158,7 +203,7 @@ netbox.timeout            default                     30s
 With `--output json` it prints the same as one JSON document, whose fields scripts can rely on ([ADR 0018](adr/0018-cli-conventions.md)):
 
 - `config_file`: the file read, as `path` and `origin`, or `null` if none was read;
-- `settings`: one object per setting, with `key`, `value`, `origin` (`default`, `file`, `env` or `flag`), and, where they apply, `name` (the flag, variable or key that set it), `secret` and `file` (the file a secret was read from);
+- `settings`: one object per setting, with `key`, `value`, `origin` (`default`, `file`, `env` or `flag`), and, where they apply, `name` (the flag, variable or key that set it), `secret` and `file` (the file a secret was read from). In `sources`, a limit the source doesn't set is `""`, and its default applies;
 - `warnings`: one object per warning, with `message` and, where it is about one setting, `key`.
 
 Warnings, such as a secret file that every user can read, are also logged. `config show` prints them after the settings whatever the log level.

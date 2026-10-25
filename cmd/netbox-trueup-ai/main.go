@@ -2,8 +2,8 @@
 // Git repositories.
 //
 // The project is in early development: for now the command reports its
-// version, shows its configuration, and checks that it can read what it needs
-// from NetBox. Every command follows the conventions in
+// version, shows its configuration, checks that it can read what it needs
+// from NetBox, and fetches sources. Every command follows the conventions in
 // docs/adr/0018-cli-conventions.md.
 package main
 

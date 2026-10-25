@@ -99,7 +99,7 @@ func TestShortDuration(t *testing.T) {
 	}
 }
 
-func TestCheckGitURL(t *testing.T) {
+func TestGitURLProblem(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -130,8 +130,8 @@ func TestCheckGitURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
 			t.Parallel()
-			if got := checkGitURL(tt.url); got != tt.want {
-				t.Errorf("checkGitURL(%q) = %q, want %q", tt.url, got, tt.want)
+			if got := GitURLProblem(tt.url); got != tt.want {
+				t.Errorf("GitURLProblem(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
 	}
@@ -189,31 +189,6 @@ func TestWindowsDevice(t *testing.T) {
 		if got := windowsDevice(name); got != want {
 			t.Errorf("windowsDevice(%q) = %v, want %v", name, got, want)
 		}
-	}
-}
-
-func TestCheckPattern(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		pattern string
-		want    string
-	}{
-		{pattern: "device-types/Juniper/**"},
-		{pattern: "device-types/*/*.yaml"},
-		{pattern: "a..b/*"},
-		{pattern: "", want: "must not be empty"},
-		{pattern: "/device-types/**", want: "must be relative to the top of the source, with no leading /"},
-		{pattern: "../outside", want: "must not contain .."},
-		{pattern: "device-types/../../outside", want: "must not contain .."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.pattern, func(t *testing.T) {
-			t.Parallel()
-			if got := checkPattern(tt.pattern); got != tt.want {
-				t.Errorf("checkPattern(%q) = %q, want %q", tt.pattern, got, tt.want)
-			}
-		})
 	}
 }
 
