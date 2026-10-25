@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -180,8 +181,9 @@ func TestRetryAfter(t *testing.T) {
 		{header: "-1"},
 		{header: "1.5"},
 		{header: "soon"},
-		{header: "99999999999", want: 1 << 32 * time.Second, ok: true},
-		{header: "999999999999999999999999999999", want: 1 << 32 * time.Second, ok: true},
+		{header: "4294967295", want: math.MaxUint32 * time.Second, ok: true},
+		{header: "4294967296", want: math.MaxUint32 * time.Second, ok: true},
+		{header: "999999999999999999999999999999", want: math.MaxUint32 * time.Second, ok: true},
 	}
 	for _, tt := range tests {
 		if got, ok := retryAfter(tt.header, now); got != tt.want || ok != tt.ok {

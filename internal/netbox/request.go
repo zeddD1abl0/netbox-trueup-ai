@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"mime"
 	"net"
@@ -318,20 +319,22 @@ func (c *Client) retryWait(ctx context.Context, retry int, ans answer, failure e
 }
 
 // retryAfter reads a Retry-After header: a number of seconds, or an HTTP date
-// (RFC 9110, section 10.2.3). A date in the past means now. A number too
-// large to hold is read as 2^32 seconds, which is still far too long to wait.
+// (RFC 9110, section 10.2.3). A date in the past means now. A number of
+// seconds too large for 32 bits, over 136 years, is read as the largest that
+// fits, which is still far too long to wait.
 func retryAfter(v string, now time.Time) (time.Duration, bool) {
-	const most = 1 << 32 // seconds, which fit in a time.Duration
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0, false
 	}
-	secs, err := strconv.ParseUint(v, 10, 64)
+	// A bit size of 32 keeps secs within what a time.Duration of seconds can
+	// hold, so the conversion below can't overflow.
+	secs, err := strconv.ParseUint(v, 10, 32)
 	if errors.Is(err, strconv.ErrRange) {
-		secs, err = most, nil
+		secs, err = math.MaxUint32, nil
 	}
 	if err == nil {
-		return time.Duration(min(secs, most)) * time.Second, true
+		return time.Duration(secs) * time.Second, true
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		return max(t.Sub(now), 0), true
