@@ -17,6 +17,7 @@ import (
 
 	// The SQLite driver, registered as "sqlite"; openDB uses its connector.
 	sqlitedriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // busyTimeout is how long a connection waits for another's lock before
@@ -84,8 +85,8 @@ func openDB(ctx context.Context, path string) (_ *sql.DB, err error) {
 			err = errors.Join(err, db.Close())
 		}
 	}()
-	var mode string
-	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode); err != nil {
+	mode, err := setWAL(ctx, db)
+	if err != nil {
 		return nil, fmt.Errorf("put the database in WAL mode: %w", err)
 	}
 	if !strings.EqualFold(mode, "wal") {
@@ -99,6 +100,29 @@ func openDB(ctx context.Context, path string) (_ *sql.DB, err error) {
 		return nil, errors.New("the database doesn't enforce foreign keys")
 	}
 	return db, nil
+}
+
+// setWAL puts the database in WAL mode, and returns the mode SQLite set.
+// Switching a new database needs SQLite's exclusive lock. When processes
+// open a new database at once, SQLite can refuse at once with SQLITE_BUSY,
+// rather than wait for the busy timeout, since a connection that holds a
+// read lock waiting for another's write lock could deadlock; so it tries
+// again, for as long as the busy timeout.
+func setWAL(ctx context.Context, db *sql.DB) (string, error) {
+	deadline := time.Now().Add(busyTimeout)
+	for {
+		var mode string
+		err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode)
+		var sqliteErr *sqlitedriver.Error
+		if err == nil || !errors.As(err, &sqliteErr) || sqliteErr.Code()&0xff != sqlite3.SQLITE_BUSY || time.Now().After(deadline) {
+			return mode, err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 // checkOwner checks that the database is TrueUp's, by its application ID,
