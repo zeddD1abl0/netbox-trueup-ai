@@ -24,95 +24,102 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-// lockSuffix names the file beside the database whose lock puts processes
-// in order: each holds a shared lock while it has the database open, and a
-// migration needs the exclusive one.
-const lockSuffix = "-lock"
+// Two files beside the database put processes in order:
+//
+//   - each process holds a shared lock on lockSuffix's file while it has the
+//     database open, and a migration needs the exclusive one, so that the
+//     schema never changes under a process that has read it;
+//   - a migration holds gateSuffix's file from before it waits for that
+//     exclusive lock until it is done, and each process takes the gate for a
+//     moment before its shared lock, so that a migration waiting for running
+//     processes to close the database isn't put off for ever by new ones.
+const (
+	lockSuffix = "-lock"
+	gateSuffix = "-gate"
+)
 
-// lockTimeout is the longest to wait for that lock: for a migration to
-// finish, before opening the database, or for other processes to close it,
-// before migrating it.
+// lockTimeout is the longest to wait for either: for a migration to finish,
+// before opening the database, or for other processes to close it, before
+// migrating it.
 const lockTimeout = 2 * time.Minute
 
-// openSchema takes the shared lock on the file beside the database, which
-// the store holds while it is open, and returns it once the schema is the
-// latest this release knows, migrating it if need be. To migrate, it trades
-// the shared lock for the exclusive one, then takes the shared lock again
-// and reads the schema's version afresh, since another process may have
-// changed it meanwhile.
-func openSchema(ctx context.Context, db *sql.DB, dbPath string, files fs.FS, timeout time.Duration, log *slog.Logger) (*filelock.Lock, store.Migrated, error) {
-	migrated := store.Migrated{Engine: Engine, Location: dbPath}
+// heldError means another process held one of the database's locks for
+// longer than the wait allowed. It says what in its own words, and wraps
+// filelock.ErrTimeout.
+type heldError struct{ msg string }
+
+func (e *heldError) Error() string { return e.msg }
+func (e *heldError) Unwrap() error { return filelock.ErrTimeout }
+
+// openSchema returns the shared lock on the file beside the database, which
+// the store holds while it is open, once the schema is the latest this
+// release knows, migrating it if need be. It holds the gate while it reads
+// the schema's version, and, if it migrates, until it is done.
+func openSchema(ctx context.Context, db *sql.DB, dbPath string, files fs.FS, timeout time.Duration, log *slog.Logger) (_ *filelock.Lock, migrated store.Migrated, err error) {
+	migrated = store.Migrated{Engine: Engine, Location: dbPath}
 	known, err := latestVersion(files)
 	if err != nil {
 		return nil, migrated, err
 	}
-	for first := true; ; first = false {
-		lock, err := filelock.Shared(ctx, dbPath+lockSuffix, timeout, func() {
-			log.Info("waiting for another TrueUp process to finish migrating the database")
-		})
-		if err != nil {
-			return nil, migrated, lockError(err, fmt.Sprintf("another TrueUp process has been migrating the database for over %s: is a migration stuck?", timeout))
-		}
-		version, err := schemaVersion(ctx, db)
-		if err != nil {
-			return nil, migrated, errors.Join(err, lock.Unlock())
-		}
-		if first {
-			migrated.VersionBefore = version
-		}
-		migrated.Version = version
-		switch {
-		case version == known:
-			return lock, migrated, nil
-		case version > known:
-			return nil, migrated, errors.Join(&store.SchemaTooNewError{Version: version, Known: known}, lock.Unlock())
-		case !first:
-			return nil, migrated, errors.Join(fmt.Errorf("the database's schema is at version %d after migrating, not %d", version, known), lock.Unlock())
-		}
-		if err := lock.Unlock(); err != nil {
-			return nil, migrated, fmt.Errorf("release the database's lock: %w", err)
-		}
-		applied, err := migrateExclusively(ctx, db, dbPath, files, known, timeout, log)
-		migrated.Applied = append(migrated.Applied, applied...)
-		if err != nil {
-			return nil, migrated, err
-		}
+	gate, err := filelock.Exclusive(ctx, dbPath+gateSuffix, timeout, func() {
+		log.Info("waiting for another TrueUp process to finish migrating the database")
+	})
+	if err != nil {
+		return nil, migrated, lockError(err, fmt.Sprintf("another TrueUp process has been migrating the database, or waiting to, for over %s: is a migration stuck?", timeout))
 	}
+	defer func() {
+		if unlockErr := gate.Unlock(); unlockErr != nil {
+			err = errors.Join(err, fmt.Errorf("release the database's gate: %w", unlockErr))
+		}
+	}()
+	// Holding the gate, no migration holds the exclusive lock, so the
+	// shared one comes at once.
+	shared, err := filelock.Shared(ctx, dbPath+lockSuffix, timeout, nil)
+	if err != nil {
+		return nil, migrated, lockError(err, "another TrueUp process holds the database's lock without its gate")
+	}
+	version, err := schemaVersion(ctx, db)
+	if err != nil {
+		return nil, migrated, errors.Join(err, shared.Unlock())
+	}
+	migrated.VersionBefore, migrated.Version = version, version
+	switch {
+	case version == known:
+		return shared, migrated, nil
+	case version > known:
+		return nil, migrated, errors.Join(&store.SchemaTooNewError{Version: version, Known: known}, shared.Unlock())
+	}
+
+	// Migrate, holding the gate throughout.
+	if err := shared.Unlock(); err != nil {
+		return nil, migrated, fmt.Errorf("release the database's lock: %w", err)
+	}
+	migrated.Applied, err = migrateExclusively(ctx, dbPath, files, known, timeout, log)
+	if err != nil {
+		return nil, migrated, err
+	}
+	if shared, err = filelock.Shared(ctx, dbPath+lockSuffix, timeout, nil); err != nil {
+		return nil, migrated, lockError(err, "another TrueUp process holds the database's lock without its gate")
+	}
+	if migrated.Version, err = schemaVersion(ctx, db); err != nil {
+		return nil, migrated, errors.Join(err, shared.Unlock())
+	}
+	if migrated.Version != known {
+		return nil, migrated, errors.Join(fmt.Errorf("the database's schema is at version %d after migrating, not %d", migrated.Version, known), shared.Unlock())
+	}
+	return shared, migrated, nil
 }
 
 // migrateExclusively applies the migrations the database lacks, holding the
 // exclusive lock, which waits until no other process has the database open.
-// While it waits, it reads the schema's version through db each second, and
-// gives up waiting, applying nothing, once another process has migrated the
-// schema: that process then holds its shared lock for as long as it has the
-// database open. It migrates through a pool of connections of its own,
-// closed afterwards, so that no setting a migration changes, such as
-// foreign_keys, outlives it.
-func migrateExclusively(ctx context.Context, db *sql.DB, dbPath string, files fs.FS, known int64, timeout time.Duration, log *slog.Logger) (_ []store.Migration, err error) {
-	start, noticed := time.Now(), false
-	var lock *filelock.Lock
-	for lock == nil {
-		lock, err = filelock.Exclusive(ctx, dbPath+lockSuffix, min(time.Second, max(timeout-time.Since(start), 0)), nil)
-		if err != nil && !errors.Is(err, filelock.ErrTimeout) {
-			return nil, lockError(err, "")
-		}
-		if lock != nil {
-			break
-		}
-		version, err := schemaVersion(ctx, db)
-		if err != nil {
-			return nil, err
-		}
-		if version >= known {
-			return nil, nil // migrated by another process
-		}
-		if time.Since(start) >= timeout {
-			return nil, fmt.Errorf("other TrueUp processes have had the database open for over %s, so it can't be migrated: let them finish, or stop them, and try again", timeout)
-		}
-		if !noticed {
-			log.Info("waiting for other TrueUp processes to close the database, to migrate it")
-			noticed = true
-		}
+// It migrates through a pool of connections of its own, closed afterwards,
+// so that no setting a migration changes, such as foreign_keys, outlives it.
+func migrateExclusively(ctx context.Context, dbPath string, files fs.FS, known int64, timeout time.Duration, log *slog.Logger) (_ []store.Migration, err error) {
+	lock, err := filelock.Exclusive(ctx, dbPath+lockSuffix, timeout, func() {
+		log.Info("waiting for other TrueUp processes to close the database, to migrate it")
+	})
+	if err != nil {
+		return nil, lockError(err, fmt.Sprintf("other TrueUp processes have had the database open for over %s, so it can't be migrated: let them finish, or stop them, and try again", timeout))
 	}
 	defer func() {
 		if unlockErr := lock.Unlock(); unlockErr != nil {
@@ -132,8 +139,9 @@ func migrateExclusively(ctx context.Context, db *sql.DB, dbPath string, files fs
 	if err != nil {
 		return nil, fmt.Errorf("read the database's schema version: %w", err)
 	}
-	// A newer release may have migrated it since the shared lock went, and
-	// goose would apply nothing to a newer schema, and say nothing.
+	// The gate keeps other migrations out since openSchema read the version,
+	// but goose would apply nothing to a newer schema and say nothing, so
+	// check again rather than rely on it.
 	if before > known {
 		return nil, &store.SchemaTooNewError{Version: before, Known: known}
 	}
@@ -161,12 +169,13 @@ func migrateExclusively(ctx context.Context, db *sql.DB, dbPath string, files fs
 	return applied, nil
 }
 
-// lockError describes a failure to take the database's lock: held for longer
-// than the wait allowed, interrupted, or the lock file's own problem.
+// lockError describes a failure to take one of the database's locks: held
+// for longer than the wait allowed, interrupted, or the lock file's own
+// problem.
 func lockError(err error, held string) error {
 	switch {
 	case errors.Is(err, filelock.ErrTimeout):
-		return errors.New(held)
+		return &heldError{held}
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("waiting for the database's lock: %w", err)
 	default:

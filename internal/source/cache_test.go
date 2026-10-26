@@ -1,8 +1,10 @@
 package source
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -54,9 +56,13 @@ func TestLockCache(t *testing.T) {
 
 	// Another fetch of the source waits, and gives up; one of another
 	// source doesn't wait.
-	if _, err := LockCache(t.Context(), root, "lib", 200*time.Millisecond, nil); err == nil ||
-		err.Error() != "another TrueUp process has been fetching the source for over 200ms" {
+	if _, err := LockCache(t.Context(), root, "lib", 200*time.Millisecond, nil); !errors.Is(err, ErrFetching) ||
+		err.Error() != "another TrueUp process is fetching the source, and has been for over 200ms" {
 		t.Errorf("a second lock on lib = %v, want it to give up", err)
+	}
+	// A source whose name looks like a lock file's has a cache of its own.
+	if err := os.MkdirAll(CacheDir(root, "lib.lock"), 0o700); err != nil {
+		t.Errorf("the cache of a source named lib.lock: %v", err)
 	}
 	other, err := LockCache(t.Context(), root, "other", 0, nil)
 	if err != nil {
@@ -66,9 +72,12 @@ func TestLockCache(t *testing.T) {
 		t.Error(err)
 	}
 
-	// The lock file is beside the source's cache, which pruning leaves.
-	if removed, err := PruneCache(t.Context(), root, nil); err != nil || len(removed) != 0 {
-		t.Errorf("PruneCache = %v, %v; want the lock files left", removed, err)
+	// Pruning leaves the locks.
+	if removed, err := PruneCache(t.Context(), root, nil); err != nil || !slices.Equal(removed, []string{"lib.lock"}) {
+		t.Errorf("PruneCache = %v, %v; want only lib.lock's cache removed", removed, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, lockDir, "lib")); err != nil {
+		t.Errorf("lib's lock after pruning: %v", err)
 	}
 	if err := unlock(); err != nil {
 		t.Fatal(err)

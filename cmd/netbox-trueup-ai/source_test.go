@@ -247,6 +247,49 @@ func TestSourceFetchWaitsForAnotherFetch(t *testing.T) {
 	}
 }
 
+func TestSourceFetchLeavesASourceAnotherProcessFetches(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	root := filepath.Join(dataDir, "cache", "sources")
+	if err := os.MkdirAll(filepath.Join(root, "old", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recordOld(t, dataDir)
+	// Another process, whose configuration still has old, is fetching it.
+	unlock, err := source.LockCache(t.Context(), root, "old", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "another TrueUp process is fetching a source no longer configured") {
+		t.Errorf("stderr doesn't say it left old alone:\n%s", r.stderr)
+	}
+	if sources, _ := records(t, dataDir); len(sources) != 2 {
+		t.Errorf("the database records %+v, want lib and old", sources)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old")); err != nil {
+		t.Errorf("old's cache: %v", err)
+	}
+
+	// Once that fetch is over, the next run removes old.
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if r := runCLIApp(t, nil, trust(pool), env, "source", "fetch"); r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if sources, _ := records(t, dataDir); len(sources) != 1 || sources[0].Name != "lib" {
+		t.Errorf("the database records %+v, want only lib", sources)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old")); !os.IsNotExist(err) {
+		t.Errorf("old's cache is still there: %v", err)
+	}
+}
+
 func TestSourceFetchRecordsSkippedFiles(t *testing.T) {
 	t.Parallel()
 	repoURL, pool, _ := gitRepo(t)
@@ -324,6 +367,23 @@ func TestSourceFetchFailures(t *testing.T) {
 	}, "source", "fetch", "-o", "json")
 	if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "create the source cache in the data directory") {
 		t.Errorf("with a bad data directory: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
+	}
+
+	// A cache whose fetch locks can't be taken stops the command, rather
+	// than failing each source.
+	brokenDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(brokenDir, "cache", "sources"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "cache", "sources", ".locks"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = runCLI(t, nil, []string{
+		"TRUEUP_DATA_DIR=" + brokenDir,
+		`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
+	}, "source", "fetch", "-o", "json")
+	if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "source lib: create the directory of the sources' fetch locks") {
+		t.Errorf("with a broken lock directory: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 
 	// A database this release can't use stops the command before it

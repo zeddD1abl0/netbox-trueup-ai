@@ -17,8 +17,9 @@
 // Each process holds a shared lock on a file beside the database while it
 // has the database open, and opening applies the migrations the database
 // lacks under the exclusive lock, so that a migration waits for every other
-// process to close the database. The operating system releases the locks if
-// a process dies. Queries are the files in queries/, which sqlc compiles
+// process to close the database; a gate beside it keeps processes that start
+// meanwhile from opening the database until the migration is done. The
+// operating system releases the locks if a process dies. Queries are the files in queries/, which sqlc compiles
 // into package sqlitedb.
 //
 // Several processes on one host can share the database. It doesn't belong
@@ -102,24 +103,16 @@ func open(ctx context.Context, opts Options, files fs.FS, timeout time.Duration)
 	if err != nil {
 		return nil, migrated, err
 	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, db.Close())
-		}
-	}()
 	lock, migrated, err := openSchema(ctx, db, path, files, timeout, logger)
 	if err != nil {
-		return nil, migrated, err
+		return nil, migrated, errors.Join(err, db.Close())
 	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, lock.Unlock())
-		}
-	}()
+	s := &Store{db: db, q: sqlitedb.New(db), lock: lock}
 	if err := checkForeignKeys(ctx, db); err != nil {
-		return nil, migrated, err
+		// Closing the database before the lock goes, as Close does.
+		return nil, migrated, errors.Join(err, s.Close())
 	}
-	return &Store{db: db, q: sqlitedb.New(db), lock: lock}, migrated, nil
+	return s, migrated, nil
 }
 
 // Close closes the database, and then releases the lock that holds off

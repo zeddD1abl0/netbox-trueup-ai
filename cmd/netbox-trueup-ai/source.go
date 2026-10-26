@@ -188,16 +188,75 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 		result.Sources = append(result.Sources, row)
 	}
 
+	if err := a.removeUnconfigured(ctx, db, root, cfg.Settings.Sources); err != nil {
+		return fetchJSON{}, err
+	}
+	return result, nil
+}
+
+// removeUnconfigured removes the records and caches of sources that are no
+// longer configured. It takes each one's fetch lock first, without waiting,
+// and leaves those another process is fetching, perhaps with an older
+// configuration, for a later run.
+func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root string, configured []config.Source) error {
+	interrupted := func() error {
+		return fmt.Errorf("interrupted while removing sources no longer configured: %w", ctx.Err())
+	}
 	var keep []string
-	for _, s := range cfg.Settings.Sources {
+	for _, s := range configured {
 		keep = append(keep, s.Name)
 	}
+	recorded, err := db.Sources(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		return err
+	}
+	cached, err := source.CachedSources(ctx, root)
+	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		return err
+	}
+	candidates := cached
+	for _, r := range recorded {
+		candidates = append(candidates, r.Name)
+	}
+	slices.Sort(candidates)
+	var unlocks []func() error
+	defer func() {
+		for _, unlock := range unlocks {
+			if err := unlock(); err != nil {
+				a.logger.Warn("can't release a source's fetch lock", "error", err)
+			}
+		}
+	}()
+	for _, name := range slices.Compact(candidates) {
+		if slices.Contains(keep, name) {
+			continue
+		}
+		unlock, err := source.LockCache(ctx, root, name, 0, nil)
+		switch {
+		case ctx.Err() != nil:
+			return interrupted()
+		case errors.Is(err, source.ErrFetching):
+			a.logger.Info("another TrueUp process is fetching a source no longer configured, so its records and cache stay until a later run", "source", name)
+			keep = append(keep, name)
+		case err != nil:
+			return err
+		default:
+			unlocks = append(unlocks, unlock)
+		}
+	}
+
 	forgotten, err := db.RemoveSources(ctx, keep)
 	if err != nil {
 		if ctx.Err() != nil {
-			return fetchJSON{}, fmt.Errorf("interrupted while removing the records of sources no longer configured: %w", ctx.Err())
+			return interrupted()
 		}
-		return fetchJSON{}, err
+		return err
 	}
 	for _, name := range forgotten {
 		a.logger.Info("removed the records of a source no longer configured", "source", name)
@@ -208,18 +267,19 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 	}
 	switch {
 	case ctx.Err() != nil:
-		return fetchJSON{}, fmt.Errorf("interrupted while removing the caches of sources no longer configured: %w", ctx.Err())
+		return interrupted()
 	case err != nil:
 		a.logger.Warn("can't remove the caches of sources no longer configured", "error", err)
 	}
-	return result, nil
+	return nil
 }
 
 // fetchAndRecord fetches one source and records the fetch, holding the
 // source's fetch lock throughout, so that the cache and the database agree
 // on its latest version. A fetch that fails is recorded, and reported in the
 // row; a fetch that can't start, because another process held the lock too
-// long, is only reported, since it fetched nothing.
+// long, is only reported, since it fetched nothing. Any other problem with
+// the lock, the cache or the database is an error.
 func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[string]source.Kind, root string, s config.Source) (fetchSourceJSON, error) {
 	row := fetchSourceJSON{Name: s.Name, Kind: s.Kind, URL: s.URL, Skipped: []skippedJSON{}}
 	fail := func(msg string) {
@@ -229,12 +289,14 @@ func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[stri
 	unlock, err := source.LockCache(ctx, root, s.Name, s.Limits.FetchTimeout, func() {
 		a.logger.Info("waiting for another TrueUp process to finish fetching the source", "source", s.Name)
 	})
-	if err != nil {
-		if ctx.Err() != nil {
-			return row, fmt.Errorf("interrupted while waiting to fetch source %s: %w", s.Name, ctx.Err())
-		}
+	switch {
+	case ctx.Err() != nil:
+		return row, fmt.Errorf("interrupted while waiting to fetch source %s: %w", s.Name, ctx.Err())
+	case errors.Is(err, source.ErrFetching):
 		fail(err.Error())
 		return row, nil
+	case err != nil:
+		return row, fmt.Errorf("source %s: %w", s.Name, err)
 	}
 	defer func() {
 		if err := unlock(); err != nil {

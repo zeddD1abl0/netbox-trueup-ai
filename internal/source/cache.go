@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/filelock"
@@ -15,6 +16,14 @@ import (
 // Each kind keeps a source's cache in a directory of its own, named for the
 // source, below a root that is normally <data_dir>/cache/sources. The cache
 // is disposable: deleting it costs a fetch.
+//
+// The root also holds lockDir, the sources' fetch locks. Source names can't
+// start with a dot, so it is never a source's cache.
+const lockDir = ".locks"
+
+// ErrFetching means another TrueUp process held a source's fetch lock for
+// longer than the wait allowed.
+var ErrFetching = errors.New("another TrueUp process is fetching the source")
 
 // CacheDir returns the directory below root that holds a source's cache.
 func CacheDir(root, name string) string {
@@ -24,28 +33,31 @@ func CacheDir(root, name string) string {
 // LockCache takes the fetch lock of a source's cache below root, and returns
 // the function that releases it. A fetch holds it until the fetch is
 // recorded, so that fetches of one source, in any process, happen one after
-// another, and the cache and the database agree on the latest. It waits up
-// to timeout for another fetch to finish, calling onWait, if it isn't nil,
-// once it has waited a second.
+// another, and the cache and the database agree on the latest. Removing a
+// source's cache takes it too. It waits up to timeout for another holder to
+// let go, calling onWait, if it isn't nil, once it has waited a second, and
+// returns an error wrapping ErrFetching if the holder doesn't.
 //
-// The lock is on a file beside the source's directory, <name>.lock, which
-// PruneCache leaves alone, so that it is never removed while held.
+// The lock is on a file in root/.locks, which PruneCache leaves alone, so
+// that it is never removed while held.
 func LockCache(ctx context.Context, root, name string, timeout time.Duration, onWait func()) (unlock func() error, err error) {
-	lock, err := filelock.Exclusive(ctx, filepath.Join(root, name+".lock"), timeout, onWait)
+	dir := filepath.Join(root, lockDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create the directory of the sources' fetch locks: %w", err)
+	}
+	lock, err := filelock.Exclusive(ctx, filepath.Join(dir, name), timeout, onWait)
 	switch {
 	case errors.Is(err, filelock.ErrTimeout):
-		return nil, fmt.Errorf("another TrueUp process has been fetching the source for over %s", timeout)
+		return nil, fmt.Errorf("%w, and has been for over %s", ErrFetching, timeout)
 	case err != nil:
 		return nil, fmt.Errorf("lock the source's cache: %w", err)
 	}
 	return lock.Unlock, nil
 }
 
-// PruneCache removes the caches below root of sources not named in keep,
-// and returns the names it removed. A root that doesn't exist yet holds
-// nothing to remove. It removes directories only, and leaves the sources'
-// lock files.
-func PruneCache(ctx context.Context, root string, keep []string) (removed []string, err error) {
+// CachedSources returns the names of the sources that have a cache below
+// root, sorted. A root that doesn't exist yet holds none.
+func CachedSources(ctx context.Context, root string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -56,19 +68,37 @@ func PruneCache(ctx context.Context, root string, keep []string) (removed []stri
 	if err != nil {
 		return nil, fmt.Errorf("read the source cache: %w", err)
 	}
-	var errs []error
+	var names []string
 	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
+// PruneCache removes the caches below root of sources not named in keep,
+// and returns the names it removed. It leaves the fetch locks. Callers hold
+// the fetch lock of each source whose cache it may remove, so that it never
+// removes a cache that another process is fetching into.
+func PruneCache(ctx context.Context, root string, keep []string) (removed []string, err error) {
+	names, err := CachedSources(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	var errs []error
+	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return removed, errors.Join(append(errs, err)...)
 		}
-		if !e.IsDir() || slices.Contains(keep, e.Name()) {
+		if slices.Contains(keep, name) {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
-			errs = append(errs, fmt.Errorf("remove the cache of source %q: %w", e.Name(), err))
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			errs = append(errs, fmt.Errorf("remove the cache of source %q: %w", name, err))
 			continue
 		}
-		removed = append(removed, e.Name())
+		removed = append(removed, name)
 	}
 	return removed, errors.Join(errs...)
 }

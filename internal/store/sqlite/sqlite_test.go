@@ -49,7 +49,7 @@ func closeStore(t *testing.T, s *Store) {
 // its checks or its lock, to look at the database or change it.
 func rawDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
-	connector, err := sqlitedriver.NewConnector(dsn(dbPath))
+	connector, err := sqlitedriver.NewConnector(dsn(dbPath, "rw"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,19 +254,20 @@ func TestConcurrentOpeners(t *testing.T) {
 func TestAMigrationWaitsForOpenStores(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "trueup.db")
-	s, _, err := Open(t.Context(), Options{Path: dbPath})
+	older, _, err := Open(t.Context(), Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note TEXT;\n")
 
 	// A newer release can't migrate while an older one has the database
-	// open.
+	// open, and gives up after its wait.
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	started := time.Now()
 	_, _, err = open(t.Context(), Options{Path: dbPath, Logger: logger}, files, 1500*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "other TrueUp processes have had the database open for over 1.5s, so it can't be migrated") {
+	if err == nil || !strings.Contains(err.Error(), "other TrueUp processes have had the database open for over 1.5s, so it can't be migrated") ||
+		!errors.Is(err, filelock.ErrTimeout) {
 		t.Errorf("migrating while a store is open = %v, want it to wait and give up", err)
 	}
 	if waited := time.Since(started); waited < 1500*time.Millisecond {
@@ -276,19 +277,38 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 		t.Errorf("waiting wasn't logged:\n%s", logs.String())
 	}
 	// The open store still works on the schema it knows.
-	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := older.RecordFetch(t.Context(), failedFetch()); err != nil {
 		t.Errorf("RecordFetch on the open store: %v", err)
 	}
 
-	// Once it closes, the migration goes ahead, and the older release then
-	// refuses the database.
-	closeStore(t, s)
-	newer, migrated, err := open(t.Context(), Options{Path: dbPath}, files, time.Second)
-	if err != nil {
-		t.Fatalf("migrating once the store closed: %v", err)
+	// While a migration waits, new processes wait for it, rather than keep
+	// it waiting for ever.
+	type result struct {
+		s        *Store
+		migrated store.Migrated
+		err      error
 	}
-	defer closeStore(t, newer)
-	if diff := cmp.Diff([]store.Migration{{Version: 2, Name: "00002_more.sql"}}, migrated.Applied); diff != "" {
+	done := make(chan result)
+	go func() {
+		s, migrated, err := open(t.Context(), Options{Path: dbPath}, files, 10*time.Second)
+		done <- result{s, migrated, err}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if _, _, err := Open(ctx, Options{Path: dbPath}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("opening while a migration waits = %v, want it to wait for the migration", err)
+	}
+
+	// Once the older store closes, the migration goes ahead, and the older
+	// release then refuses the database.
+	closeStore(t, older)
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("migrating once the store closed: %v", r.err)
+	}
+	defer closeStore(t, r.s)
+	if diff := cmp.Diff([]store.Migration{{Version: 2, Name: "00002_more.sql"}}, r.migrated.Applied); diff != "" {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	if _, _, err := Open(t.Context(), Options{Path: dbPath}); !errors.As(err, new(*store.SchemaTooNewError)) {
@@ -303,12 +323,13 @@ func TestOpeningWaitsForAMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	// As another process does while it migrates.
-	migrating, err := filelock.Exclusive(t.Context(), dbPath+lockSuffix, 0, nil)
+	migrating, err := filelock.Exclusive(t.Context(), dbPath+gateSuffix, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _, err = open(t.Context(), Options{Path: dbPath}, withMigration(t, "00002_x.sql", "-- +goose Up\n"), 300*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "another TrueUp process has been migrating the database for over 300ms") {
+	if err == nil || !strings.Contains(err.Error(), "another TrueUp process has been migrating the database, or waiting to, for over 300ms") ||
+		!errors.Is(err, filelock.ErrTimeout) {
 		t.Errorf("Open during a migration = %v, want it to wait and give up", err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
@@ -409,6 +430,45 @@ func TestExistingFiles(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("another application's WAL database is left as it was", func(t *testing.T) {
+		t.Parallel()
+		// As a program that crashed leaves it: with writes still in its WAL,
+		// which an open that can write would recover, and checkpoint into the
+		// file when it closes.
+		dir := t.TempDir()
+		db := openForeign(t, filepath.Join(dir, "running.db"))
+		db.SetMaxOpenConns(1)
+		for _, q := range []string{"PRAGMA journal_mode = WAL", "PRAGMA wal_autocheckpoint = 0", "CREATE TABLE dashboards (id INTEGER)", "INSERT INTO dashboards VALUES (1)"} {
+			if _, err := db.ExecContext(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		other := filepath.Join(dir, "crashed.db")
+		files := map[string][]byte{}
+		for _, suffix := range []string{"", "-wal"} {
+			data, err := os.ReadFile(filepath.Join(dir, "running.db"+suffix)) //nolint:gosec // G304: a file in the test's own directory
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(other+suffix, data, 0o600); err != nil { //nolint:gosec // G703: a file in the test's own directory
+				t.Fatal(err)
+			}
+			files[suffix] = data
+		}
+		if len(files["-wal"]) == 0 {
+			t.Fatal("the WAL holds nothing to recover")
+		}
+
+		if _, _, err := Open(t.Context(), Options{Path: other}); err == nil || !strings.Contains(err.Error(), "holds another application's database") {
+			t.Fatalf("Open = %v, want the database refused", err)
+		}
+		for suffix, want := range files {
+			if got, err := os.ReadFile(other + suffix); err != nil || !bytes.Equal(got, want) { //nolint:gosec // G304: a file in the test's own directory
+				t.Errorf("the other application's file %q changed: %v", "crashed.db"+suffix, err)
+			}
+		}
+	})
 
 	t.Run("another application's database is left as it was", func(t *testing.T) {
 		t.Parallel()

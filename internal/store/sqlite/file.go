@@ -71,7 +71,10 @@ const applicationID = 0x54525550
 // then puts it in WAL mode, which lasts, and checks that its connections
 // have the settings the package needs.
 func openDB(ctx context.Context, path string) (_ *sql.DB, err error) {
-	connector, err := sqlitedriver.NewConnector(dsn(path))
+	if err := checkOwner(ctx, path); err != nil {
+		return nil, err
+	}
+	connector, err := sqlitedriver.NewConnector(dsn(path, "rw"))
 	if err != nil {
 		return nil, fmt.Errorf("connect to the database: %w", err)
 	}
@@ -81,9 +84,6 @@ func openDB(ctx context.Context, path string) (_ *sql.DB, err error) {
 			err = errors.Join(err, db.Close())
 		}
 	}()
-	if err := checkOwner(ctx, db, path); err != nil {
-		return nil, err
-	}
 	var mode string
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode); err != nil {
 		return nil, fmt.Errorf("put the database in WAL mode: %w", err)
@@ -105,8 +105,16 @@ func openDB(ctx context.Context, path string) (_ *sql.DB, err error) {
 // or new: without the ID, and holding no tables but, perhaps, goose's, as
 // when a process stopped before the first migration finished. So TrueUp
 // never takes over another application's database that database.url names
-// by mistake.
-func checkOwner(ctx context.Context, db *sql.DB, path string) error {
+// by mistake. It reads through a connection of its own, opened read-only, so
+// that SQLite can't write to a file that turns out not to be TrueUp's, as a
+// connection that can write does when it recovers or checkpoints a WAL.
+func checkOwner(ctx context.Context, path string) (err error) {
+	connector, err := sqlitedriver.NewConnector(dsn(path, "ro"))
+	if err != nil {
+		return fmt.Errorf("connect to the database: %w", err)
+	}
+	db := sql.OpenDB(connector)
+	defer func() { err = errors.Join(err, db.Close()) }()
 	var id int64
 	if err := db.QueryRowContext(ctx, "PRAGMA application_id").Scan(&id); err != nil {
 		return fmt.Errorf("read the database file's header: %w", err)
@@ -128,15 +136,15 @@ func checkOwner(ctx context.Context, db *sql.DB, path string) error {
 	return fmt.Errorf("%s holds another application's database, not TrueUp's: point database.url at a file of TrueUp's own", path)
 }
 
-// dsn returns the URI that opens the database at path. mode=rw is SQLite's
-// own option, never to create the file: createFile does, with its mode. The
+// dsn returns the URI that opens the database at path, in SQLite's mode,
+// rw or ro. Neither creates the file: createFile does, with its mode. The
 // options that start with an underscore are the driver's, applied to every
 // connection it opens; busy_timeout comes first among the pragmas. WAL mode
 // isn't among them, since it lasts in the file once set, and openDB sets it
 // only once it knows the file is TrueUp's.
-func dsn(path string) string {
+func dsn(path, mode string) string {
 	q := url.Values{}
-	q.Set("mode", "rw")
+	q.Set("mode", mode)
 	q.Set("_txlock", "immediate")
 	// Defensive mode turns off what lets SQL corrupt the file on purpose,
 	// such as writable_schema.
