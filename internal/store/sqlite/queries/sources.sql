@@ -1,6 +1,5 @@
--- name: UpsertSource :execrows
--- Records a fetch of a source, unless a fetch that started later is
--- recorded already.
+-- name: UpsertSource :exec
+-- Records a fetch of a source as its latest.
 INSERT INTO sources (name, kind, url, ref, fetched_at, error)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (name) DO UPDATE SET
@@ -8,20 +7,17 @@ ON CONFLICT (name) DO UPDATE SET
     url = excluded.url,
     ref = excluded.ref,
     fetched_at = excluded.fetched_at,
-    error = excluded.error
-WHERE excluded.fetched_at >= sources.fetched_at;
+    error = excluded.error;
 
--- name: UpsertSnapshot :execrows
--- Records a source's snapshot, unless one that a later fetch took is
--- recorded already.
+-- name: UpsertSnapshot :exec
+-- Records a source's latest snapshot, without its lists.
 INSERT INTO snapshots (source, url, version, ref, fetched_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (source) DO UPDATE SET
     url = excluded.url,
     version = excluded.version,
     ref = excluded.ref,
-    fetched_at = excluded.fetched_at
-WHERE excluded.fetched_at >= snapshots.fetched_at;
+    fetched_at = excluded.fetched_at;
 
 -- name: DeleteSnapshotFiles :exec
 DELETE FROM snapshot_files WHERE source = ?;
@@ -63,6 +59,10 @@ SELECT path, reason FROM snapshot_skipped WHERE source = ? ORDER BY seq;
 -- name: ListSourceNames :many
 SELECT name FROM sources ORDER BY name;
 
+-- name: DeleteSnapshot :exec
+-- Deletes a source's snapshot, once its lists are deleted.
+DELETE FROM snapshots WHERE source = ?;
+
 -- name: DeleteSource :exec
--- Deletes a source, and with it its snapshot and file list.
+-- Deletes a source, once its snapshot is deleted.
 DELETE FROM sources WHERE name = ?;

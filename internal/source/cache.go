@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/filelock"
 )
 
 // Each kind keeps a source's cache in a directory of its own, named for the
@@ -18,9 +21,30 @@ func CacheDir(root, name string) string {
 	return filepath.Join(root, name)
 }
 
+// LockCache takes the fetch lock of a source's cache below root, and returns
+// the function that releases it. A fetch holds it until the fetch is
+// recorded, so that fetches of one source, in any process, happen one after
+// another, and the cache and the database agree on the latest. It waits up
+// to timeout for another fetch to finish, calling onWait, if it isn't nil,
+// once it has waited a second.
+//
+// The lock is on a file beside the source's directory, <name>.lock, which
+// PruneCache leaves alone, so that it is never removed while held.
+func LockCache(ctx context.Context, root, name string, timeout time.Duration, onWait func()) (unlock func() error, err error) {
+	lock, err := filelock.Exclusive(ctx, filepath.Join(root, name+".lock"), timeout, onWait)
+	switch {
+	case errors.Is(err, filelock.ErrTimeout):
+		return nil, fmt.Errorf("another TrueUp process has been fetching the source for over %s", timeout)
+	case err != nil:
+		return nil, fmt.Errorf("lock the source's cache: %w", err)
+	}
+	return lock.Unlock, nil
+}
+
 // PruneCache removes the caches below root of sources not named in keep,
 // and returns the names it removed. A root that doesn't exist yet holds
-// nothing to remove.
+// nothing to remove. It removes directories only, and leaves the sources'
+// lock files.
 func PruneCache(ctx context.Context, root string, keep []string) (removed []string, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

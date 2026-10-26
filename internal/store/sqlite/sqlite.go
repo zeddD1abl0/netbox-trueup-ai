@@ -10,11 +10,16 @@
 // immediate), so two writers queue instead of failing when one would have
 // to upgrade a read lock.
 //
+// The file's header marks it as TrueUp's (its application ID), and opening
+// refuses a file that holds another application's database.
+//
 // Migrations are the goose files in migrations/, embedded in the binary.
-// Opening the store applies those the database lacks, under an exclusive
-// lock on a file beside the database, which the operating system releases
-// if the process dies. Queries are the files in queries/, which sqlc
-// compiles into package sqlitedb.
+// Each process holds a shared lock on a file beside the database while it
+// has the database open, and opening applies the migrations the database
+// lacks under the exclusive lock, so that a migration waits for every other
+// process to close the database. The operating system releases the locks if
+// a process dies. Queries are the files in queries/, which sqlc compiles
+// into package sqlitedb.
 //
 // Several processes on one host can share the database. It doesn't belong
 // on a network file system, where WAL mode doesn't work.
@@ -25,11 +30,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"slices"
 	"time"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/filelock"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/sqlite/sqlitedb"
 )
@@ -55,6 +62,9 @@ type Options struct {
 type Store struct {
 	db *sql.DB
 	q  *sqlitedb.Queries
+	// lock is the shared lock on the file beside the database, held while
+	// the store is open.
+	lock *filelock.Lock
 }
 
 var _ store.Store = (*Store)(nil)
@@ -63,41 +73,66 @@ var _ store.Store = (*Store)(nil)
 // and applies the migrations it lacks. It refuses a database whose schema
 // is newer than this release knows, with a *store.SchemaTooNewError. When a
 // migration fails, the store.Migrated it returns says which were applied
-// before it.
-func Open(ctx context.Context, opts Options) (_ *Store, _ store.Migrated, err error) {
+// before it. Close the store when done, to let other processes migrate the
+// database.
+func Open(ctx context.Context, opts Options) (*Store, store.Migrated, error) {
+	files, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return nil, store.Migrated{Engine: Engine, Location: opts.Path}, fmt.Errorf("read the migrations: %w", err)
+	}
+	return open(ctx, opts, files, lockTimeout)
+}
+
+// open is Open with the migrations in files, waiting up to timeout for the
+// database's lock.
+func open(ctx context.Context, opts Options, files fs.FS, timeout time.Duration) (_ *Store, migrated store.Migrated, err error) {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	migrated = store.Migrated{Engine: Engine, Location: opts.Path}
 	if !filepath.IsAbs(opts.Path) {
-		return nil, store.Migrated{}, errors.New("the SQLite database's path must be absolute")
+		return nil, migrated, errors.New("the SQLite database's path must be absolute")
 	}
 	path := filepath.Clean(opts.Path)
 	if err := createFile(ctx, path, logger); err != nil {
-		return nil, store.Migrated{}, err
+		return nil, migrated, err
 	}
 	db, err := openDB(ctx, path)
 	if err != nil {
-		return nil, store.Migrated{}, err
+		return nil, migrated, err
 	}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, db.Close())
 		}
 	}()
-	migrated, err := migrate(ctx, db, path, logger)
+	lock, migrated, err := openSchema(ctx, db, path, files, timeout, logger)
 	if err != nil {
 		return nil, migrated, err
 	}
-	return &Store{db: db, q: sqlitedb.New(db)}, migrated, nil
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, lock.Unlock())
+		}
+	}()
+	if err := checkForeignKeys(ctx, db); err != nil {
+		return nil, migrated, err
+	}
+	return &Store{db: db, q: sqlitedb.New(db), lock: lock}, migrated, nil
 }
 
-// Close closes the database.
+// Close closes the database, and then releases the lock that holds off
+// migrations.
 func (s *Store) Close() error {
-	if err := s.db.Close(); err != nil {
-		return fmt.Errorf("close the database: %w", err)
+	var err error
+	if closeErr := s.db.Close(); closeErr != nil {
+		err = fmt.Errorf("close the database: %w", closeErr)
 	}
-	return nil
+	if unlockErr := s.lock.Unlock(); unlockErr != nil {
+		err = errors.Join(err, fmt.Errorf("release the database's lock: %w", unlockErr))
+	}
+	return err
 }
 
 // RecordFetch records a fetch of a source in one transaction.
@@ -108,7 +143,7 @@ func (s *Store) RecordFetch(ctx context.Context, f store.Fetch) error {
 	}
 	at := f.FetchedAt.Format(timeLayout)
 	err = s.inTx(ctx, nil, func(q *sqlitedb.Queries) error {
-		if _, err := q.UpsertSource(ctx, sqlitedb.UpsertSourceParams{
+		if err := q.UpsertSource(ctx, sqlitedb.UpsertSourceParams{
 			Name:      f.Source.Name,
 			Kind:      f.Source.Kind,
 			Url:       f.Source.URL,
@@ -121,15 +156,14 @@ func (s *Store) RecordFetch(ctx context.Context, f store.Fetch) error {
 		if f.Error != "" {
 			return nil
 		}
-		n, err := q.UpsertSnapshot(ctx, sqlitedb.UpsertSnapshotParams{
+		if err := q.UpsertSnapshot(ctx, sqlitedb.UpsertSnapshotParams{
 			Source:    f.Source.Name,
 			Url:       f.Source.URL,
 			Version:   f.Version,
 			Ref:       f.Ref,
 			FetchedAt: at,
-		})
-		if err != nil || n == 0 {
-			return err // n == 0: a later fetch's snapshot is recorded
+		}); err != nil {
+			return err
 		}
 		return replaceLists(ctx, q, f)
 	})
@@ -240,8 +274,9 @@ func (s *Store) Snapshot(ctx context.Context, source string) (store.Snapshot, er
 	return snap, nil
 }
 
-// RemoveSources removes every source not named in keep, in one transaction.
-// Their snapshots and lists go with them, through the foreign keys.
+// RemoveSources removes every source not named in keep, and its snapshot,
+// in one transaction. Foreign keys don't cascade, so it deletes each
+// source's rows from the bottom up.
 func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, error) {
 	var removed []string
 	err := s.inTx(ctx, nil, func(q *sqlitedb.Queries) error {
@@ -253,8 +288,12 @@ func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, err
 			if slices.Contains(keep, name) {
 				continue
 			}
-			if err := q.DeleteSource(ctx, name); err != nil {
-				return fmt.Errorf("source %s: %w", name, err)
+			for _, del := range []func(context.Context, string) error{
+				q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,
+			} {
+				if err := del(ctx, name); err != nil {
+					return fmt.Errorf("source %s: %w", name, err)
+				}
 			}
 			removed = append(removed, name)
 		}

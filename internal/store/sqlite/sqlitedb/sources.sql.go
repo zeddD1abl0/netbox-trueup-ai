@@ -10,6 +10,16 @@ import (
 	"database/sql"
 )
 
+const deleteSnapshot = `-- name: DeleteSnapshot :exec
+DELETE FROM snapshots WHERE source = ?
+`
+
+// Deletes a source's snapshot, once its lists are deleted.
+func (q *Queries) DeleteSnapshot(ctx context.Context, source string) error {
+	_, err := q.db.ExecContext(ctx, deleteSnapshot, source)
+	return err
+}
+
 const deleteSnapshotFiles = `-- name: DeleteSnapshotFiles :exec
 DELETE FROM snapshot_files WHERE source = ?
 `
@@ -32,7 +42,7 @@ const deleteSource = `-- name: DeleteSource :exec
 DELETE FROM sources WHERE name = ?
 `
 
-// Deletes a source, and with it its snapshot and file list.
+// Deletes a source, once its snapshot is deleted.
 func (q *Queries) DeleteSource(ctx context.Context, name string) error {
 	_, err := q.db.ExecContext(ctx, deleteSource, name)
 	return err
@@ -253,7 +263,7 @@ func (q *Queries) ListSources(ctx context.Context) ([]ListSourcesRow, error) {
 	return items, nil
 }
 
-const upsertSnapshot = `-- name: UpsertSnapshot :execrows
+const upsertSnapshot = `-- name: UpsertSnapshot :exec
 INSERT INTO snapshots (source, url, version, ref, fetched_at)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (source) DO UPDATE SET
@@ -261,7 +271,6 @@ ON CONFLICT (source) DO UPDATE SET
     version = excluded.version,
     ref = excluded.ref,
     fetched_at = excluded.fetched_at
-WHERE excluded.fetched_at >= snapshots.fetched_at
 `
 
 type UpsertSnapshotParams struct {
@@ -272,23 +281,19 @@ type UpsertSnapshotParams struct {
 	FetchedAt string
 }
 
-// Records a source's snapshot, unless one that a later fetch took is
-// recorded already.
-func (q *Queries) UpsertSnapshot(ctx context.Context, arg UpsertSnapshotParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, upsertSnapshot,
+// Records a source's latest snapshot, without its lists.
+func (q *Queries) UpsertSnapshot(ctx context.Context, arg UpsertSnapshotParams) error {
+	_, err := q.db.ExecContext(ctx, upsertSnapshot,
 		arg.Source,
 		arg.Url,
 		arg.Version,
 		arg.Ref,
 		arg.FetchedAt,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+	return err
 }
 
-const upsertSource = `-- name: UpsertSource :execrows
+const upsertSource = `-- name: UpsertSource :exec
 INSERT INTO sources (name, kind, url, ref, fetched_at, error)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (name) DO UPDATE SET
@@ -297,7 +302,6 @@ ON CONFLICT (name) DO UPDATE SET
     ref = excluded.ref,
     fetched_at = excluded.fetched_at,
     error = excluded.error
-WHERE excluded.fetched_at >= sources.fetched_at
 `
 
 type UpsertSourceParams struct {
@@ -309,10 +313,9 @@ type UpsertSourceParams struct {
 	Error     sql.NullString
 }
 
-// Records a fetch of a source, unless a fetch that started later is
-// recorded already.
-func (q *Queries) UpsertSource(ctx context.Context, arg UpsertSourceParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, upsertSource,
+// Records a fetch of a source as its latest.
+func (q *Queries) UpsertSource(ctx context.Context, arg UpsertSourceParams) error {
+	_, err := q.db.ExecContext(ctx, upsertSource,
 		arg.Name,
 		arg.Kind,
 		arg.Url,
@@ -320,8 +323,5 @@ func (q *Queries) UpsertSource(ctx context.Context, arg UpsertSourceParams) (int
 		arg.FetchedAt,
 		arg.Error,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+	return err
 }

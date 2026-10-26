@@ -26,13 +26,14 @@ is SQLite, in the file ` + engine.DefaultFile + ` in the data directory.
 Commands that use the database, such as source fetch, migrate it when they
 open it, so running migrate is optional: it does the same as a step of its
 own, such as after installing a new release. Migrations only go forward, so
-back up the database before upgrading to be able to go back. Processes that
-open the database at once take turns, and never apply a migration twice.
+back up the database before upgrading to be able to go back. A migration
+waits up to 2 minutes for other TrueUp processes to close the database, and
+processes that open it at once take turns, never applying a migration twice.
 
 Exit codes:
   0  The schema is up to date: migrations were applied, or none were needed.
-  1  The database couldn't be opened or migrated, or its schema is newer
-     than this release knows.
+  1  The database couldn't be opened or migrated, its schema is newer than
+     this release knows, or other TrueUp processes kept it open.
   3  The configuration is invalid, or database.url names a database this
      release can't use.`,
 		Args: noArgs,

@@ -31,8 +31,10 @@ TrueUp keeps its state in SQLite or PostgreSQL ([ADR 0011](../../../docs/adr/001
    - Start with `-- +goose Up`. Migrations only go forward: write no `-- +goose Down` section.
    - Never change a migration that a release has shipped, since databases out there have applied it. Add another.
    - Use `STRICT` tables. Store times as `TEXT` in the layout `2006-01-02T15:04:05.000000Z` (UTC, microseconds, fixed width), with the `GLOB` check `00001_sources.sql` uses. Store text that need not be UTF-8, such as an unsafe path, as `BLOB`.
-   - Declare foreign keys with the `ON DELETE` you mean; foreign keys are enforced. Give each one an index whose leading column is the key, or rely on a primary key that starts with it.
-   - SQLite can't alter most of a table in place. To change a column, follow SQLite's [twelve steps](https://www.sqlite.org/lang_altertable.html#otheralter) inside the migration. Foreign keys can't be turned off inside goose's transaction, so use `PRAGMA defer_foreign_keys = ON` where rows must break them for a moment. TrueUp runs `PRAGMA foreign_key_check` after migrating, and fails if any row breaks a key.
+   - Foreign keys are enforced, and don't cascade: declare `REFERENCES parent (key)` with no `ON DELETE` clause, and delete child rows before their parent, as `RemoveSources` does. Give each key an index whose leading column is the key, or rely on a primary key that starts with it.
+   - SQLite can alter a table in place only to add, rename or drop a column (`ALTER TABLE`); prefer that. For anything else, follow SQLite's [twelve steps](https://www.sqlite.org/lang_altertable.html#otheralter) inside goose's transaction, with `PRAGMA defer_foreign_keys = ON` first. Foreign keys can't be turned off inside a transaction, but deferred, the rows that refer to a table being rebuilt break their keys only until the new table takes its name. That works because keys don't cascade: with `ON DELETE CASCADE`, dropping the old table would delete every row that refers to it, and no check would notice.
+   - Don't turn foreign keys off in a migration (`-- +goose NO TRANSACTION` with `PRAGMA foreign_keys = OFF`). TrueUp checks every key whenever it opens the database, and refuses one with rows that break them.
+   - Test that a migration keeps the data: fill a database at the version before, with the shared suite's records or an engine test's, migrate it, and compare what it holds.
    - *PostgreSQL:* add the migration with the same number and name to `internal/store/postgres/migrations/`, in PostgreSQL's types: `timestamptz`, `bytea`, `bigint`, and `text COLLATE "C"` for any column that is sorted, so that it sorts by bytes as SQLite does.
 
 3. **Write the queries** in the engine's `queries/*.sql`, each starting `-- name: Name :one`, `:many`, `:exec` or `:execrows`.
@@ -47,7 +49,7 @@ TrueUp keeps its state in SQLite or PostgreSQL ([ADR 0011](../../../docs/adr/001
    - Writes that change more than one row run in one transaction (`inTx` in the SQLite store), so that a crash or a failure leaves all of them or none. SQLite's write transactions take the write lock as they begin, so they queue rather than fail.
    - Reads that must agree with each other run in one read-only transaction.
    - Wrap errors with what was being done and which record, as the existing methods do. Map `sql.ErrNoRows` to `store.ErrNotFound`.
-   - Think through two processes at once, and a fetch, plan or comparison that finishes after a newer one: the `WHERE excluded.fetched_at >= ...` guards in `queries/sources.sql` are the pattern.
+   - Think through two processes at once. Every process holds a shared lock while it has the database open, so the schema doesn't change under it. Whatever must happen in order, such as two fetches of one source, needs a lock of its own held until it is recorded, as `source.LockCache` is: times from the clock don't order writes, since clocks go back.
 
 6. **Test it.**
    - Add what `store.Store` promises to `storetest`: a function in the table in `Run`. Both engines run it, so test behaviour, not SQL.

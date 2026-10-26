@@ -40,7 +40,7 @@ func Run(t *testing.T, open Open) {
 		{"a failed fetch", testFailure},
 		{"a failed fetch keeps the snapshot", testFailureKeepsSnapshot},
 		{"each snapshot replaces the lists", testReplace},
-		{"an older fetch changes nothing newer", testOutOfOrder},
+		{"each fetch replaces the last, whatever its time", testLatestRecorded},
 		{"removing sources", testRemove},
 		{"text from sources", testText},
 		{"invalid fetches record nothing", testInvalid},
@@ -206,31 +206,31 @@ func testReplace(t *testing.T, s store.Store) {
 	}
 }
 
-func testOutOfOrder(t *testing.T, s store.Store) {
-	later := t0.Add(time.Minute)
-	// Which of the two fetches Sources reports, and whose snapshot is kept.
-	const first, second = 1, 2
+func testLatestRecorded(t *testing.T, s store.Store) {
+	// Fetches are recorded in the order they happen, and their times only
+	// say when. A clock that went back, after one ran ahead, changes
+	// nothing.
+	ahead := t0.Add(365 * 24 * time.Hour)
 	tests := []struct {
-		name                     string
-		fetches                  [2]store.Fetch // recorded in this order
-		wantSource, wantSnapshot int
+		name          string
+		first, second store.Fetch // recorded in this order
+		wantSnapshot  store.Fetch
 	}{
-		{"an older success after a newer one", [2]store.Fetch{success("a", "v2", later, "new.yaml"), success("a", "v1", t0, "old.yaml")}, first, first},
-		{"an older success after a newer failure", [2]store.Fetch{failure("b", later, "down"), success("b", "v1", t0, "old.yaml")}, first, second},
-		{"an older failure after a newer success", [2]store.Fetch{success("c", "v2", later, "new.yaml"), failure("c", t0, "down")}, first, first},
-		{"two fetches at the same time", [2]store.Fetch{success("d", "v1", t0, "one.yaml"), success("d", "v2", t0, "two.yaml")}, second, second},
+		{"a success after one with a later time", success("a", "v2", ahead, "new.yaml"), success("a", "v1", t0, "old.yaml"), success("a", "v1", t0, "old.yaml")},
+		{"a failure after a success with a later time", success("b", "v2", ahead, "new.yaml"), failure("b", t0, "down"), success("b", "v2", ahead, "new.yaml")},
+		{"two fetches at the same time", success("c", "v1", t0, "one.yaml"), success("c", "v2", t0, "two.yaml"), success("c", "v2", t0, "two.yaml")},
 	}
 	for _, tt := range tests {
-		record(t, s, tt.fetches[0])
-		record(t, s, tt.fetches[1])
+		record(t, s, tt.first)
+		record(t, s, tt.second)
 	}
 	got := sources(t, s)
 	if len(got) != len(tests) {
 		t.Fatalf("Sources returned %d sources, want %d", len(got), len(tests))
 	}
 	for i, tt := range tests {
-		f, snap := tt.fetches[tt.wantSource-1], snapshotOf(tt.fetches[tt.wantSnapshot-1])
-		want := store.Source{SourceConfig: f.Source, FetchedAt: f.FetchedAt, Error: f.Error, Snapshot: summary(snap)}
+		snap := snapshotOf(tt.wantSnapshot)
+		want := store.Source{SourceConfig: tt.second.Source, FetchedAt: tt.second.FetchedAt, Error: tt.second.Error, Snapshot: summary(snap)}
 		if diff := cmp.Diff(want, got[i], equateEmpty); diff != "" {
 			t.Errorf("%s: source (-want +got):\n%s", tt.name, diff)
 		}

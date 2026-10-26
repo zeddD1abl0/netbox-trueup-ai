@@ -48,26 +48,26 @@ Chosen options: "commands that use the database migrate it when they open it", "
 
 **Opening.** A command that uses the database opens it through `internal/store/engine`, which:
 
-1. creates the database if it doesn't exist;
-2. takes the engine's migration lock, waiting up to 2 minutes;
+1. creates the database if it doesn't exist, and refuses, before changing anything, a file that holds another application's database;
+2. takes the engine's shared lock, which it holds for as long as it has the database open, waiting up to 2 minutes for a migration to finish;
 3. reads the schema's version, and refuses a schema newer than this release knows, exiting with 1;
-4. applies the migrations the database lacks, each in its own transaction, logging each one;
-5. on SQLite, after any migration, checks that no row breaks a foreign key;
-6. releases the lock.
+4. if the schema is older, trades the shared lock for the exclusive one, which waits up to 2 minutes for other processes to close the database, unless one of them migrates it meanwhile; applies the migrations it lacks, each in its own transaction, through connections of its own, logging each one; and takes the shared lock again, reading the version afresh;
+5. on SQLite, checks that no row breaks a foreign key, on every open.
 
 `source fetch` opens the database now, and `list` and `compare` will. `version`, `config show` and `netbox check` never open it. `migrate` does the same as any command and reports the engine, where the database is, the version before and after, and the migrations applied, as text or JSON (ADR 0018). It exits with 0 whether it applied migrations or found none to apply, 1 when it fails, and 3 for configuration.
 
 **Forward only.** Migrations have no Down sections, and nothing migrates down. Going back to an older release means restoring a backup taken before the upgrade, since the older release refuses the migrated database. A migration a release has shipped is never changed.
 
-**Locks.** On SQLite, the lock is an exclusive lock on `<database file>-lock`: `flock` on Unix and `LockFileEx` on Windows, through `golang.org/x/sys`. The lock belongs to the open file, so it excludes other processes and other opens in the same one, and the operating system releases it when the process ends, however it ends. On PostgreSQL, from step 7, it is goose's session advisory lock.
+**Locks.** On SQLite, the lock is on `<database file>-lock`: shared while a process has the database open, exclusive while one migrates it, through `flock` on Unix and `LockFileEx` on Windows (`internal/filelock`, on `golang.org/x/sys`). A lock belongs to the open file, so it excludes other processes and other opens in the same one, and the operating system releases it when the process ends, however it ends. So a migration never runs under a process that read the schema before it, and that process can't write into a schema it doesn't know. On PostgreSQL, from step 7, the same is done with advisory locks.
 
 **Engines.** `store.Store` in `internal/store` is the interface the rest of TrueUp uses. Each engine is a package below it, `internal/store/sqlite` and later `internal/store/postgres`, with its migrations, its queries and sqlc's output. `internal/store/engine` alone knows the engines, and chooses one from `database.url`. `internal/store/storetest` holds the tests every engine runs. A `postgres` or `postgresql` URL is a configuration error, exit code 3, until step 7 adds PostgreSQL.
 
-**SQLite.** The database is `<data_dir>/netbox-trueup-ai.db`, unless `database.url` names a file by its absolute path, as in `sqlite:///srv/trueup/trueup.db`; a `sqlite:` URL can't carry a host, user, query or fragment. TrueUp creates the file, and its directory, readable by its owner only, and SQLite gives the `-wal` and `-shm` files the same mode. Every connection runs in WAL mode, enforces foreign keys, waits up to 30 seconds for a lock, syncs each commit (`synchronous=FULL`), runs in SQLite's defensive mode, and takes the write lock when a write transaction begins. Times are stored as UTC text to the microsecond, at a fixed width, so that they sort as text and match what PostgreSQL keeps.
+**SQLite.** The database is `<data_dir>/netbox-trueup-ai.db`, unless `database.url` names a file by its absolute path, as in `sqlite:///srv/trueup/trueup.db`; a `sqlite:` URL can't carry a host, user, query or fragment. TrueUp creates the file, and its directory, readable by its owner only, and SQLite gives the `-wal` and `-shm` files the same mode. On Windows, which ignores those modes, the file takes its directory's permissions for now. Every connection runs in WAL mode, enforces foreign keys, waits up to 30 seconds for a lock, syncs each commit (`synchronous=FULL`), runs in SQLite's defensive mode, and takes the write lock when a write transaction begins. Times are stored as UTC text to the microsecond, at a fixed width, so that they sort as text and match what PostgreSQL keeps.
 
 ### Consequences
 
 - Good, because installing a new release is the whole upgrade: the first command that needs the database migrates it, and processes that start at once take turns.
+- Bad, because a migration waits for every process that has the database open. A long `source fetch` can hold up a new release's first command for its 2 minutes, which then fails and says why, and a long-running server will have to stop before a migration.
 - Good, because a crashed process never leaves the SQLite lock held, and a failed migration rolls back, leaving the schema at the last one that succeeded.
 - Good, because there is no code to undo migrations, so none goes untested.
 - Bad, because an upgrade changes the database the first time any command uses it. Teams that want that to be a deliberate step run `migrate` themselves, after a backup; a setting to stop migrating on open can be added if they need more.

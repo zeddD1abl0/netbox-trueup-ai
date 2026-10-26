@@ -17,12 +17,31 @@
 file=$(sed -nE 's/.*"file_path"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' | head -n 1 | sed 's/\\\(.\)/\1/g')
 [ -n "$file" ] || exit 0
 
-# Only files in this repository, by their path in it.
-root=${CLAUDE_PROJECT_DIR:-$(pwd)}
+# Only files in this repository, by their path in it. Real paths are
+# compared, so that a symbolic link, .. or a trailing slash makes no
+# difference. The file's directory may not exist yet: the nearest one that
+# does is resolved, and the rest kept as written.
+realdir() { (cd "$1" 2>/dev/null && pwd -P); }
+root=$(realdir "${CLAUDE_PROJECT_DIR:-.}") || exit 0
+case $file in
+  /*) ;;
+  *) file=$(pwd)/$file ;;
+esac
+dir=$(dirname "$file")
+rest=
+while [ ! -d "$dir" ]; do
+  rest=/$(basename "$dir")$rest
+  dir=$(dirname "$dir")
+done
+case $rest in
+  */..|*/../*|*/.|*/./*)
+    echo "Write $file by a path without . or .. in directories that don't exist yet, so that this hook can tell whether it is generated." >&2
+    exit 2 ;;
+esac
+file=$(realdir "$dir")$rest/$(basename "$file")
 case $file in
   "$root"/*) rel=${file#"$root"/} ;;
-  /*) exit 0 ;;
-  *) rel=$file ;;
+  *) exit 0 ;;
 esac
 
 reason=

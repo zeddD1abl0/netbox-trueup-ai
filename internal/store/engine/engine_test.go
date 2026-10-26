@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -17,10 +16,7 @@ func TestOpen(t *testing.T) {
 	t.Parallel()
 	dataDir := t.TempDir()
 	other := filepath.Join(t.TempDir(), "other.db")
-	otherURL := "sqlite://" + filepath.ToSlash(other)
-	if runtime.GOOS == "windows" {
-		otherURL = "sqlite:///" + filepath.ToSlash(other)
-	}
+	otherURL := "sqlite:///" + strings.TrimPrefix(filepath.ToSlash(other), "/") // sqlite:///C:/... on Windows
 
 	tests := []struct {
 		name      string

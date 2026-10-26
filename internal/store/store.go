@@ -25,12 +25,13 @@ import (
 // Store is TrueUp's database. It is safe for concurrent use, and several
 // processes can use one database at once.
 type Store interface {
-	// RecordFetch records a fetch of a source, all of it or nothing. A
-	// fetch that succeeded replaces the source's snapshot and its file
-	// list. One that failed records only the attempt and its error, and
-	// leaves the snapshot as it was, as the source's cache does. A fetch
-	// that started before the one recorded changes nothing the later one
-	// recorded, so that fetches finishing out of order leave the latest.
+	// RecordFetch records a fetch of a source as its latest, all of it or
+	// nothing. A fetch that succeeded replaces the source's snapshot and
+	// its file list. One that failed records only the attempt and its
+	// error, and leaves the snapshot as it was, as the source's cache does.
+	// Fetches of a source must be recorded in the order they happened, as
+	// they are when each holds the source's fetch lock (source.LockCache)
+	// until it is recorded.
 	RecordFetch(ctx context.Context, f Fetch) error
 	// Sources returns every recorded source, sorted by name, each with its
 	// latest fetch and its snapshot without the file list.

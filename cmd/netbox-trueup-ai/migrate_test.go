@@ -46,7 +46,7 @@ func TestMigrateText(t *testing.T) {
 func TestMigrateJSON(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "elsewhere", "trueup.db")
-	env := []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=sqlite://" + filepath.ToSlash(path)}
+	env := []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=" + sqliteURL(path)}
 
 	for i, want := range []migrateJSON{
 		{Engine: "sqlite", Location: path, VersionBefore: 0, Version: 1, Applied: []migrationJSON{{Version: 1, Name: "00001_sources.sql"}}},
@@ -129,6 +129,12 @@ func TestMigrateFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// sqliteURL returns the sqlite URL of the file at the absolute path:
+// sqlite:///tmp/x.db, or sqlite:///C:/x.db on Windows.
+func sqliteURL(path string) string {
+	return "sqlite:///" + strings.TrimPrefix(filepath.ToSlash(path), "/")
 }
 
 // records returns what the database in dataDir records about sources, and

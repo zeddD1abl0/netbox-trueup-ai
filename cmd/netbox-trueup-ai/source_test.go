@@ -21,6 +21,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
@@ -177,17 +178,72 @@ func TestSourceFetchJSON(t *testing.T) {
 // dataDir.
 func recordOld(t *testing.T, dataDir string) {
 	t.Helper()
+	recordFetch(t, dataDir, "old", time.Now().Add(-time.Hour))
+}
+
+// recordFetch records a fetch of the named source at a time, in the
+// database in dataDir.
+func recordFetch(t *testing.T, dataDir, name string, at time.Time) {
+	t.Helper()
 	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
 	err = s.RecordFetch(t.Context(), store.Fetch{
-		Source:    store.SourceConfig{Name: "old", Kind: "git", URL: "https://git.example.com/old.git"},
-		FetchedAt: time.Now().Add(-time.Hour), Version: "abc",
+		Source:    store.SourceConfig{Name: name, Kind: "git", URL: "https://git.example.com/" + name + ".git"},
+		FetchedAt: at, Version: "abc",
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSourceFetchAfterTheClockWentBack(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	// As if the clock had run an hour ahead for another fetch.
+	recordFetch(t, dataDir, "lib", time.Now().Add(time.Hour))
+
+	before := time.Now()
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	sources, snaps := records(t, dataDir)
+	if len(sources) != 1 || sources[0].FetchedAt.Before(before.Add(-time.Second)) || sources[0].FetchedAt.After(time.Now()) || snaps["lib"].Version != commit {
+		t.Errorf("the database records %+v with snapshot %+v, want this fetch of %s", sources, snaps["lib"], commit)
+	}
+}
+
+func TestSourceFetchWaitsForAnotherFetch(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	root := filepath.Join(dataDir, "cache", "sources")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Another process is fetching lib, and finishes a little later.
+	unlock, err := source.LockCache(t.Context(), root, "lib", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		_ = unlock()
+	}()
+
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, `msg="waiting for another TrueUp process to finish fetching the source" source=lib`) {
+		t.Errorf("stderr doesn't say it waited:\n%s", r.stderr)
+	}
+	if _, snaps := records(t, dataDir); snaps["lib"].Version != commit {
+		t.Errorf("lib's recorded snapshot = %+v, want %s", snaps["lib"], commit)
 	}
 }
 

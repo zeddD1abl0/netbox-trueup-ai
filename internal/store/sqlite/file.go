@@ -62,24 +62,78 @@ func createFile(ctx context.Context, path string, log *slog.Logger) error {
 	return nil
 }
 
-// openDB opens the database file, which createFile made, and checks that
-// its connections have the settings the package needs.
-func openDB(ctx context.Context, path string) (*sql.DB, error) {
+// applicationID marks TrueUp's databases in their files' headers:
+// 0x54525550, "TRUP". The first migration sets it.
+const applicationID = 0x54525550
+
+// openDB opens the database file, which createFile made. It checks that the
+// file is TrueUp's database, or a new one, before changing anything in it,
+// then puts it in WAL mode, which lasts, and checks that its connections
+// have the settings the package needs.
+func openDB(ctx context.Context, path string) (_ *sql.DB, err error) {
 	connector, err := sqlitedriver.NewConnector(dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("connect to the database: %w", err)
 	}
 	db := sql.OpenDB(connector)
-	if err := checkSettings(ctx, db); err != nil {
-		return nil, errors.Join(err, db.Close())
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, db.Close())
+		}
+	}()
+	if err := checkOwner(ctx, db, path); err != nil {
+		return nil, err
+	}
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode); err != nil {
+		return nil, fmt.Errorf("put the database in WAL mode: %w", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return nil, fmt.Errorf("the database can't use WAL mode, only %q: is it on a network file system?", mode)
+	}
+	var fk int
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
+		return nil, fmt.Errorf("read whether the database enforces foreign keys: %w", err)
+	}
+	if fk != 1 {
+		return nil, errors.New("the database doesn't enforce foreign keys")
 	}
 	return db, nil
+}
+
+// checkOwner checks that the database is TrueUp's, by its application ID,
+// or new: without the ID, and holding no tables but, perhaps, goose's, as
+// when a process stopped before the first migration finished. So TrueUp
+// never takes over another application's database that database.url names
+// by mistake.
+func checkOwner(ctx context.Context, db *sql.DB, path string) error {
+	var id int64
+	if err := db.QueryRowContext(ctx, "PRAGMA application_id").Scan(&id); err != nil {
+		return fmt.Errorf("read the database file's header: %w", err)
+	}
+	if id == applicationID {
+		return nil
+	}
+	if id == 0 {
+		var others int
+		err := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\' AND name <> 'goose_db_version'`).Scan(&others)
+		if err != nil {
+			return fmt.Errorf("read the database's tables: %w", err)
+		}
+		if others == 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s holds another application's database, not TrueUp's: point database.url at a file of TrueUp's own", path)
 }
 
 // dsn returns the URI that opens the database at path. mode=rw is SQLite's
 // own option, never to create the file: createFile does, with its mode. The
 // options that start with an underscore are the driver's, applied to every
-// connection it opens; busy_timeout comes first among the pragmas.
+// connection it opens; busy_timeout comes first among the pragmas. WAL mode
+// isn't among them, since it lasts in the file once set, and openDB sets it
+// only once it knows the file is TrueUp's.
 func dsn(path string) string {
 	q := url.Values{}
 	q.Set("mode", "rw")
@@ -89,7 +143,6 @@ func dsn(path string) string {
 	q.Set("_defensive", "1")
 	q.Add("_pragma", "busy_timeout("+strconv.FormatInt(busyTimeout.Milliseconds(), 10)+")")
 	q.Add("_pragma", "foreign_keys(1)")
-	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "synchronous(FULL)")
 	p := filepath.ToSlash(path)
 	if !strings.HasPrefix(p, "/") {
@@ -97,26 +150,4 @@ func dsn(path string) string {
 	}
 	u := url.URL{Scheme: "file", Path: p, RawQuery: q.Encode()}
 	return u.String()
-}
-
-// checkSettings checks, on one of the pool's connections, what each
-// connection's pragmas set. A pragma that SQLite can't apply fails the
-// connection, but journal_mode reports the mode it could set instead, which
-// on some file systems isn't WAL.
-func checkSettings(ctx context.Context, db *sql.DB) error {
-	var mode string
-	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
-		return fmt.Errorf("read the database's journal mode: %w", err)
-	}
-	if !strings.EqualFold(mode, "wal") {
-		return fmt.Errorf("the database can't use WAL mode, only %q: is it on a network file system?", mode)
-	}
-	var fk int
-	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
-		return fmt.Errorf("read whether the database enforces foreign keys: %w", err)
-	}
-	if fk != 1 {
-		return errors.New("the database doesn't enforce foreign keys")
-	}
-	return nil
 }
