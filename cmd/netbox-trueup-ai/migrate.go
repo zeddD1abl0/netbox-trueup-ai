@@ -20,8 +20,9 @@ func newMigrateCommand(a *app) *cobra.Command {
 		Use:   "migrate",
 		Short: "Create the database, or bring its schema up to date",
 		Long: `Open TrueUp's database, creating it if it doesn't exist, and apply the
-schema migrations it lacks. Unless database.url names another, the database
-is SQLite, in the file ` + engine.DefaultFile + ` in the data directory.
+schema migrations it lacks. Unless database.url names another SQLite file or
+a PostgreSQL database, the database is SQLite, in the file
+` + engine.DefaultFile + ` in the data directory.
 
 Commands that use the database, such as source fetch, migrate it when they
 open it, so running migrate is optional: it does the same as a step of its

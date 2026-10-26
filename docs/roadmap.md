@@ -85,10 +85,15 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - [ADR 0021](adr/0021-forward-only-migrations-when-opening.md): migrate the database forward only, when a command opens it.
    - New dependencies: modernc.org/sqlite v1.60.1, goose v3.29.0 and golang.org/x/sys for file locks, plus sqlc 1.31.1 as a pinned tool.
 
-7. **`feat(store): add PostgreSQL`.**
-   - pgx, with PostgreSQL migrations and queries. The storage test suite runs on both engines, PostgreSQL through testcontainers.
-   - Done now, while there are few queries, so every later schema change covers both engines from the start.
-   - New dependency: pgx.
+7. **`feat(store): add PostgreSQL`.** Done in #10.
+   - `internal/store/postgres` on pgx: a `postgres` or `postgresql` URL in `database.url` opens it, with libpq's parameters and environment variables, TLS included (`sslmode`, by default libpq's `prefer`). TrueUp's tables live in a schema of their own, `netbox_trueup_ai`, which TrueUp creates or a database administrator does, marked as TrueUp's by its comment, with every connection's `search_path` pinned to it. A database that isn't UTF-8, or a schema of that name holding another application's tables, is refused before anything changes.
+   - Migrations with SQLite's numbers and names, in `timestamptz`, `bigint`, `bytea` and `text COLLATE "C"` for sorted columns; queries compiled by sqlc for pgx's own interface, with file lists written by `COPY`.
+   - The locks of ADR 0021 as advisory locks: the shared lock held on a connection of the store's own for as long as it is open, the exclusive one to migrate, the gate, and a third lock that each pooled connection holds, so that a store whose own connection drops still holds migrations off. Poolers must pool by session.
+   - The storage suite runs on both engines, PostgreSQL 16 through testcontainers (`internal/store/postgres/pgtest`), in databases that sort by ICU's English rules, so that byte order is proved. Two new shared tests: snapshots read while fetches are recorded, and removing sources while they are recorded. PostgreSQL 15 and later are supported; other releases join the tests once there is a working system.
+   - `migrate` reports a PostgreSQL database's location as its hosts, ports and database name, never the user name or password.
+   - The `db-change` skill's PostgreSQL steps are required now.
+   - [ADR 0022](adr/0022-postgresql-schema-and-advisory-locks.md): a schema of its own, advisory locks, and libpq's connection parameters.
+   - New dependency: pgx v5.11.0.
 
 8. **`feat(model): add the object model and device type specs`.**
    - Generic objects, values and specs ([ADR 0008](adr/0008-describe-object-types-with-specs.md)), with specs for manufacturers and device type fields, citing NetBox's source.

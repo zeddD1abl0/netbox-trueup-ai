@@ -47,6 +47,8 @@ func Run(t *testing.T, open Open) {
 		{"times", testTimes},
 		{"names and paths sort as bytes", testSorting},
 		{"concurrent fetches", testConcurrent},
+		{"snapshots read while fetches are recorded", testReadsAgree},
+		{"removing sources while they are recorded", testRemoveWhileRecording},
 		{"a large file list", testLarge},
 	}
 	for _, tt := range tests {
@@ -407,6 +409,81 @@ func testConcurrent(t *testing.T, s store.Store) {
 		version := src.Snapshot.Version
 		want := success(src.Name, version, src.Snapshot.FetchedAt, "x.yaml", "y.yaml", version+".yaml")
 		checkSnapshot(t, s, snapshotOf(want))
+	}
+}
+
+func testReadsAgree(t *testing.T, s store.Store) {
+	// A snapshot is read as of one moment, so that its version, time and
+	// lists come from one fetch, even while others are recorded.
+	paths := make([]string, 200)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("f%03d.yaml", i)
+	}
+	fetch := func(i int) store.Fetch {
+		return success("lib", fmt.Sprintf("v%d", i), t0.Add(time.Duration(i)*time.Second), paths...)
+	}
+	record(t, s, fetch(0))
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Go(func() {
+		for i := 1; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := s.RecordFetch(t.Context(), fetch(i)); err != nil {
+				t.Errorf("RecordFetch: %v", err)
+				return
+			}
+		}
+	})
+	defer wg.Wait()
+	defer close(stop)
+	start := time.Now()
+	for reads := 0; reads < 20 || time.Since(start) < time.Second; reads++ {
+		snap := snapshot(t, s, "lib")
+		var i int
+		if _, err := fmt.Sscanf(snap.Version, "v%d", &i); err != nil {
+			t.Fatalf("Snapshot returned version %q", snap.Version)
+		}
+		if diff := cmp.Diff(snapshotOf(fetch(i)), snap, equateEmpty); diff != "" {
+			t.Fatalf("read %d: a snapshot mixes fetches (-want +got):\n%s", reads, diff)
+		}
+	}
+}
+
+func testRemoveWhileRecording(t *testing.T, s store.Store) {
+	// RemoveSources and RecordFetch can run at once, as when a process with
+	// an older configuration fetches a source that another process no longer
+	// configures. Neither fails, and the source is either removed or
+	// recorded whole.
+	for i := range 30 {
+		at := t0.Add(time.Duration(i) * time.Second)
+		record(t, s, success("gone", fmt.Sprintf("v%d", i), at, "a.yaml", "b.yaml"))
+		again := success("gone", fmt.Sprintf("v%d-again", i), at.Add(time.Millisecond), "b.yaml", "c.yaml")
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if err := s.RecordFetch(t.Context(), again); err != nil {
+				t.Errorf("round %d: RecordFetch: %v", i, err)
+			}
+		})
+		wg.Go(func() {
+			if _, err := s.RemoveSources(t.Context(), []string{"kept"}); err != nil {
+				t.Errorf("round %d: RemoveSources: %v", i, err)
+			}
+		})
+		wg.Wait()
+		got, err := s.Snapshot(t.Context(), "gone")
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			t.Fatalf("round %d: Snapshot: %v", i, err)
+		default:
+			if diff := cmp.Diff(snapshotOf(again), got, equateEmpty); diff != "" {
+				t.Errorf("round %d: the source is neither removed nor recorded whole (-want +got):\n%s", i, diff)
+			}
+		}
 	}
 }
 

@@ -70,10 +70,10 @@ jobs:
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    # Each package with integration tests starts a fresh NetBox, which spends
-    # about 4 minutes on migrations, and packages run one at a time. Two
-    # packages have them, and `go test -timeout 30m` gives up on either with a
-    # stack dump before this does.
+    # Two packages with integration tests each start a fresh NetBox, which
+    # spends about 4 minutes on migrations, and packages run one at a time.
+    # Three more start PostgreSQL, in seconds. `go test -timeout 30m` gives up
+    # on any one with a stack dump before this does.
     timeout-minutes: 65
     permissions:
       contents: read
@@ -86,7 +86,8 @@ jobs:
         with:
           go-version: stable
 
-      # Starts a disposable NetBox from internal/netboxtest/compose.yaml with
+      # Starts a disposable NetBox from internal/netboxtest/compose.yaml, and
+      # PostgreSQL from internal/store/postgres/pgtest/compose.yaml, with
       # testcontainers-go, on the runner's own Docker.
       - name: Integration tests
         run: make test-integration
