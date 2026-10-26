@@ -1,0 +1,16 @@
+# sqlc compiles the queries of each database engine into Go (docs/adr/0011).
+# Run `make generate` after changing a migration or a query, and commit the
+# result: CI checks that it matches (`make generate-check`). Never edit the
+# generated packages by hand.
+#
+# Each engine reads its schema from its goose migrations, of which sqlc
+# applies only the Up sections. PostgreSQL joins in roadmap step 7.
+version: "2"
+sql:
+  - engine: sqlite
+    schema: internal/store/sqlite/migrations
+    queries: internal/store/sqlite/queries
+    gen:
+      go:
+        package: sqlitedb
+        out: internal/store/sqlite/sqlitedb

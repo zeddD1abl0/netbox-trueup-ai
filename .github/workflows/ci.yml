@@ -30,6 +30,10 @@ jobs:
       - name: Lint Go
         run: make lint
 
+      # sqlc's output is committed; it must match the SQL it comes from.
+      - name: Check generated code
+        run: make generate-check
+
       - name: Lint workflows and Markdown, scan for secrets
         run: make lint-repo
         env:

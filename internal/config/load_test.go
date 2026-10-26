@@ -764,6 +764,16 @@ func TestLoadProblems(t *testing.T) {
 			secret: "s3cret",
 		},
 		{
+			name: "a sqlite URL that doesn't give an absolute path",
+			in:   input{env: []string{"TRUEUP_DATABASE_URL=sqlite:trueup.db"}},
+			want: []string{"database.url (env TRUEUP_DATABASE_URL): must give the database file's absolute path, as in sqlite:///var/lib/netbox-trueup-ai/netbox-trueup-ai.db"},
+		},
+		{
+			name: "a sqlite URL with SQLite options",
+			in:   input{env: []string{"TRUEUP_DATABASE_URL=sqlite:///srv/trueup.db?_pragma=foreign_keys(0)"}},
+			want: []string{"database.url (env TRUEUP_DATABASE_URL): must not have a query or fragment: TrueUp sets SQLite's options itself"},
+		},
+		{
 			name:   "a v2 token without its secret",
 			in:     input{env: []string{"TRUEUP_NETBOX_TOKEN=nbt_keykeykeykey"}},
 			want:   []string{"netbox.token (env TRUEUP_NETBOX_TOKEN): " + cutToken},

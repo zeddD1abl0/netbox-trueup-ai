@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -18,6 +20,10 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
 
 // gitRepo serves a repository with go-git's own server over TLS, and returns
@@ -110,10 +116,12 @@ func TestSourceFetchJSON(t *testing.T) {
 		{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library","include":["device-types/Juniper"]},
 		{"name":"private","kind":"git","url":"git@git.example.com:defs.git","format":"devicetype-library"}
 	]`)
-	// The cache of a source no longer configured is removed.
+	// The cache and records of a source no longer configured are removed.
 	if err := os.MkdirAll(filepath.Join(dataDir, "cache", "sources", "old", "x"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	recordOld(t, dataDir)
+	before := time.Now()
 	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch", "-o", "json")
 	if r.code != exitFetchFailed {
 		t.Errorf("exit code = %d, want %d\nstderr: %s", r.code, exitFetchFailed, r.stderr)
@@ -142,6 +150,157 @@ func TestSourceFetchJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "cache", "sources", "old")); !os.IsNotExist(err) {
 		t.Errorf("the old source's cache is still there: %v", err)
+	}
+
+	// Both fetches are recorded, the failed one with its error.
+	sources, snaps := records(t, dataDir)
+	if len(sources) != 2 || sources[0].Name != "lib" || sources[1].Name != "private" {
+		t.Fatalf("the database records %+v, want lib and private", sources)
+	}
+	for _, src := range sources {
+		if src.FetchedAt.Before(before.Add(-time.Second)) || src.FetchedAt.After(time.Now()) {
+			t.Errorf("source %s was fetched at %v, not during the command", src.Name, src.FetchedAt)
+		}
+	}
+	if sources[0].Error != "" || sources[1].Error != sshErr || sources[1].Snapshot != nil {
+		t.Errorf("the database records lib's error %q, and private's %q with snapshot %+v", sources[0].Error, sources[1].Error, sources[1].Snapshot)
+	}
+	wantFiles := []store.File{{
+		Path: "device-types/Juniper/MX204.yaml", Size: 13,
+		Digest: "sha256:" + fmt.Sprintf("%x", sha256.Sum256([]byte("model: MX204\n"))),
+	}}
+	if snap := snaps["lib"]; snap.Version != commit || snap.Ref != "master" || snap.URL != repoURL || !cmp.Equal(snap.Files, wantFiles) || len(snap.Skipped) != 0 {
+		t.Errorf("lib's recorded snapshot = %+v, want version %s with %+v", snap, commit, wantFiles)
+	}
+}
+
+// recordOld records a fetch of a source named old in the database in
+// dataDir.
+func recordOld(t *testing.T, dataDir string) {
+	t.Helper()
+	recordFetch(t, dataDir, "old", time.Now().Add(-time.Hour))
+}
+
+// recordFetch records a fetch of the named source at a time, in the
+// database in dataDir.
+func recordFetch(t *testing.T, dataDir, name string, at time.Time) {
+	t.Helper()
+	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	err = s.RecordFetch(t.Context(), store.Fetch{
+		Source:    store.SourceConfig{Name: name, Kind: "git", URL: "https://git.example.com/" + name + ".git"},
+		FetchedAt: at, Version: "abc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSourceFetchAfterTheClockWentBack(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	// As if the clock had run an hour ahead for another fetch.
+	recordFetch(t, dataDir, "lib", time.Now().Add(time.Hour))
+
+	before := time.Now()
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	sources, snaps := records(t, dataDir)
+	if len(sources) != 1 || sources[0].FetchedAt.Before(before.Add(-time.Second)) || sources[0].FetchedAt.After(time.Now()) || snaps["lib"].Version != commit {
+		t.Errorf("the database records %+v with snapshot %+v, want this fetch of %s", sources, snaps["lib"], commit)
+	}
+}
+
+func TestSourceFetchWaitsForAnotherFetch(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	root := filepath.Join(dataDir, "cache", "sources")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Another process is fetching lib, and finishes a little later.
+	unlock, err := source.LockCache(t.Context(), root, "lib", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		_ = unlock()
+	}()
+
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, `msg="waiting for another TrueUp process to finish fetching the source" source=lib`) {
+		t.Errorf("stderr doesn't say it waited:\n%s", r.stderr)
+	}
+	if _, snaps := records(t, dataDir); snaps["lib"].Version != commit {
+		t.Errorf("lib's recorded snapshot = %+v, want %s", snaps["lib"], commit)
+	}
+}
+
+func TestSourceFetchLeavesASourceAnotherProcessFetches(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	root := filepath.Join(dataDir, "cache", "sources")
+	if err := os.MkdirAll(filepath.Join(root, "old", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recordOld(t, dataDir)
+	// Another process, whose configuration still has old, is fetching it.
+	unlock, err := source.LockCache(t.Context(), root, "old", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "another TrueUp process is fetching a source no longer configured") {
+		t.Errorf("stderr doesn't say it left old alone:\n%s", r.stderr)
+	}
+	if sources, _ := records(t, dataDir); len(sources) != 2 {
+		t.Errorf("the database records %+v, want lib and old", sources)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old")); err != nil {
+		t.Errorf("old's cache: %v", err)
+	}
+
+	// Once that fetch is over, the next run removes old.
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if r := runCLIApp(t, nil, trust(pool), env, "source", "fetch"); r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if sources, _ := records(t, dataDir); len(sources) != 1 || sources[0].Name != "lib" {
+		t.Errorf("the database records %+v, want only lib", sources)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old")); !os.IsNotExist(err) {
+		t.Errorf("old's cache is still there: %v", err)
+	}
+}
+
+func TestSourceFetchRecordsSkippedFiles(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library","max_file_size":"1KiB"}]`)
+	if r := runCLIApp(t, nil, trust(pool), env, "source", "fetch"); r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	_, snaps := records(t, dataDir)
+	want := []store.Skipped{{Path: "elevation-images/mx204.png", Reason: "too_large"}}
+	if snap := snaps["lib"]; len(snap.Files) != 2 || !cmp.Equal(snap.Skipped, want) {
+		t.Errorf("lib's recorded snapshot = %+v, want 2 files and %+v skipped", snap, want)
 	}
 }
 
@@ -208,5 +367,33 @@ func TestSourceFetchFailures(t *testing.T) {
 	}, "source", "fetch", "-o", "json")
 	if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "create the source cache in the data directory") {
 		t.Errorf("with a bad data directory: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
+	}
+
+	// A cache whose fetch locks can't be taken stops the command, rather
+	// than failing each source.
+	brokenDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(brokenDir, "cache", "sources"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "cache", "sources", ".locks"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = runCLI(t, nil, []string{
+		"TRUEUP_DATA_DIR=" + brokenDir,
+		`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
+	}, "source", "fetch", "-o", "json")
+	if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "source lib: create the directory of the sources' fetch locks") {
+		t.Errorf("with a broken lock directory: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
+	}
+
+	// A database this release can't use stops the command before it
+	// fetches anything.
+	r = runCLI(t, nil, []string{
+		"TRUEUP_DATA_DIR=" + t.TempDir(),
+		"TRUEUP_DATABASE_URL=" + postgresURL,
+		`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
+	}, "source", "fetch", "-o", "json")
+	if r.code != exitConfig || r.stdout != "" || !strings.Contains(r.stderr, "names a PostgreSQL database") || strings.Contains(r.stderr, "example.com/lib") {
+		t.Errorf("with PostgreSQL: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 }

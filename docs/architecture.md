@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client and Git sources, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources and the SQLite store, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -204,7 +204,7 @@ A source is configured with a name, a kind, a location (a repository URL, a URL 
 Every kind does the same job behind one interface:
 
 - **Latest only.** A fetch reads the source's latest content and replaces the previous snapshot. Older versions are never read again, for comparing, planning or display.
-- **Snapshots.** A fetch records the source's version, time and outcome, and the files the snapshot contains, each with its path, size and digest. Comparisons, plans and links record the version they used, so you can see what they were based on. Nothing outside the source layer knows which kind produced a snapshot.
+- **Snapshots.** A fetch records the source's version, time and outcome in the database, and the files the snapshot contains, each with its path, size and digest. A failed fetch records its outcome and keeps the previous snapshot, as the cache does. Comparisons, plans and links record the version they used, so you can see what they were based on. Nothing outside the source layer knows which kind produced a snapshot.
 - **Limits and paths.** Limits on file size, file count and path patterns are applied before any file is parsed. Paths are normalized and confined to the snapshot: no absolute paths and no `..`, and symbolic links are skipped.
 
 ### Git sources (M1)
@@ -309,6 +309,11 @@ The client speaks JSON, and the object model owns the types. In milestone 1 the 
 
 TrueUp keeps its state in SQLite on a single node, or in PostgreSQL for high availability ([ADR 0011](adr/0011-store-state-with-sqlc-and-goose.md)). Queries are plain SQL compiled by sqlc, with one query set per engine behind a shared Go interface. Migrations are goose files embedded in the binary, applied at startup under a lock or by the `migrate` command. One test suite runs against both engines.
 
+- **One interface, an engine per package.** The rest of TrueUp uses `store.Store` (`internal/store`). Each engine is a package below it with its own migrations, queries and sqlc output: `internal/store/sqlite` now, `internal/store/postgres` in M1's step 7. `internal/store/engine` alone knows the engines, and chooses one from `database.url`. `internal/store/storetest` holds the tests every engine must pass.
+- **Migrations** go forward only, and run when a command that uses the database opens it, or by `migrate`. Each process holds a shared lock while it has the database open, and a migration needs the exclusive one, so the schema never changes under a running process; while a migration waits for it, processes that start wait for the migration: on SQLite, operating system locks on a file beside the database, and on PostgreSQL advisory locks. A release refuses a schema newer than it knows, and a file that holds another application's database ([ADR 0021](adr/0021-forward-only-migrations-when-opening.md)).
+- **SQLite** is one file, `<data_dir>/netbox-trueup-ai.db` unless `database.url` names another, created readable by its owner only. On Windows it takes its directory's permissions for now. Connections run in WAL mode with foreign keys enforced, a 30-second busy timeout and every commit synced, and write transactions take the write lock as they begin. Times are UTC text to the microsecond, so that they sort as text and match PostgreSQL's precision.
+- **Writes** that belong together share a transaction: recording a fetch replaces the source's snapshot and its file list together, or not at all. Fetches of one source take turns, under a lock on its cache held until the fetch is recorded, so the database and the cache agree on its latest version. Times record when things happened, but never decide their order.
+
 ```mermaid
 erDiagram
     SOURCE ||--o| SNAPSHOT : "latest content"
@@ -322,7 +327,7 @@ erDiagram
 
 | Data | Purpose | Milestone |
 | --- | --- | --- |
-| Sources and snapshots | Each source's latest fetch: version, time, outcome and file list | M1 |
+| Sources and snapshots | Each source's latest fetch: time and outcome, and its latest snapshot's version and file list, with the entries it skipped | M1 (exists) |
 | Comparisons | The latest comparison of each definition: when, against which source version and NetBox, and the result | M1 |
 | Links | Provenance: the primary definition (source and file) each managed NetBox object follows, who linked it and when, and the source version and time of its last sync | M2 |
 | Import requests | Definitions a person asked to import that NetBox doesn't have yet | M2 |
@@ -621,7 +626,7 @@ flowchart LR
 | B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a merge that overrides someone else's change | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them; merge conflicts never acknowledged automatically; changelog messages for audit |
 | B4 | Browser to TrueUp | Logins, form posts, override choices, live YAML edits | Credential stuffing, CSRF, XSS, privilege escalation; hostile or oversized YAML, and floods of live-edit requests | argon2id hashes and login rate limits; hardened session cookies; cross-origin protection; Content Security Policy; role checks in every handler; identity never taken from proxy-set headers; live edits parsed and validated like source files, with limits on request size and rate; audit log |
 | B5 | Operator to TrueUp | Config file, environment, secret files | Secrets leaking through logs, `config show`, error messages or the UI | Secrets only from the environment or files, never from command-line flags; redaction everywhere, error messages included; a warning when a file holding secrets is readable by every user; no config file read from the working directory |
-| B6 | TrueUp and its database | All of TrueUp's state | Leaked database credentials; tampering by anyone with database access | The database is inside the trust boundary; its credentials are secrets; TLS to PostgreSQL; the SQLite file is created readable by its owner only |
+| B6 | TrueUp and its database | All of TrueUp's state | Leaked database credentials; tampering by anyone with database access | The database is inside the trust boundary; its credentials are secrets; TLS to PostgreSQL; the SQLite file is created readable by its owner only (on Windows, for now, it takes its directory's permissions) |
 | B7 | TrueUp to a writable Git source (export, M10) | Commits containing NetBox data | Pushing to the wrong place; leaked write credentials | Separate write credentials; commits go to a branch, never straight to a protected branch; designed in detail with the feature |
 | B8 | Identity provider to TrueUp (M3, M4) | OpenID Connect ID tokens, SAML assertions, and SCIM provisioning requests | Forged or replayed tokens and assertions, including XML signature wrapping; sign-in CSRF; roles granted too widely by loose group mapping; a leaked SCIM token used to create accounts | OpenID Connect: authorization code flow with PKCE, `state` and `nonce`, and signature, issuer, audience and expiry checks. SAML: signed assertions required, audience, recipient and validity checked, assertion IDs remembered against replay, a maintained library. SCIM: a bearer token per provider that only reaches the SCIM endpoints. Roles only from explicitly mapped groups; local administrator sign-ins audited |
 | B9 | Webhook senders to TrueUp (M7) | Notifications from Git hosts and NetBox that something changed | Forged or replayed notifications; floods; payloads trusted as data | A secret per endpoint, checked with the sender's scheme; delivery IDs de-duplicated; size and rate limits; a notification only triggers a fetch or a comparison, TrueUp re-reads the real source, and nothing is written to NetBox without a plan |
@@ -639,6 +644,7 @@ internal/
   config/                 declared and runtime settings (declared settings exist)
   telemetry/              logging, metrics and tracing setup (logging exists)
   glob/                   include and exclude patterns, with ** (exists)
+  filelock/               operating system file locks (exists)
   source/                 source kind interface, snapshots (exists)
   source/git/             Git source kind (exists; HTTP and file kinds join in M9)
   format/devicetypelib/   devicetype-library format adapter
@@ -646,9 +652,11 @@ internal/
   model/dcim/             specs for dcim object types
   compare/                grouping, matching, normalization, side-by-side diffs
   netbox/                 REST client (reads exist)
-  store/                  storage interface
-  store/sqlite/           SQLite migrations and queries
-  store/postgres/         PostgreSQL migrations and queries
+  store/                  storage interface (exists)
+  store/storetest/        the tests every engine passes (exists)
+  store/engine/           chooses the engine from database.url (exists)
+  store/sqlite/           SQLite migrations, queries and store (exists)
+  store/postgres/         PostgreSQL migrations, queries and store
   sync/                   links, planner, executor (M2)
   audit/                  audit events (M2)
   auth/                   sign-in, sessions, SCIM provisioning (M3, M4)
@@ -684,6 +692,7 @@ ADRs that record this design:
 | [0018](adr/0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output |
 | [0019](adr/0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http |
 | [0020](adr/0020-git-sources-with-go-git.md) | Fetch Git sources with go-git v6, leaving out files larger than the limit |
+| [0021](adr/0021-forward-only-migrations-when-opening.md) | Migrate the database forward only, when a command opens it |
 
 ADRs still to write, with the work that needs each one:
 

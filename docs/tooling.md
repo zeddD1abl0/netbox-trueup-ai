@@ -111,7 +111,7 @@ These live in `.claude/skills/` and are versioned with the code. Each one is wri
 | --- | --- |
 | `add-netbox-object` | Checklist for teaching the comparison and sync engine a new NetBox object type by writing its spec (ADR 0008): uniqueness rules, dependency order, field semantics checked against NetBox's OpenAPI schema, override handling, fixtures, and a parity test against a real NetBox. |
 | `netbox-parity` | Before writing comparison rules for a field, look up how NetBox itself validates and serializes it in the pinned NetBox source (section 3.1). The aim is to match NetBox's behaviour, not guess at it. |
-| `db-change` | Add a migration and queries for **both** SQLite and PostgreSQL, regenerate sqlc, and run the dual-backend test suite. |
+| `db-change` | Add a migration and queries for **both** SQLite and PostgreSQL, regenerate sqlc, extend the shared storage tests, and run them. Written in roadmap step 6, with the PostgreSQL half applying from step 7. |
 | `write-adr` | Create a numbered ADR from the template, add it to the index, and link any ADR it supersedes. |
 
 ### 1.5 Checked-in Claude configuration
@@ -129,7 +129,7 @@ Hooks are guardrails for agents, not a security boundary; CI is the real enforce
 | Hook | Status |
 | --- | --- |
 | Format each Go file Claude edits or writes with gofumpt (`.claude/hooks/format-go.sh`, a `PostToolUse` hook). Not goimports: run on a half-finished edit, it deletes an import that is briefly unused, or adds whichever package of that name is in the module cache, which once picked a stray YAML fork. `make fmt`, the pre-commit hook and lint run goimports on finished code. | In place |
-| Block edits to generated files (sqlc output, `*_templ.go`, bundled UI assets, `CHANGELOG.md`). Change the source and regenerate instead. | Planned, roadmap step 6 |
+| Block edits to generated files: sqlc's packages (the `out:` lines of `sqlc.yaml`), `CHANGELOG.md`, and any file that starts with Go's `// Code generated ... DO NOT EDIT.` marker, as templ's output will (`.claude/hooks/block-generated.sh`, a `PreToolUse` hook). It names the source to change instead. Bundled UI assets join when they exist. | In place |
 | Block `git commit` on `main`, force-pushes, and `--no-verify`. | Planned, backlog |
 | Block reads of `.env*`, key files, and anything under `secrets/`. | Planned, backlog |
 
@@ -189,10 +189,11 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 
 | Tool | Status | Why |
 | --- | --- | --- |
-| [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | Use | Pure-Go SQLite. No CGO, so cross-compiling for Windows, macOS, and arm64 stays trivial. |
+| [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | Use | Pure-Go SQLite. No CGO, so cross-compiling for Windows, macOS, and arm64 stays trivial. At v1.60.1 (2026-09-29), which goose v3.29.0 also requires. It is SQLite's C code translated to Go, which the race detector slows about 25 times, so the storage tests take longer under `make test` than they would in production. |
 | [pgx](https://github.com/jackc/pgx) (v5) | Use | The standard PostgreSQL driver for Go. Used for HA deployments. |
-| [sqlc](https://sqlc.dev) | Use | Generates type-safe Go from plain SQL. One query set per database engine sits behind a shared Go interface, and a single test suite runs against both. SQL stays explicit and reviewable, with no reflection-based ORM. |
-| [goose](https://github.com/pressly/goose) | Use | Versioned migrations for both engines, embedded in the binary and applied at startup under a lock. |
+| [sqlc](https://sqlc.dev) | Use | Generates type-safe Go from plain SQL. One query set per database engine sits behind a shared Go interface, and a single test suite runs against both. SQL stays explicit and reviewable, with no reflection-based ORM. Pinned in `mise.toml` at 1.31.1 (2026-04-22), which mise installs from sqlc's GitHub releases through its aqua backend. Those releases publish no checksums or signatures, so mise can't verify the download beyond TLS. Only developers and CI run sqlc, and what it generates is committed, reviewed, and checked by `make generate-check`. |
+| [goose](https://github.com/pressly/goose) | Use | Versioned migrations for both engines, embedded in the binary and applied, forward only, when a command opens the database ([ADR 0021](adr/0021-forward-only-migrations-when-opening.md)). At v3.29.0 (2026-10-11), through its `Provider` API, with no global state. Its own lockers cover PostgreSQL and MySQL, so SQLite takes a file lock instead. goose's `go.mod` lists many database drivers; only the packages TrueUp imports are built, but its requirements raise some test-only modules, such as moby's client, through Go's version selection. |
+| [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) | Use | File locks (`internal/filelock`): `flock` on Unix, `LockFileEx` on Windows, which the operating system releases when a process dies. They keep a SQLite database's schema from changing under a process that has it open, and make fetches of one source take turns. From the Go team, and in the module graph already through other modules. |
 
 ### 3.4 Jobs and high availability
 
@@ -243,7 +244,7 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | [Playwright](https://playwright.dev) | Later | End-to-end UI tests in CI. Claude also uses the Playwright MCP plugin interactively. |
 | [lefthook](https://github.com/evilmartians/lefthook) | Use | Fast Git hooks from a single binary: format, lint changed files, gitleaks, commit-message check. Hooks are a convenience; CI enforces the same checks. |
 
-Generated code (sqlc, templ, bundled JS) is committed. CI regenerates it and fails if the result differs from what is committed.
+Generated code (sqlc, templ, bundled JS) is committed. CI regenerates it and fails if the result differs from what is committed. For sqlc, `make generate` regenerates its packages, and `make generate-check` generates them afresh into a temporary copy and fails on any difference, a missing or left-over file included. It is part of `make check`, and a step in CI's "Lint and scan" job.
 
 ---
 

@@ -110,6 +110,11 @@ func TestExitCodes(t *testing.T) {
 			wantStderr: `"netbox-trueup-ai netbox check" takes no arguments, but got "extra"`,
 		},
 		{name: "netbox check documents its exit codes", args: []string{"help", "netbox", "check"}, wantCode: exitOK, wantStdout: "4  The token can't read some object types."},
+		{
+			name: "migrate takes no arguments", args: []string{"migrate", "extra"}, wantCode: exitUsage,
+			wantStderr: `"netbox-trueup-ai migrate" takes no arguments, but got "extra"`,
+		},
+		{name: "migrate documents its exit codes", args: []string{"help", "migrate"}, wantCode: exitOK, wantStdout: "1  The database couldn't be opened or migrated"},
 		{name: "help for a command", args: []string{"help", "config", "show"}, wantCode: exitOK, wantStdout: "Print every setting's effective value"},
 		{name: "help for an unknown topic", args: []string{"help", "config", "bogus"}, wantCode: exitUsage, wantStderr: `Error: unknown help topic "config bogus"`},
 		{name: "completion script", args: []string{"completion", "bash"}, wantCode: exitOK, wantStdout: "bash completion"},

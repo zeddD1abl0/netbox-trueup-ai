@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,12 +11,14 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source/git"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 )
 
 func newSourceCommand(a *app) *cobra.Command {
@@ -42,12 +45,20 @@ Files larger than a source's max_file_size, symbolic links, submodules and
 entries with unsafe names are skipped and reported. Caches of sources that
 are no longer configured are removed.
 
+Each fetch is recorded in TrueUp's database, which is created and migrated
+first if needed: when it started, and the version and file list it found,
+or why it failed. A source that fails keeps the version it had. The records
+of sources no longer configured are removed with their caches. Fetches of
+one source take turns, even in different processes: a fetch waits up to the
+source's fetch_timeout for another to finish, and otherwise fails.
+
 Exit codes:
   0  Every source was fetched.
   1  The command couldn't run, such as when the data directory can't be
-     written to.
+     written to, or the database can't be opened or written.
   2  A name given isn't a configured source.
-  3  The configuration is invalid, or no sources are configured.
+  3  The configuration is invalid, no sources are configured, or
+     database.url names a database this release can't use.
   4  Some sources couldn't be fetched. The result is printed as usual, with
      each one's error, and the cache keeps their previous versions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -146,68 +157,207 @@ func (r fetchJSON) failed() []string {
 	return out
 }
 
-// fetchSources fetches each source in turn. A source that fails is reported
-// in the result; only a problem with the cache as a whole, or an interrupt,
-// is an error.
-func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []config.Source) (fetchJSON, error) {
+// fetchSources fetches each source in turn, and records each fetch in the
+// database. A source that fails is reported in the result, and recorded;
+// only a problem with the cache or the database, or an interrupt, is an
+// error.
+func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []config.Source) (_ fetchJSON, err error) {
 	root := filepath.Join(cfg.Settings.DataDir, "cache", "sources")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fetchJSON{}, fmt.Errorf("create the source cache in the data directory: %w", err)
 	}
+	db, _, err := a.openStore(ctx, cfg)
+	if err != nil {
+		return fetchJSON{}, err
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	kinds := map[string]source.Kind{
 		config.SourceKindGit: git.New(git.Options{CacheDir: root, RootCAs: a.sourceRootCAs, Logger: a.logger}),
 	}
 	result := fetchJSON{OK: true, Sources: []fetchSourceJSON{}}
 	for _, s := range sources {
-		row := fetchSourceJSON{Name: s.Name, Kind: s.Kind, URL: s.URL, Skipped: []skippedJSON{}}
-		if err := fetchSource(ctx, kinds, s, &row); err != nil {
-			if ctx.Err() != nil {
-				return fetchJSON{}, fmt.Errorf("interrupted while fetching source %s: %w", s.Name, ctx.Err())
-			}
-			msg := err.Error()
-			row.Error = &msg
-			result.OK = false
-			a.logger.Warn("can't fetch source", "source", s.Name, "error", msg)
+		row, err := a.fetchAndRecord(ctx, db, kinds, root, s)
+		if err != nil {
+			return fetchJSON{}, err
 		}
+		result.OK = result.OK && row.OK
 		result.Sources = append(result.Sources, row)
 	}
 
+	if err := a.removeUnconfigured(ctx, db, root, cfg.Settings.Sources); err != nil {
+		return fetchJSON{}, err
+	}
+	return result, nil
+}
+
+// removeUnconfigured removes the records and caches of sources that are no
+// longer configured. It takes each one's fetch lock first, without waiting,
+// and leaves those another process is fetching, perhaps with an older
+// configuration, for a later run.
+func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root string, configured []config.Source) error {
+	interrupted := func() error {
+		return fmt.Errorf("interrupted while removing sources no longer configured: %w", ctx.Err())
+	}
 	var keep []string
-	for _, s := range cfg.Settings.Sources {
+	for _, s := range configured {
 		keep = append(keep, s.Name)
+	}
+	recorded, err := db.Sources(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		return err
+	}
+	cached, err := source.CachedSources(ctx, root)
+	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		return err
+	}
+	candidates := cached
+	for _, r := range recorded {
+		candidates = append(candidates, r.Name)
+	}
+	slices.Sort(candidates)
+	var unlocks []func() error
+	defer func() {
+		for _, unlock := range unlocks {
+			if err := unlock(); err != nil {
+				a.logger.Warn("can't release a source's fetch lock", "error", err)
+			}
+		}
+	}()
+	for _, name := range slices.Compact(candidates) {
+		if slices.Contains(keep, name) {
+			continue
+		}
+		unlock, err := source.LockCache(ctx, root, name, 0, nil)
+		switch {
+		case ctx.Err() != nil:
+			return interrupted()
+		case errors.Is(err, source.ErrFetching):
+			a.logger.Info("another TrueUp process is fetching a source no longer configured, so its records and cache stay until a later run", "source", name)
+			keep = append(keep, name)
+		case err != nil:
+			return err
+		default:
+			unlocks = append(unlocks, unlock)
+		}
+	}
+
+	forgotten, err := db.RemoveSources(ctx, keep)
+	if err != nil {
+		if ctx.Err() != nil {
+			return interrupted()
+		}
+		return err
+	}
+	for _, name := range forgotten {
+		a.logger.Info("removed the records of a source no longer configured", "source", name)
 	}
 	removed, err := source.PruneCache(ctx, root, keep)
 	for _, name := range removed {
 		a.logger.Info("removed the cache of a source no longer configured", "source", name)
 	}
-	if err != nil {
+	switch {
+	case ctx.Err() != nil:
+		return interrupted()
+	case err != nil:
 		a.logger.Warn("can't remove the caches of sources no longer configured", "error", err)
 	}
-	return result, nil
+	return nil
 }
 
-// fetchSource fetches one source and fills in its row.
-func fetchSource(ctx context.Context, kinds map[string]source.Kind, s config.Source, row *fetchSourceJSON) error {
+// fetchAndRecord fetches one source and records the fetch, holding the
+// source's fetch lock throughout, so that the cache and the database agree
+// on its latest version. A fetch that fails is recorded, and reported in the
+// row; a fetch that can't start, because another process held the lock too
+// long, is only reported, since it fetched nothing. Any other problem with
+// the lock, the cache or the database is an error.
+func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[string]source.Kind, root string, s config.Source) (fetchSourceJSON, error) {
+	row := fetchSourceJSON{Name: s.Name, Kind: s.Kind, URL: s.URL, Skipped: []skippedJSON{}}
+	fail := func(msg string) {
+		row.OK, row.Error = false, &msg
+		a.logger.Warn("can't fetch source", "source", s.Name, "error", msg)
+	}
+	unlock, err := source.LockCache(ctx, root, s.Name, s.Limits.FetchTimeout, func() {
+		a.logger.Info("waiting for another TrueUp process to finish fetching the source", "source", s.Name)
+	})
+	switch {
+	case ctx.Err() != nil:
+		return row, fmt.Errorf("interrupted while waiting to fetch source %s: %w", s.Name, ctx.Err())
+	case errors.Is(err, source.ErrFetching):
+		fail(err.Error())
+		return row, nil
+	case err != nil:
+		return row, fmt.Errorf("source %s: %w", s.Name, err)
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			a.logger.Warn("can't release the source's fetch lock", "source", s.Name, "error", err)
+		}
+	}()
+
+	started := time.Now()
+	rec, err := fetchSource(ctx, kinds, s, &row)
+	if err != nil {
+		if ctx.Err() != nil {
+			return row, fmt.Errorf("interrupted while fetching source %s: %w", s.Name, ctx.Err())
+		}
+		msg := cmp.Or(err.Error(), "the fetch failed")
+		fail(msg)
+		rec = store.Fetch{Error: msg}
+	}
+	rec.Source = store.SourceConfig{Name: s.Name, Kind: s.Kind, URL: s.URL, Ref: s.Ref}
+	rec.FetchedAt = started
+	if err := db.RecordFetch(ctx, rec); err != nil {
+		if ctx.Err() != nil {
+			return row, fmt.Errorf("interrupted while recording the fetch of source %s: %w", s.Name, ctx.Err())
+		}
+		return row, err
+	}
+	return row, nil
+}
+
+// fetchSource fetches one source, fills in its row, and returns the fetch
+// to record, without its source and time.
+func fetchSource(ctx context.Context, kinds map[string]source.Kind, s config.Source, row *fetchSourceJSON) (store.Fetch, error) {
 	kind, ok := kinds[s.Kind]
 	if !ok {
-		return fmt.Errorf("TrueUp can't fetch sources of kind %q", s.Kind)
+		return store.Fetch{}, fmt.Errorf("TrueUp can't fetch sources of kind %q", s.Kind)
 	}
 	spec, err := source.NewSpec(s)
 	if err != nil {
-		return err
+		return store.Fetch{}, err
 	}
 	snap, err := source.Fetch(ctx, kind, spec)
 	if err != nil {
-		return err
+		return store.Fetch{}, err
 	}
 	defer func() { _ = snap.Close() }()
 	files := len(snap.Files)
 	row.OK = true
 	row.Ref, row.Version, row.Files = &snap.Ref, &snap.Version, &files
-	for _, sk := range snap.Skipped {
-		row.Skipped = append(row.Skipped, skippedJSON{Path: sk.Path, Reason: string(sk.Reason)})
+	rec := store.Fetch{
+		Version: snap.Version,
+		Ref:     snap.Ref,
+		Files:   make([]store.File, len(snap.Files)),
+		Skipped: make([]store.Skipped, len(snap.Skipped)),
 	}
-	return nil
+	for i, f := range snap.Files {
+		rec.Files[i] = store.File(f)
+	}
+	for i, sk := range snap.Skipped {
+		row.Skipped = append(row.Skipped, skippedJSON{Path: sk.Path, Reason: string(sk.Reason)})
+		rec.Skipped[i] = store.Skipped{Path: sk.Path, Reason: string(sk.Reason)}
+	}
+	return rec, nil
 }
 
 // skipDescriptions say what was skipped for each reason, for text output.

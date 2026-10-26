@@ -82,7 +82,7 @@ A setting's environment variable is `TRUEUP_` followed by its key in upper case,
 | `log.level` | `TRUEUP_LOG_LEVEL` | `--log-level` | `info` | The lowest level to log: `debug`, `info`, `warn` or `error`. |
 | `log.format` | `TRUEUP_LOG_FORMAT` | `--log-format` | `text` | `text` for terminals, or `json` for log pipelines. Logs go to stderr. |
 | `data_dir` | `TRUEUP_DATA_DIR` | `--data-dir` | `/var/lib/netbox-trueup-ai`; `%ProgramData%\netbox-trueup-ai` on Windows | The directory for the database and source caches. |
-| `database.url` | `TRUEUP_DATABASE_URL` | none | not set | Secret. A `sqlite`, `postgres` or `postgresql` URL. When it isn't set, TrueUp uses a SQLite database in the data directory. Percent-encode special characters in a password. |
+| `database.url` | `TRUEUP_DATABASE_URL` | none | not set | Secret. A `sqlite`, `postgres` or `postgresql` URL. When it isn't set, TrueUp uses the SQLite database `netbox-trueup-ai.db` in the data directory. See [The database](#the-database). Percent-encode special characters in a password. |
 | `database.url_file` | `TRUEUP_DATABASE_URL_FILE` | `--database-url-file` | not set | A file to read `database.url` from. |
 | `netbox.url` | `TRUEUP_NETBOX_URL` | `--netbox-url` | not set | NetBox's URL, such as `https://netbox.example.com`, with no user name, password, query or fragment. `http` is accepted, but TrueUp warns unless the host is this machine (`localhost`, `127.0.0.1` or `::1`), because the token would cross the network unencrypted. |
 | `netbox.token` | `TRUEUP_NETBOX_TOKEN` | none | not set | Secret. The NetBox API token: printable ASCII, with no spaces. That catches what a token file can carry unseen, such as a byte-order mark. |
@@ -178,8 +178,34 @@ Skipped files (--output json lists them all):
 - **Cost.** Each file is read once, after each fetch, to give its size and SHA-256 digest. Fetched whole at the defaults, devicetype-library downloads about 490 MB in about 35 seconds, and every fetch spends about 13 seconds reading its 17,000 files, mostly images. With `include: ["device-types", "schema"]`, the same reading takes about a second. Patterns don't shrink the download, since Git servers can't leave files out by path, but a smaller `max_file_size` does: at `128KiB`, the library downloads 64 MB in 6 seconds, with every YAML file still in.
 - **Private repositories.** Not yet. TrueUp fetches over `https` only, without credentials. An `ssh` URL, which the configuration accepts, fails to fetch until credentials are supported.
 - **TLS, proxies and redirects.** TrueUp verifies the server's certificate against the system's trust store, and nothing turns verification off. It uses the proxy that `HTTPS_PROXY` names, except for hosts in `NO_PROXY` and this machine. It never follows a redirect: use the repository's own URL. It reads nothing from Git's configuration, credential helpers, `~/.ssh` or `~/.netrc`.
-- **Exit codes.** 0 when every source was fetched. 4 when some couldn't be, with the result printed as usual and each one's error. 2 when a name given isn't a configured source, 3 for a configuration problem or no sources at all, and 1 when the command couldn't run, such as when the data directory can't be written to ([ADR 0018](adr/0018-cli-conventions.md)).
+- **Records.** Each fetch is recorded in [the database](#the-database), which `source fetch` creates and migrates first if needed: when the fetch started, and the version, files and skipped entries it found, or why it failed. A source that fails keeps the records of the version it had, as its cache does. Fetches of one source take turns, even in different TrueUp processes: a fetch waits up to the source's `fetch_timeout` for another to finish and be recorded, under a lock in `<data_dir>/cache/sources/.locks/`, and otherwise fails, recording nothing. `source fetch` leaves the records and cache of a source no longer configured while another process is fetching it. The records of sources no longer configured are removed with their caches.
+- **Exit codes.** 0 when every source was fetched. 4 when some couldn't be, with the result printed as usual and each one's error. 2 when a name given isn't a configured source, 3 for a configuration problem, no sources at all, or a `database.url` this release can't use, and 1 when the command couldn't run, such as when the data directory can't be written to or the database can't be opened or written ([ADR 0018](adr/0018-cli-conventions.md)).
 - **JSON.** With `--output json`, the result is one document whose fields scripts can rely on: `ok` (whether every source was fetched), and `sources`, with for each one `name`, `kind`, `url`, `ref` (the branch or tag followed, the default branch's name when `ref` isn't set), `ok`, `version` (the commit), `files` (how many it holds), `skipped`, each with `path` and `reason` (`too_large`, `symlink`, `submodule`, `unsafe_path` or `not_a_file`), and `error`. `ref`, `version`, `files` and `error` are `null` where they don't apply.
+
+## The database
+
+TrueUp records what it learns, such as each source's latest fetch, in a database. For now that is SQLite. PostgreSQL, for running several replicas, comes later.
+
+- **Where it is.** Unless `database.url` is set, the database is the file `netbox-trueup-ai.db` in the data directory. To put it elsewhere, set `database.url` to a `sqlite:` URL that gives the file's absolute path, such as `sqlite:///srv/trueup/netbox-trueup-ai.db`, or `sqlite:///C:/ProgramData/trueup/netbox-trueup-ai.db` on Windows, with special characters percent-encoded. It can't have a host, user name, query or fragment: TrueUp sets SQLite's options itself. A `postgres` or `postgresql` URL is a configuration error for now, in every command that uses the database.
+- **Files.** TrueUp creates the file, and its directory, readable only by the user it runs as, and warns when every user can read an existing one. It refuses a file that holds another application's SQLite database, and changes nothing in it. Windows doesn't use those permissions, so there the file takes its directory's: keep the data directory where only TrueUp's account can read it. While the database is open, SQLite keeps `-wal` and `-shm` files beside it, with the same permissions, and TrueUp keeps `-lock` and `-gate` files there, which put processes and migrations in order. Keep the database on a local disk: SQLite's WAL mode, which TrueUp uses, doesn't work on a network file system.
+- **Several processes** can use the database at once, such as a scheduled `source fetch` and a command someone runs. A write waits up to 30 seconds for another to finish. Processes that share a database must share the data directory too, since the database records what each source's cache holds.
+- **Migrations.** A command that uses the database, such as `source fetch`, creates it if it doesn't exist and brings its schema up to date first, applying the migrations it lacks. Every TrueUp process holds a shared lock on the `-lock` file while it has the database open, and a migration needs the lock to itself, so it never changes the schema under a running process: it waits up to 2 minutes for other processes to close the database, and then fails, saying so. While it waits, processes that start wait for it, so that they can't keep it waiting. So install a new release while no long command, such as a large `source fetch`, is running. Processes that open the database at once take turns, so a migration is never applied twice. Migrations only go forward, and a release refuses a database whose schema is newer than it knows, so back up the database before installing a new release, to be able to go back ([ADR 0021](adr/0021-forward-only-migrations-when-opening.md)).
+- **Backups.** Copy the database while no TrueUp command runs, or use SQLite's own backup, such as the `sqlite3` tool's `.backup` command, which is safe at any time. A copy of the main file alone, made while TrueUp runs, can miss what is still in the `-wal` file.
+
+To create the database, or migrate it as a step of its own, such as after installing a new release, run:
+
+```sh
+netbox-trueup-ai migrate
+```
+
+```text
+Database:  SQLite, /var/lib/netbox-trueup-ai/netbox-trueup-ai.db
+Schema:    version 1, was 0
+Applied:   00001_sources.sql
+```
+
+- **Exit codes.** 0 when the schema is up to date, whether migrations were applied or none were needed. 1 when the database can't be opened or migrated, or its schema is newer than this release knows, and 3 for a configuration problem, such as a `database.url` this release can't use ([ADR 0018](adr/0018-cli-conventions.md)).
+- **JSON.** With `--output json`, the result is one document whose fields scripts can rely on: `engine` (`sqlite`), `location` (the database file), `version_before` and `version` (the schema's version before and after, with 0 for a database that didn't exist), and `applied`, the migrations applied, each with `version` and `name`.
 
 ## `config show`
 
