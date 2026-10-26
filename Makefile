@@ -24,6 +24,10 @@ NETBOX_PORT       ?= 8000
 NETBOX_COMPOSE    := docker compose --file internal/netboxtest/compose.yaml
 NETBOX_TOKEN_FILE := .cache/netbox/token
 
+# The packages sqlc generates, as sqlc.yaml names them (its out: lines). They
+# hold nothing but generated files.
+SQLC_OUT := $(shell sed -n 's/^[[:space:]]*out:[[:space:]]*//p' sqlc.yaml)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -63,6 +67,24 @@ netbox-down: ## Stop the disposable NetBox and delete its data
 	$(NETBOX_COMPOSE) down --volumes --remove-orphans
 	rm -f $(NETBOX_TOKEN_FILE)
 
+# Removing the old output first drops files that a deleted query file left.
+.PHONY: generate
+generate: ## Regenerate the Go code generated from SQL (sqlc)
+	rm -f $(addsuffix /*.go,$(SQLC_OUT))
+	sqlc generate --no-remote
+
+# Generates afresh into a temporary copy and compares it with the tree, so
+# that a changed, missing or extra file fails, and the tree is left alone.
+.PHONY: generate-check
+generate-check: ## Check that the generated code matches its sources
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	mkdir -p "$$tmp/internal" && cp sqlc.yaml "$$tmp/" && cp -R internal/store "$$tmp/internal/" && \
+	for d in $(SQLC_OUT); do rm -f "$$tmp/$$d"/*.go; done && \
+	sqlc generate --no-remote --file "$$tmp/sqlc.yaml" && \
+	for d in $(SQLC_OUT); do \
+		diff -r "$$d" "$$tmp/$$d" || { echo "$$d doesn't match the SQL it is generated from: run make generate and commit the result"; exit 1; }; \
+	done
+
 .PHONY: fmt
 fmt: ## Format Go code
 	golangci-lint fmt
@@ -83,7 +105,7 @@ lint-repo: ## Lint workflows and Markdown, and scan Git history for secrets
 	gitleaks git --redact --no-banner
 
 .PHONY: check
-check: lint lint-repo test vuln build ## Run everything CI runs but the integration tests
+check: lint lint-repo generate-check test vuln build ## Run everything CI runs but the integration tests
 
 .PHONY: reference
 reference: ## Fetch NetBox source at NETBOX_VERSION into .cache/reference

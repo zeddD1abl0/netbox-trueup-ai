@@ -3,7 +3,8 @@
 //
 // The project is in early development: for now the command reports its
 // version, shows its configuration, checks that it can read what it needs
-// from NetBox, and fetches sources. Every command follows the conventions in
+// from NetBox, fetches sources and records each fetch in its database, and
+// migrates that database. Every command follows the conventions in
 // docs/adr/0018-cli-conventions.md.
 package main
 

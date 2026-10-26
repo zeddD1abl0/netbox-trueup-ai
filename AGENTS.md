@@ -6,7 +6,7 @@ Instructions for AI coding agents working on NetBox TrueUp AI. Human contributor
 
 NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories and, later, other sources. See [README.md](README.md) for the planned feature set.
 
-**Status:** early development. The command tree, configuration and logging exist, integration tests can start a disposable NetBox, a read-only NetBox client backs `netbox check`, and `source fetch` fetches Git sources into a cache. Nothing parses source files or writes to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+**Status:** early development. The command tree, configuration and logging exist, integration tests can start a disposable NetBox, a read-only NetBox client backs `netbox check`, `source fetch` fetches Git sources into a cache and records each fetch in a SQLite database, and `migrate` creates and migrates that database. Nothing parses source files or writes to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
 
 **NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
 
@@ -19,6 +19,7 @@ NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-co
 | Test (with race detector) | `make test` |
 | Integration tests, against a disposable NetBox (needs Docker) | `make test-integration` |
 | Start or remove a disposable NetBox for manual testing | `make netbox-up`, `make netbox-down` |
+| Regenerate the code generated from SQL, and check it | `make generate`, `make generate-check` |
 | Format | `make fmt` |
 | Lint Go | `make lint` |
 | Lint workflows and Markdown, scan for secrets | `make lint-repo` |
@@ -38,6 +39,7 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 | `internal/netboxtest/` | The disposable NetBox: `compose.yaml`, and the package that starts it for integration tests and seeds it. See its README |
 | `internal/source/` | Sources: snapshots, file listings, path checks and limits for every kind ([ADR 0009](docs/adr/0009-source-kinds-and-format-adapters.md)); `source/git/` is the Git kind ([ADR 0020](docs/adr/0020-git-sources-with-go-git.md)) |
 | `internal/glob/` | Include and exclude patterns, with `**` |
+| `internal/store/` | The storage interface; `store/sqlite/` is the SQLite engine, with its migrations, queries and sqlc's generated `sqlitedb/`, `store/engine/` chooses the engine, and `store/storetest/` holds the tests every engine runs ([ADR 0011](docs/adr/0011-store-state-with-sqlc-and-goose.md), [ADR 0021](docs/adr/0021-forward-only-migrations-when-opening.md)) |
 | `docs/` | Documentation. `docs/architecture.md` describes the design, `docs/roadmap.md` the planned steps, `docs/adr/` holds decision records, and `docs/tooling.md` lists every tool and why it was chosen |
 | `.github/` | CI workflows, Dependabot, issue and PR templates |
 | `.claude/` | Claude Code project settings and skills |
@@ -61,7 +63,7 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 - Never bypass checks: no `--no-verify`, no `--no-gpg-sign`, no `-c commit.gpgsign=false`.
 - Never weaken a CI check, linter rule or security setting to make a change pass. Explain the problem to a human instead.
 - Never add a dependency without a reason in the PR description. Prefer the standard library.
-- Never edit generated files by hand. Change the source and regenerate.
+- Never edit generated files by hand. Change the source and regenerate: for the database, change the migrations and queries and run `make generate`.
 
 ## Go conventions
 

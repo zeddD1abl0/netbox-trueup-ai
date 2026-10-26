@@ -75,11 +75,15 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - [ADR 0020](adr/0020-git-sources-with-go-git.md): Git sources with go-git v6, leaving out files larger than the limit.
    - New dependency: go-git v6.0.0-beta.1, with go-billy v6.
 
-6. **`feat(store): set up SQLite with migrations and generated queries`.**
-   - modernc.org/sqlite, goose migrations embedded in the binary, and sqlc with generated code checked by CI. A `migrate` command.
-   - First tables: sources and their latest snapshots. The fetch from step 5 records each source's latest version and file list.
-   - The Claude Code hook that blocks edits to generated files, and the `db-change` project skill (tooling.md §1.4 and §1.5).
-   - New dependencies: modernc.org/sqlite and goose, plus sqlc as a pinned tool.
+6. **`feat(store): set up SQLite with migrations and generated queries`.** Done in #9.
+   - `internal/store`, the storage interface that each engine implements in a package of its own, with `internal/store/engine` choosing one from `database.url` and `internal/store/storetest` holding the tests every engine runs.
+   - `internal/store/sqlite` on modernc.org/sqlite: one file, `<data_dir>/netbox-trueup-ai.db` unless a `sqlite:` URL names another, created readable by its owner only, in WAL mode with foreign keys enforced, a busy timeout and every commit synced, and times in UTC.
+   - goose migrations embedded in the binary, forward only, applied when a command that uses the database opens it, under an operating system lock on a file beside it. A schema newer than the binary knows is refused. sqlc compiles the queries, and `make generate-check`, a step in CI's "Lint and scan" job, fails when the committed code differs.
+   - First tables: sources and their latest snapshots. `source fetch` records each fetch, failed ones included, with its time, version, file list and skipped entries, one transaction each, and removes the records of sources no longer configured. A PostgreSQL URL is a configuration error until step 7.
+   - `netbox-trueup-ai migrate`, which reports the schema's version before and after and the migrations applied.
+   - The Claude Code hook that blocks edits to generated files, and the `db-change` project skill.
+   - [ADR 0021](adr/0021-forward-only-migrations-when-opening.md): migrate the database forward only, when a command opens it.
+   - New dependencies: modernc.org/sqlite v1.60.1, goose v3.29.0 and golang.org/x/sys for file locks, plus sqlc 1.31.1 as a pinned tool.
 
 7. **`feat(store): add PostgreSQL`.**
    - pgx, with PostgreSQL migrations and queries. The storage test suite runs on both engines, PostgreSQL through testcontainers.

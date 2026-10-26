@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,12 +11,14 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source/git"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 )
 
 func newSourceCommand(a *app) *cobra.Command {
@@ -42,12 +45,18 @@ Files larger than a source's max_file_size, symbolic links, submodules and
 entries with unsafe names are skipped and reported. Caches of sources that
 are no longer configured are removed.
 
+Each fetch is recorded in TrueUp's database, which is created and migrated
+first if needed: when it started, and the version and file list it found,
+or why it failed. A source that fails keeps the version it had. The records
+of sources no longer configured are removed with their caches.
+
 Exit codes:
   0  Every source was fetched.
   1  The command couldn't run, such as when the data directory can't be
-     written to.
+     written to, or the database can't be opened or written.
   2  A name given isn't a configured source.
-  3  The configuration is invalid, or no sources are configured.
+  3  The configuration is invalid, no sources are configured, or
+     database.url names a database this release can't use.
   4  Some sources couldn't be fetched. The result is printed as usual, with
      each one's error, and the cache keeps their previous versions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -146,28 +155,49 @@ func (r fetchJSON) failed() []string {
 	return out
 }
 
-// fetchSources fetches each source in turn. A source that fails is reported
-// in the result; only a problem with the cache as a whole, or an interrupt,
-// is an error.
-func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []config.Source) (fetchJSON, error) {
+// fetchSources fetches each source in turn, and records each fetch in the
+// database. A source that fails is reported in the result, and recorded;
+// only a problem with the cache or the database, or an interrupt, is an
+// error.
+func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []config.Source) (_ fetchJSON, err error) {
 	root := filepath.Join(cfg.Settings.DataDir, "cache", "sources")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fetchJSON{}, fmt.Errorf("create the source cache in the data directory: %w", err)
 	}
+	db, _, err := a.openStore(ctx, cfg)
+	if err != nil {
+		return fetchJSON{}, err
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 	kinds := map[string]source.Kind{
 		config.SourceKindGit: git.New(git.Options{CacheDir: root, RootCAs: a.sourceRootCAs, Logger: a.logger}),
 	}
 	result := fetchJSON{OK: true, Sources: []fetchSourceJSON{}}
 	for _, s := range sources {
 		row := fetchSourceJSON{Name: s.Name, Kind: s.Kind, URL: s.URL, Skipped: []skippedJSON{}}
-		if err := fetchSource(ctx, kinds, s, &row); err != nil {
+		started := time.Now()
+		rec, err := fetchSource(ctx, kinds, s, &row)
+		if err != nil {
 			if ctx.Err() != nil {
 				return fetchJSON{}, fmt.Errorf("interrupted while fetching source %s: %w", s.Name, ctx.Err())
 			}
-			msg := err.Error()
+			msg := cmp.Or(err.Error(), "the fetch failed")
 			row.Error = &msg
 			result.OK = false
 			a.logger.Warn("can't fetch source", "source", s.Name, "error", msg)
+			rec = store.Fetch{Error: msg}
+		}
+		rec.Source = store.SourceConfig{Name: s.Name, Kind: s.Kind, URL: s.URL, Ref: s.Ref}
+		rec.FetchedAt = started
+		if err := db.RecordFetch(ctx, rec); err != nil {
+			if ctx.Err() != nil {
+				return fetchJSON{}, fmt.Errorf("interrupted while recording the fetch of source %s: %w", s.Name, ctx.Err())
+			}
+			return fetchJSON{}, err
 		}
 		result.Sources = append(result.Sources, row)
 	}
@@ -175,6 +205,13 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 	var keep []string
 	for _, s := range cfg.Settings.Sources {
 		keep = append(keep, s.Name)
+	}
+	forgotten, err := db.RemoveSources(ctx, keep)
+	if err != nil {
+		return fetchJSON{}, err
+	}
+	for _, name := range forgotten {
+		a.logger.Info("removed the records of a source no longer configured", "source", name)
 	}
 	removed, err := source.PruneCache(ctx, root, keep)
 	for _, name := range removed {
@@ -186,28 +223,39 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 	return result, nil
 }
 
-// fetchSource fetches one source and fills in its row.
-func fetchSource(ctx context.Context, kinds map[string]source.Kind, s config.Source, row *fetchSourceJSON) error {
+// fetchSource fetches one source, fills in its row, and returns the fetch
+// to record, without its source and time.
+func fetchSource(ctx context.Context, kinds map[string]source.Kind, s config.Source, row *fetchSourceJSON) (store.Fetch, error) {
 	kind, ok := kinds[s.Kind]
 	if !ok {
-		return fmt.Errorf("TrueUp can't fetch sources of kind %q", s.Kind)
+		return store.Fetch{}, fmt.Errorf("TrueUp can't fetch sources of kind %q", s.Kind)
 	}
 	spec, err := source.NewSpec(s)
 	if err != nil {
-		return err
+		return store.Fetch{}, err
 	}
 	snap, err := source.Fetch(ctx, kind, spec)
 	if err != nil {
-		return err
+		return store.Fetch{}, err
 	}
 	defer func() { _ = snap.Close() }()
 	files := len(snap.Files)
 	row.OK = true
 	row.Ref, row.Version, row.Files = &snap.Ref, &snap.Version, &files
-	for _, sk := range snap.Skipped {
-		row.Skipped = append(row.Skipped, skippedJSON{Path: sk.Path, Reason: string(sk.Reason)})
+	rec := store.Fetch{
+		Version: snap.Version,
+		Ref:     snap.Ref,
+		Files:   make([]store.File, len(snap.Files)),
+		Skipped: make([]store.Skipped, len(snap.Skipped)),
 	}
-	return nil
+	for i, f := range snap.Files {
+		rec.Files[i] = store.File{Path: f.Path, Size: f.Size, Digest: f.Digest}
+	}
+	for i, sk := range snap.Skipped {
+		row.Skipped = append(row.Skipped, skippedJSON{Path: sk.Path, Reason: string(sk.Reason)})
+		rec.Skipped[i] = store.Skipped{Path: sk.Path, Reason: string(sk.Reason)}
+	}
+	return rec, nil
 }
 
 // skipDescriptions say what was skipped for each reason, for text output.

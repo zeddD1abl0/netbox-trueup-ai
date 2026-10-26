@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -86,8 +88,9 @@ func (ld *loader) logFormat(r resolved) LogFormat {
 	}
 }
 
-// databaseURL checks the database URL's scheme. The URL can hold a password,
-// so messages never repeat it, nor url.Parse's errors, which quote it.
+// databaseURL checks the database URL's scheme, and that a sqlite URL names
+// a file. The URL can hold a password, so messages never repeat it, nor
+// url.Parse's errors, which quote it.
 func (ld *loader) databaseURL(r resolved) Secret {
 	if r.str == "" {
 		return Secret{}
@@ -98,12 +101,54 @@ func (ld *loader) databaseURL(r resolved) Secret {
 		return Secret{}
 	}
 	switch u.Scheme {
-	case "sqlite", "postgres", "postgresql":
+	case "sqlite":
+		if _, problem := SQLitePath(r.str); problem != "" {
+			ld.problem(r.key, r.where, problem)
+			return Secret{}
+		}
+		return NewSecret(r.str)
+	case "postgres", "postgresql":
 		return NewSecret(r.str)
 	default:
 		ld.problem(r.key, r.where, "must be a sqlite, postgres or postgresql URL")
 		return Secret{}
 	}
+}
+
+// SQLitePath returns the file that a sqlite database URL names, or what is
+// wrong with the URL. The URL gives the file's absolute path, as in
+// sqlite:///var/lib/trueup/netbox-trueup-ai.db or sqlite:/var/lib/..., and on
+// Windows sqlite:///C:/ProgramData/..., with special characters
+// percent-encoded. It can't name a host or user, or have a query or
+// fragment: TrueUp sets SQLite's options itself. The SQLite store finds its
+// file with it too, so that the two agree. Messages never repeat the URL.
+func SQLitePath(raw string) (path, problem string) {
+	const absolute = "must give the database file's absolute path, as in sqlite:///var/lib/netbox-trueup-ai/netbox-trueup-ai.db"
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil || u.Scheme != "sqlite":
+		return "", "must be a sqlite URL, such as sqlite:///var/lib/netbox-trueup-ai/netbox-trueup-ai.db"
+	case u.User != nil || u.Host != "":
+		return "", "must not name a host or user: " + absolute
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return "", "must not have a query or fragment: TrueUp sets SQLite's options itself"
+	case u.Opaque != "" || u.Path == "":
+		return "", absolute
+	case strings.HasSuffix(u.Path, "/"):
+		return "", "must name a file, not a directory: " + absolute
+	case strings.ContainsRune(u.Path, 0):
+		return "", "must not contain a NUL byte"
+	}
+	p := u.Path
+	// sqlite:///C:/x.db has the path /C:/x.db, which Windows reads as C:/x.db.
+	if runtime.GOOS == "windows" && len(p) >= 3 && p[0] == '/' && p[2] == ':' {
+		p = p[1:]
+	}
+	p = filepath.FromSlash(p)
+	if !filepath.IsAbs(p) {
+		return "", absolute
+	}
+	return filepath.Clean(p), ""
 }
 
 // netboxURL checks the NetBox URL. Plain http is allowed, with a warning

@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -132,6 +133,47 @@ func TestGitURLProblem(t *testing.T) {
 			t.Parallel()
 			if got := GitURLProblem(tt.url); got != tt.want {
 				t.Errorf("GitURLProblem(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSQLitePath(t *testing.T) {
+	t.Parallel()
+
+	const absolute = "must give the database file's absolute path, as in sqlite:///var/lib/netbox-trueup-ai/netbox-trueup-ai.db"
+	tests := []struct {
+		url, want, problem string
+		// only, if set, is "windows" or "unix": the case holds only there.
+		only string
+	}{
+		{url: "sqlite:///var/lib/trueup/x.db", want: "/var/lib/trueup/x.db", only: "unix"},
+		{url: "sqlite:/var/lib/trueup/x.db", want: "/var/lib/trueup/x.db", only: "unix"},
+		{url: "sqlite:///srv/my%20data/x.db", want: "/srv/my data/x.db", only: "unix"},
+		{url: "sqlite:///srv/a/../x.db", want: "/srv/x.db", only: "unix"},
+		{url: "sqlite:///C:/ProgramData/trueup/x.db", want: `C:\ProgramData\trueup\x.db`, only: "windows"},
+		{url: "sqlite:///x.db", problem: absolute, only: "windows"},
+		{url: "sqlite:x.db", problem: absolute},
+		{url: "sqlite:", problem: absolute},
+		{url: "sqlite://", problem: absolute},
+		{url: "sqlite:///srv/trueup/", problem: "must name a file, not a directory: " + absolute},
+		{url: "sqlite://localhost/srv/x.db", problem: "must not name a host or user: " + absolute},
+		{url: "sqlite://trueup@/srv/x.db", problem: "must not name a host or user: " + absolute},
+		{url: "sqlite:///srv/x.db?_pragma=foreign_keys(0)", problem: "must not have a query or fragment: TrueUp sets SQLite's options itself"},
+		{url: "sqlite:///srv/x.db?", problem: "must not have a query or fragment: TrueUp sets SQLite's options itself"},
+		{url: "sqlite:///srv/x.db#x", problem: "must not have a query or fragment: TrueUp sets SQLite's options itself"},
+		{url: "sqlite:///srv/x%00.db", problem: "must not contain a NUL byte"},
+		{url: "postgres://db.example.com/trueup", problem: "must be a sqlite URL, such as sqlite:///var/lib/netbox-trueup-ai/netbox-trueup-ai.db"},
+		{url: "sqlite:///srv/%zz.db", problem: "must be a sqlite URL, such as sqlite:///var/lib/netbox-trueup-ai/netbox-trueup-ai.db"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			t.Parallel()
+			if onWindows := runtime.GOOS == "windows"; tt.only == "windows" && !onWindows || tt.only == "unix" && onWindows {
+				t.Skip("for another platform")
+			}
+			if got, problem := SQLitePath(tt.url); got != tt.want || problem != tt.problem {
+				t.Errorf("SQLitePath(%q) = %q, %q; want %q, %q", tt.url, got, problem, tt.want, tt.problem)
 			}
 		})
 	}
