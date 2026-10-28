@@ -2,6 +2,9 @@ package postgres
 
 import (
 	"errors"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,5 +122,20 @@ func TestConnectTimeoutFromTheEnvironment(t *testing.T) {
 	}
 	if cfg.ConnConfig.ConnectTimeout != 0 {
 		t.Errorf("connect timeout %v, want none, as PGCONNECT_TIMEOUT says", cfg.ConnConfig.ConnectTimeout)
+	}
+}
+
+func TestConnectTimeoutFromAServiceFile(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "pg_service.conf")
+	if err := os.WriteFile(file, []byte("[trueup]\nhost=db.example.com\ndbname=trueup\nconnect_timeout=60\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseURL(config.NewSecret("postgres:///?service=trueup&servicefile=" + url.QueryEscape(file)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnConfig.ConnectTimeout != time.Minute {
+		t.Errorf("connect timeout %v, want the service file's minute", cfg.ConnConfig.ConnectTimeout)
 	}
 }

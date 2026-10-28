@@ -766,7 +766,7 @@ func TestLoadProblems(t *testing.T) {
 		{
 			name:   "a PostgreSQL URL that libpq would misread",
 			in:     input{env: []string{"TRUEUP_DATABASE_URL=postgres://trueup:s3/cret@db.example.com/trueup"}},
-			want:   []string{"database.url (env TRUEUP_DATABASE_URL): has an @ where libpq would read the host or the database's name, and so part of the password: percent-encode special characters in the password, such as @ as %40, / as %2F, ? as %3F and # as %23"},
+			want:   []string{"database.url (env TRUEUP_DATABASE_URL): has an @ where libpq would read the host, the database's name or a parameter, and so part of the password: percent-encode special characters in the password, such as @ as %40, / as %2F, ? as %3F and # as %23"},
 			secret: "cret",
 		},
 		{

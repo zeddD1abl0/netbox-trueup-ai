@@ -24,6 +24,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
@@ -755,8 +756,15 @@ func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
 		t.Fatalf("end the migrating process's lock connection: %v, %v", ended, err)
 	}
 
-	// Another process, which now gets past the gate, waits for goose's lock
-	// and finds the migration applied.
+	// An older release, which now gets past the gate, waits for the
+	// migration rather than read the version from before it, and then
+	// refuses the newer schema.
+	var tooNew *store.SchemaTooNewError
+	if _, _, err := Open(t.Context(), Options{URL: url}); !errors.As(err, &tooNew) || tooNew.Version != 2 {
+		t.Errorf("an older release opening while the migration runs = %v, want it to wait and find version 2", err)
+	}
+
+	// A release that has the migration finds it applied.
 	second, migrated, err := open(t.Context(), Options{URL: url}, files, 10*time.Second)
 	if err != nil {
 		t.Fatalf("the second process: %v", err)
@@ -917,5 +925,87 @@ CREATE FUNCTION netbox_trueup_ai.to_regclass(text) RETURNS regclass LANGUAGE sql
 				t.Error("Open marked the schema as TrueUp's")
 			}
 		})
+	}
+}
+
+func TestGooseLocker(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = db.Close() })
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	pool := srv.Pool(t, database)
+	var locker gooseLocker
+
+	// No process holds the database's lock exclusively, as when the
+	// migrating process's lock connection broke before goose began.
+	if err := locker.SessionLock(t.Context(), conn); err == nil || !strings.Contains(err.Error(), "the connection that held the database's lock broke before the migration began") {
+		t.Errorf("SessionLock without the exclusive lock = %v", err)
+	}
+	if locks := advisoryLocks(t, pool); len(locks) != 0 {
+		t.Errorf("after refusing, the database's advisory locks are %v, want none", locks)
+	}
+
+	// The migrating process holds it.
+	migrating, err := pgx.Connect(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrating.Close(context.Background()) }()
+	if err := exclusive(lockKey).acquire(t.Context(), migrating, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := locker.SessionLock(t.Context(), conn); err != nil {
+		t.Fatalf("SessionLock with the exclusive lock held: %v", err)
+	}
+
+	// Another goose, as for a process that lost its locks, doesn't get it.
+	other, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Close() }()
+	if err := locker.SessionLock(t.Context(), other); err == nil || !strings.Contains(err.Error(), "another TrueUp process is still applying a migration") {
+		t.Errorf("SessionLock while another goose holds it = %v", err)
+	}
+	if err := locker.SessionUnlock(t.Context(), conn); err != nil {
+		t.Errorf("SessionUnlock: %v", err)
+	}
+}
+
+func TestPooledConnectionsWaitForGoose(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)
+	s := openURL(t, config.NewSecret(url))
+	// As goose holds it while it applies a migration for a process that has
+	// lost its other locks.
+	migrating, err := pgx.Connect(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrating.Close(context.Background()) }()
+	var ok bool
+	if err := migrating.QueryRow(t.Context(), "SELECT pg_try_advisory_lock($1::bigint)", gooseKey).Scan(&ok); err != nil || !ok {
+		t.Fatalf("take goose's lock: %v, %v", ok, err)
+	}
+	s.pool.Reset()
+	if _, err := s.Sources(t.Context()); err == nil || !strings.Contains(err.Error(), "another TrueUp process is migrating the database") {
+		t.Errorf("Sources on a new connection while goose holds its lock = %v, want it refused", err)
+	}
+	if err := migrating.QueryRow(t.Context(), "SELECT pg_advisory_unlock($1::bigint)", gooseKey).Scan(&ok); err != nil || !ok {
+		t.Fatalf("release goose's lock: %v, %v", ok, err)
+	}
+	if _, err := s.Sources(t.Context()); err != nil {
+		t.Errorf("Sources once goose is done: %v", err)
 	}
 }

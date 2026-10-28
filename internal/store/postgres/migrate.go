@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -18,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
-	"github.com/pressly/goose/v3/lock"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 )
@@ -43,11 +43,14 @@ var migrationFiles embed.FS
 //   - connKey is held shared by each pooled connection, and exclusively by a
 //     migration once it holds lockKey, so that a migration also waits for
 //     the connections of a store whose own connection was lost;
-//   - gooseKey, in PostgreSQL's form with one key, is goose's: it holds it on
-//     the connection it migrates through, and reads the schema's version only
-//     then, so that two processes never apply one migration even if the
-//     connection that holds the others breaks while a migration runs, which
-//     leaves the migration's own connection, and its transaction, alone.
+//   - gooseKey, in PostgreSQL's form with one key, is held by goose, through
+//     gooseLocker, on the connection it migrates through, before it reads
+//     which migrations are applied, and shared by a store for as long as it
+//     reads the schema's version. If the connection that holds a migrating
+//     process's other locks breaks while a migration runs, goose's own
+//     connection, and its transaction, go on: gooseKey keeps another process
+//     from applying the migration again, and a store from reading the
+//     version from before it.
 //
 // A store's pooled connections can't hold lockKey themselves: PostgreSQL
 // queues a request behind any waiting one it conflicts with, so a store's
@@ -76,10 +79,10 @@ const noticeAfter = time.Second
 // migration sets it.
 const schemaMark = "netbox-trueup-ai"
 
-// advisory is one of the locks, in one mode, and the queries that take it
-// and release it.
+// advisory is one of the locks, in one mode: its keys, and the queries that
+// take it and release it.
 type advisory struct {
-	key               int32
+	keys              []any
 	try, wait, unlock string
 }
 
@@ -87,7 +90,7 @@ type advisory struct {
 // that nothing of the same name in a search_path can stand in for them.
 func shared(key int32) advisory {
 	return advisory{
-		key,
+		[]any{lockClass, key},
 		"SELECT pg_catalog.pg_try_advisory_lock_shared($1::integer, $2::integer)",
 		"SELECT pg_catalog.pg_advisory_lock_shared($1::integer, $2::integer)",
 		"SELECT pg_catalog.pg_advisory_unlock_shared($1::integer, $2::integer)",
@@ -96,11 +99,20 @@ func shared(key int32) advisory {
 
 func exclusive(key int32) advisory {
 	return advisory{
-		key,
+		[]any{lockClass, key},
 		"SELECT pg_catalog.pg_try_advisory_lock($1::integer, $2::integer)",
 		"SELECT pg_catalog.pg_advisory_lock($1::integer, $2::integer)",
 		"SELECT pg_catalog.pg_advisory_unlock($1::integer, $2::integer)",
 	}
+}
+
+// gooseShared is gooseKey, shared, as a store holds it to read the schema's
+// version.
+var gooseShared = advisory{
+	[]any{gooseKey},
+	"SELECT pg_catalog.pg_try_advisory_lock_shared($1::bigint)",
+	"SELECT pg_catalog.pg_advisory_lock_shared($1::bigint)",
+	"SELECT pg_catalog.pg_advisory_unlock_shared($1::bigint)",
 }
 
 // errTimeout means a lock wasn't released within the wait allowed.
@@ -122,7 +134,7 @@ func (e *heldError) Unwrap() error { return errTimeout }
 // away without a word while it waits.
 func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Duration, notice func()) error {
 	var ok bool
-	if err := conn.QueryRow(ctx, l.try, lockClass, l.key).Scan(&ok); err != nil {
+	if err := conn.QueryRow(ctx, l.try, l.keys...).Scan(&ok); err != nil {
 		return err
 	}
 	if ok {
@@ -138,17 +150,27 @@ func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Dura
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		// For this transaction alone. The lock lasts beyond it, as a
-		// session's advisory locks do. A statement_timeout of the role's or
-		// the database's would end the wait sooner, and say less.
-		if _, err := tx.Exec(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', '0', true)", milliseconds(timeout)); err != nil {
+		// session's advisory locks do. A statement_timeout or, from
+		// PostgreSQL 17, a transaction_timeout of the role's or the
+		// database's would end the wait sooner, and say less.
+		if _, err := tx.Exec(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), "+noTimeouts("true"), milliseconds(timeout)); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, l.wait, lockClass, l.key)
+		_, err := tx.Exec(ctx, l.wait, l.keys...)
 		if isLockTimeout(err) {
 			return errTimeout
 		}
 		return err
 	})
+}
+
+// noTimeouts is a select list that turns statement_timeout off and, from
+// PostgreSQL 17, which has it, transaction_timeout, for the transaction
+// alone if local is "true", or for the session if it is "false".
+func noTimeouts(local string) string {
+	return "pg_catalog.set_config('statement_timeout', '0', " + local + "), " +
+		"CASE WHEN pg_catalog.current_setting('server_version_num')::integer >= 170000 " +
+		"THEN pg_catalog.set_config('transaction_timeout', '0', " + local + ") END"
 }
 
 // milliseconds gives d as a setting such as lock_timeout takes it.
@@ -159,7 +181,7 @@ func milliseconds(d time.Duration) string {
 // release releases the lock on conn.
 func (l advisory) release(ctx context.Context, conn *pgx.Conn) error {
 	var ok bool
-	if err := conn.QueryRow(ctx, l.unlock, lockClass, l.key).Scan(&ok); err != nil {
+	if err := conn.QueryRow(ctx, l.unlock, l.keys...).Scan(&ok); err != nil {
 		return err
 	}
 	if !ok {
@@ -280,7 +302,7 @@ func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files 
 	if err := shared(lockKey).acquire(ctx, conn, timeout, nil); err != nil {
 		return lockError(ctx, err, "another TrueUp process holds the database's lock without its gate")
 	}
-	version, err := schemaVersion(ctx, conn)
+	version, err := readVersion(ctx, conn, timeout, log)
 	if err != nil {
 		return err
 	}
@@ -299,7 +321,7 @@ func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files 
 	if migrated.Applied, err = migrateExclusively(ctx, conn, cfg, files, known, timeout, log, migrated.Location); err != nil {
 		return err
 	}
-	if migrated.Version, err = schemaVersion(ctx, conn); err != nil {
+	if migrated.Version, err = readVersion(ctx, conn, timeout, log); err != nil {
 		return err
 	}
 	if migrated.Version != known {
@@ -352,22 +374,15 @@ func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig
 			return err
 		}
 		// A role's statement_timeout could cut a migration short.
-		if _, err := c.Exec(ctx, "SELECT pg_catalog.set_config('lock_timeout', '"+milliseconds(timeout)+"', false), pg_catalog.set_config('statement_timeout', '0', false)").ReadAll(); err != nil {
+		if _, err := c.Exec(ctx, "SELECT pg_catalog.set_config('lock_timeout', '"+milliseconds(timeout)+"', false), "+noTimeouts("false")).ReadAll(); err != nil {
 			return fmt.Errorf("set the migration's timeouts: %w", err)
 		}
 		return nil
 	}
 	db := stdlib.OpenDB(*migrationCfg)
 	defer func() { err = errors.Join(err, db.Close()) }()
-	// goose's lock is free unless the connection that holds the others has
-	// broken, so a wait for it is rare and short.
-	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(gooseKey),
-		lock.WithLockTimeout(1, uint64(max(1, time.Until(deadline)/time.Second))))
-	if err != nil {
-		return nil, fmt.Errorf("set up goose's lock: %w", err)
-	}
 	p, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true),
-		goose.WithTableName(Schema+".goose_db_version"), goose.WithSessionLocker(locker))
+		goose.WithTableName(Schema+".goose_db_version"), goose.WithSessionLocker(gooseLocker{}))
 	if err != nil {
 		return nil, fmt.Errorf("read the migrations: %w", err)
 	}
@@ -456,6 +471,75 @@ func latestVersion(files fs.FS) (int64, error) {
 		latest = max(latest, v)
 	}
 	return latest, nil
+}
+
+// readVersion reads the schema's version as schemaVersion does, holding
+// gooseKey shared, so that a migration goose is still applying for a process
+// that has lost its other locks is waited for, up to timeout, rather than read
+// from before it.
+func readVersion(ctx context.Context, conn *pgx.Conn, timeout time.Duration, log *slog.Logger) (int64, error) {
+	if err := gooseShared.acquire(ctx, conn, timeout, func() {
+		log.Info("waiting for another TrueUp process to finish migrating the database")
+	}); err != nil {
+		return 0, lockError(ctx, err, fmt.Sprintf("another TrueUp process has been migrating the database for over %s: is a migration stuck?", timeout))
+	}
+	version, err := schemaVersion(ctx, conn)
+	if err != nil {
+		return 0, err
+	}
+	if err := gooseShared.release(ctx, conn); err != nil {
+		return 0, fmt.Errorf("release goose's lock: %w", err)
+	}
+	return version, nil
+}
+
+// gooseLocker is the lock goose takes on the connection it migrates through,
+// before it reads which migrations are applied: gooseKey. It doesn't wait,
+// since gooseKey is free unless a migration whose process has lost its other
+// locks is still running. Once it holds gooseKey, it checks that a process
+// still holds lockKey exclusively, as the migrating one took it before goose
+// began: otherwise that process's lock connection broke before goose took
+// gooseKey, so another process may have opened the database since, and read
+// the schema as it was, and goose mustn't change it.
+type gooseLocker struct{}
+
+func (gooseLocker) SessionLock(ctx context.Context, conn *sql.Conn) (err error) {
+	var ok bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.pg_try_advisory_lock($1::bigint)", gooseKey).Scan(&ok); err != nil {
+		return fmt.Errorf("take goose's lock: %w", withoutUser(err))
+	}
+	if !ok {
+		return errors.New("another TrueUp process is still applying a migration: try again once it is done")
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, gooseLocker{}.SessionUnlock(context.WithoutCancel(ctx), conn))
+		}
+	}()
+	var held bool
+	if err := conn.QueryRowContext(ctx, `
+SELECT EXISTS (SELECT FROM pg_catalog.pg_locks AS l
+    WHERE l.locktype = 'advisory' AND l.mode = 'ExclusiveLock' AND l.granted
+        AND l.database = (SELECT d.oid FROM pg_catalog.pg_database AS d WHERE d.datname = pg_catalog.current_database())
+        AND l.classid = $1::integer::pg_catalog.oid AND l.objid = $2::integer::pg_catalog.oid AND l.objsubid = 2)`,
+		lockClass, lockKey).Scan(&held); err != nil {
+		return fmt.Errorf("check the database's lock: %w", withoutUser(err))
+	}
+	if !held {
+		return errors.New("the connection that held the database's lock broke before the migration began, so another process may have opened the database: try again")
+	}
+	return nil
+}
+
+func (gooseLocker) SessionUnlock(ctx context.Context, conn *sql.Conn) error {
+	var ok bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.pg_advisory_unlock($1::bigint)", gooseKey).Scan(&ok); err != nil {
+		return fmt.Errorf("release goose's lock: %w", withoutUser(err))
+	}
+	if !ok {
+		return errors.New("release goose's lock: the session didn't hold it")
+	}
+	return nil
 }
 
 // querier is what schemaVersion needs: a connection, or a transaction.

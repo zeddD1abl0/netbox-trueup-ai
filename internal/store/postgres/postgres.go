@@ -134,19 +134,32 @@ func open(ctx context.Context, opts Options, files fs.FS, timeout time.Duration)
 // the version the store opened, in case a migration ran after that.
 func guardConn(known int64) func(context.Context, *pgx.Conn) error {
 	return func(ctx context.Context, conn *pgx.Conn) error {
-		var ok bool
-		if err := conn.QueryRow(ctx, shared(connKey).try, lockClass, connKey).Scan(&ok); err != nil {
+		// gooseKey too, for the version's sake, as readVersion holds it. A
+		// lock left behind when this fails goes with the connection, which
+		// the pool closes.
+		var connOK, gooseOK bool
+		if err := conn.QueryRow(ctx,
+			"SELECT pg_catalog.pg_try_advisory_lock_shared($1::integer, $2::integer), pg_catalog.pg_try_advisory_lock_shared($3::bigint)",
+			lockClass, connKey, gooseKey).Scan(&connOK, &gooseOK); err != nil {
 			return fmt.Errorf("lock the database: %w", err)
 		}
-		if !ok {
+		if !connOK || !gooseOK {
 			return errors.New("another TrueUp process is migrating the database: try again once it is done")
 		}
-		version, err := schemaVersion(ctx, conn)
-		if err != nil {
-			return err
+		// The table exists once the store has opened. The version comes
+		// from the statement's snapshot, taken with gooseKey held.
+		var version pgtype.Int8
+		var released bool
+		if err := conn.QueryRow(ctx,
+			"SELECT (SELECT pg_catalog.max(version_id) FROM "+Schema+".goose_db_version), pg_catalog.pg_advisory_unlock_shared($1::bigint)",
+			gooseKey).Scan(&version, &released); err != nil {
+			return fmt.Errorf("read the database's schema version: %w", err)
 		}
-		if version != known {
-			return fmt.Errorf("the database's schema changed from version %d to %d while TrueUp had it open: try again", known, version)
+		if !released {
+			return errors.New("release goose's lock: the session didn't hold it")
+		}
+		if version.Int64 != known {
+			return fmt.Errorf("the database's schema changed from version %d to %d while TrueUp had it open: try again", known, version.Int64)
 		}
 		return nil
 	}

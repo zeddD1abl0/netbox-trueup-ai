@@ -190,14 +190,8 @@ func startService(ctx context.Context, nw *testcontainers.DockerNetwork, name st
 // defaults, so a new version can't quietly publish a database on every
 // interface, or leave NetBox unable to find it.
 func checkStarted(ctx context.Context, c testcontainers.Container, networkName, alias string) error {
-	info, err := c.Inspect(ctx)
+	info, err := localdocker.Inspect(ctx, c)
 	if err != nil {
-		return fmt.Errorf("inspect the container: %w", err)
-	}
-	if info.NetworkSettings == nil {
-		return errors.New("no network settings reported for the container")
-	}
-	if err := localdocker.CheckPorts(info.NetworkSettings.Ports); err != nil {
 		return err
 	}
 	ep, ok := info.NetworkSettings.Networks[networkName]

@@ -106,15 +106,8 @@ func Start(ctx context.Context) (_ *Server, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("start PostgreSQL: %w", err)
 	}
-	info, err := ctr.Inspect(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("inspect PostgreSQL's container: %w", err)
-	}
-	if info.NetworkSettings == nil {
-		return nil, errors.New("no network settings reported for PostgreSQL's container")
-	}
-	if err := localdocker.CheckPorts(info.NetworkSettings.Ports); err != nil {
-		return nil, err
+	if _, err := localdocker.Inspect(ctx, ctr); err != nil {
+		return nil, fmt.Errorf("PostgreSQL's container: %w", err)
 	}
 	mapped, err := ctr.MappedPort(ctx, port)
 	if err != nil {

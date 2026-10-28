@@ -52,7 +52,7 @@ func parseURL(u config.Secret) (*pgxpool.Config, error) {
 		return nil, parseError(err)
 	}
 	conn := cfg.ConnConfig
-	if !connectTimeoutSet(u.Reveal()) {
+	if conn.ConnectTimeout == 0 && !connectTimeoutSet(u.Reveal()) {
 		conn.ConnectTimeout = connectTimeout
 	}
 	if conn.RuntimeParams["application_name"] == "" {
@@ -63,14 +63,24 @@ func parseURL(u config.Secret) (*pgxpool.Config, error) {
 }
 
 // connectTimeoutSet reports whether the URL or libpq's environment sets
-// connect_timeout. 0 is a setting too: it means no limit.
+// connect_timeout, so that a 0 there, which means no limit, is kept. One a
+// service file sets is kept if it isn't 0, since pgx then gives it.
 func connectTimeoutSet(raw string) bool {
 	if os.Getenv("PGCONNECT_TIMEOUT") != "" {
 		return true
 	}
 	_, query, _ := strings.Cut(raw, "?")
-	q, err := url.ParseQuery(query)
-	return err == nil && q.Has("connect_timeout")
+	query, _, _ = strings.Cut(query, "#")
+	for param := range strings.SplitSeq(query, "&") {
+		name, _, _ := strings.Cut(param, "=")
+		if unescaped, err := url.QueryUnescape(name); err == nil {
+			name = unescaped
+		}
+		if name == "connect_timeout" {
+			return true
+		}
+	}
+	return false
 }
 
 // setSession sets up each of a store's connections as it opens:

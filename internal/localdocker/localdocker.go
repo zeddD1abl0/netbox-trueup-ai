@@ -6,12 +6,15 @@
 package localdocker
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
 	"os"
 	"strings"
 
+	"github.com/moby/moby/api/types/container"
 	mobynetwork "github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 )
@@ -71,11 +74,27 @@ func Bindings(ports []string) mobynetwork.PortMap {
 	return bindings
 }
 
-// CheckPorts checks that Docker published every port on 127.0.0.1 only, as
-// a container's inspection reports them. That rests on how testcontainers-go
-// merges its own defaults, so a new version can't quietly publish a database
-// on every interface.
-func CheckPorts(ports mobynetwork.PortMap) error {
+// Inspect inspects a started container and checks that Docker published
+// every one of its ports on 127.0.0.1 only, which rests on how
+// testcontainers-go merges its own defaults, so that a new version can't
+// quietly publish a database on every interface. It returns what it found,
+// for the caller's own checks.
+func Inspect(ctx context.Context, c testcontainers.Container) (*container.InspectResponse, error) {
+	info, err := c.Inspect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect the container: %w", err)
+	}
+	if info.NetworkSettings == nil {
+		return nil, errors.New("no network settings reported for the container")
+	}
+	if err := checkPorts(info.NetworkSettings.Ports); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// checkPorts checks that every port is published on 127.0.0.1 only.
+func checkPorts(ports mobynetwork.PortMap) error {
 	for port, bindings := range ports {
 		for _, b := range bindings {
 			if !b.HostIP.Unmap().IsLoopback() {

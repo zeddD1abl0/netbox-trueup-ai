@@ -88,12 +88,12 @@ func TestCheckPorts(t *testing.T) {
 		"::":               true,
 		"192.0.2.10":       true,
 	} {
-		err := CheckPorts(binding(addr))
+		err := checkPorts(binding(addr))
 		if (err != nil) != wantErr {
-			t.Errorf("CheckPorts with a port published on %s = %v, want an error: %v", addr, err, wantErr)
+			t.Errorf("checkPorts with a port published on %s = %v, want an error: %v", addr, err, wantErr)
 		}
 	}
-	if err := CheckPorts(nil); err != nil {
-		t.Errorf("CheckPorts with no ports = %v", err)
+	if err := checkPorts(nil); err != nil {
+		t.Errorf("checkPorts with no ports = %v", err)
 	}
 }
