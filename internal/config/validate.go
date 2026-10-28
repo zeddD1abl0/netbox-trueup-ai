@@ -136,24 +136,36 @@ func IsPostgresURL(raw string) bool {
 // would misread, or "" if nothing is. A character in the password that isn't
 // percent-encoded can make libpq read part of the password as the host, the
 // port, the database's name or a parameter, which messages show. So the URL
-// is refused if an @ is where only such a password would put one: a second
-// before the host, or one in the database's name, in a parameter's name or
-// after a #, or if a parameter has no value, as the rest of a password after
-// a ? would. An @ in a parameter's value, as in user=trueup@EXAMPLE.COM, is
-// fine. The PostgreSQL store checks its URL with it too, so that the two
-// agree. The message never repeats the URL.
+// is refused if an @ is where only such a password would put one: after the
+// host when nothing before it has an @, a second before the host, or, after
+// a user name and password, one in the database's name, in a parameter's
+// name or after a #. Where the URL has no user name, an @ in a parameter,
+// as in user=trueup@EXAMPLE.COM, must be percent-encoded too. The PostgreSQL
+// store checks its URL with it too, so that the two agree. The message never
+// repeats the URL.
 func PostgresURLProblem(raw string) string {
 	_, rest, _ := strings.Cut(raw, "://")
-	rest, fragment, _ := strings.Cut(rest, "#")
-	rest, query, _ := strings.Cut(rest, "?")
-	authority, database, _ := strings.Cut(rest, "/")
-	misread := strings.Count(authority, "@") > 1 || strings.Contains(database, "@") || strings.Contains(fragment, "@")
-	for param := range strings.SplitSeq(query, "&") {
-		name, _, hasValue := strings.Cut(param, "=")
-		misread = misread || (param != "" && (!hasValue || strings.Contains(name, "@")))
+	authority, after := rest, ""
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority, after = rest[:i], rest[i:]
+	}
+	misread := false
+	switch strings.Count(authority, "@") {
+	case 0:
+		misread = strings.Contains(after, "@")
+	case 1:
+		after, fragment, _ := strings.Cut(after, "#")
+		database, query, _ := strings.Cut(after, "?")
+		misread = strings.Contains(database, "@") || strings.Contains(fragment, "@")
+		for param := range strings.SplitSeq(query, "&") {
+			name, _, _ := strings.Cut(param, "=")
+			misread = misread || strings.Contains(name, "@")
+		}
+	default:
+		misread = true
 	}
 	if misread {
-		return "has an @ where libpq would read the host, the database's name or a parameter, and so part of the password: percent-encode special characters in the password, such as @ as %40, / as %2F, ? as %3F and # as %23"
+		return "has an @ that libpq could read as part of the host, the database's name or a parameter, so that part of a password would show: percent-encode special characters in the password, such as @ as %40, / as %2F, ? as %3F and # as %23, and any @ after the host as %40"
 	}
 	return ""
 }

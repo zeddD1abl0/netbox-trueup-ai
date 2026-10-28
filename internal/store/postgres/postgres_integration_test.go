@@ -895,6 +895,13 @@ CREATE FUNCTION netbox_trueup_ai.to_regclass(text) RETURNS regclass LANGUAGE sql
 			want: "holds objects that another role owns, which could make TrueUp run that role's code",
 		},
 		{
+			name: "a schema given to TrueUp's role, with another role's collation",
+			setup: func(trueup, other string) string {
+				return "SET ROLE " + other + `; CREATE SCHEMA netbox_trueup_ai; CREATE COLLATION netbox_trueup_ai."C" FROM pg_catalog."C"; RESET ROLE; ALTER SCHEMA netbox_trueup_ai OWNER TO ` + trueup
+			},
+			want: "holds objects that another role owns",
+		},
+		{
 			name: "TrueUp's schema, which another role may create objects in",
 			setup: func(trueup, other string) string {
 				return "CREATE SCHEMA netbox_trueup_ai AUTHORIZATION " + trueup + "; GRANT CREATE ON SCHEMA netbox_trueup_ai TO " + other
@@ -944,23 +951,44 @@ func TestGooseLocker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	pool := srv.Pool(t, database)
-	var locker gooseLocker
-
-	// No process holds the database's lock exclusively, as when the
-	// migrating process's lock connection broke before goose began.
-	if err := locker.SessionLock(t.Context(), conn); err == nil || !strings.Contains(err.Error(), "the connection that held the database's lock broke before the migration began") {
-		t.Errorf("SessionLock without the exclusive lock = %v", err)
-	}
-	if locks := advisoryLocks(t, pool); len(locks) != 0 {
-		t.Errorf("after refusing, the database's advisory locks are %v, want none", locks)
-	}
-
-	// The migrating process holds it.
 	migrating, err := pgx.Connect(t.Context(), url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = migrating.Close(context.Background()) }()
+	var locker gooseLocker
+	if err := migrating.QueryRow(t.Context(), "SELECT pg_backend_pid()").Scan(&locker.pid); err != nil {
+		t.Fatal(err)
+	}
+	refused := func(what string) {
+		t.Helper()
+		if err := locker.SessionLock(t.Context(), conn); err == nil || !strings.Contains(err.Error(), "the connection that held the database's lock broke before the migration began") {
+			t.Errorf("SessionLock %s = %v", what, err)
+		}
+		if locks := advisoryLocks(t, pool); slices.Contains(locks, "4 ExclusiveLock true") {
+			t.Errorf("after refusing, the database's advisory locks are %v, without goose's", locks)
+		}
+	}
+
+	// No process holds the database's lock exclusively, as when the
+	// migrating process's lock connection broke before goose began.
+	refused("without the exclusive lock")
+
+	// Another process holds it, as one that has begun to migrate since.
+	other, err := pgx.Connect(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Close(context.Background()) }()
+	if err := exclusive(lockKey).acquire(t.Context(), other, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	refused("while another process holds the exclusive lock")
+	if err := exclusive(lockKey).release(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+
+	// The migrating process holds it.
 	if err := exclusive(lockKey).acquire(t.Context(), migrating, 0, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -969,12 +997,12 @@ func TestGooseLocker(t *testing.T) {
 	}
 
 	// Another goose, as for a process that lost its locks, doesn't get it.
-	other, err := db.Conn(t.Context())
+	another, err := db.Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = other.Close() }()
-	if err := locker.SessionLock(t.Context(), other); err == nil || !strings.Contains(err.Error(), "another TrueUp process is still applying a migration") {
+	defer func() { _ = another.Close() }()
+	if err := locker.SessionLock(t.Context(), another); err == nil || !strings.Contains(err.Error(), "another TrueUp process is still applying a migration") {
 		t.Errorf("SessionLock while another goose holds it = %v", err)
 	}
 	if err := locker.SessionUnlock(t.Context(), conn); err != nil {
@@ -1007,5 +1035,96 @@ func TestPooledConnectionsWaitForGoose(t *testing.T) {
 	}
 	if _, err := s.Sources(t.Context()); err != nil {
 		t.Errorf("Sources once goose is done: %v", err)
+	}
+}
+
+func TestARolesSearchPathDuringSetup(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	role, url := newRole(t, database)
+	srv.Exec(t, "postgres", "GRANT CREATE ON DATABASE "+database+" TO "+role)
+	// An operator in public, which a search_path that names pg_catalog
+	// after it would find first, and which records that it ran.
+	srv.Exec(t, database, `
+CREATE TABLE public.calls (what text);
+GRANT INSERT ON public.calls TO PUBLIC;
+CREATE FUNCTION public.spy_ge(integer, integer) RETURNS boolean LANGUAGE sql
+    AS $$ INSERT INTO public.calls VALUES ('>=') RETURNING pg_catalog.int4ge($1, $2) $$;
+CREATE OPERATOR public.>= (LEFTARG = integer, RIGHTARG = integer, FUNCTION = public.spy_ge)`)
+	srv.Exec(t, "postgres", "ALTER ROLE "+role+" SET search_path = public, pg_catalog")
+
+	s := openURL(t, url)
+	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := query(t, srv.Pool(t, database), "SELECT what FROM public.calls"); len(calls) != 0 {
+		t.Errorf("TrueUp ran an operator from the role's search_path: %v", calls)
+	}
+}
+
+func TestAPooledConnectionThatCantLock(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)
+	closeStore(t, openURL(t, config.NewSecret(url)))
+	connect := func() *pgx.Conn {
+		t.Helper()
+		c, err := pgx.Connect(t.Context(), url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close(context.Background()) })
+		return c
+	}
+	// A migration holds connKey.
+	if err := exclusive(connKey).acquire(t.Context(), connect(), 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	conn := connect()
+	if err := guardConn(1)(t.Context(), conn); err == nil || !strings.Contains(err.Error(), "another TrueUp process is migrating the database") {
+		t.Errorf("guardConn while a migration holds connKey = %v", err)
+	}
+	// It mustn't keep goose's key, which a migration's goose won't wait for.
+	held := query(t, srv.Pool(t, database), "SELECT objid FROM pg_locks WHERE locktype = 'advisory' AND pid = $1", conn.PgConn().PID())
+	if slices.Contains(held, "4") {
+		t.Errorf("the refused connection holds goose's key: %v", held)
+	}
+}
+
+func TestOneWaitForAMigration(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)
+	closeStore(t, openURL(t, config.NewSecret(url)))
+	connect := func() *pgx.Conn {
+		t.Helper()
+		c, err := pgx.Connect(t.Context(), url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close(context.Background()) })
+		return c
+	}
+	// One migration holds the gate for a while, and goose's key for longer:
+	// the two waits share one timeout.
+	gate, goose := connect(), connect()
+	if err := exclusive(gateKey).acquire(t.Context(), gate, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gooseExclusive.acquire(t.Context(), goose, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	files, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(600*time.Millisecond, func() { _ = exclusive(gateKey).release(context.Background(), gate) })
+	start := time.Now()
+	_, _, err = open(t.Context(), Options{URL: config.NewSecret(url)}, files, time.Second)
+	if !errors.Is(err, errTimeout) {
+		t.Errorf("Open while a migration holds the gate and goose's key = %v, want it to give up", err)
+	}
+	if waited := time.Since(start); waited > 1400*time.Millisecond {
+		t.Errorf("Open waited %v, longer than its one timeout of 1s", waited)
 	}
 }

@@ -107,9 +107,11 @@ func setLockSession(ctx context.Context, conn *pgconn.PgConn) error {
 }
 
 func startSession(ctx context.Context, conn *pgconn.PgConn, searchPath string) error {
-	sql := "SELECT pg_catalog.set_config('idle_session_timeout', '0', false) " +
-		"WHERE pg_catalog.current_setting('server_version_num')::integer >= 140000; " +
-		"SET search_path TO " + searchPath
+	// search_path first: until then the role's or the URL's decides what
+	// an operator such as >= resolves to.
+	sql := "SET search_path TO " + searchPath + "; " +
+		"SELECT pg_catalog.set_config('idle_session_timeout', '0', false) " +
+		"WHERE pg_catalog.current_setting('server_version_num')::integer >= 140000"
 	if _, err := conn.Exec(ctx, sql).ReadAll(); err != nil {
 		return fmt.Errorf("set up the session: %w", err)
 	}

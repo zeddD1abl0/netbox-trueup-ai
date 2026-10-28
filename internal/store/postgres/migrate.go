@@ -106,8 +106,15 @@ func exclusive(key int32) advisory {
 	}
 }
 
-// gooseShared is gooseKey, shared, as a store holds it to read the schema's
-// version.
+// gooseExclusive is gooseKey, as goose holds it, and gooseShared as a store
+// holds it to read the schema's version.
+var gooseExclusive = advisory{
+	[]any{gooseKey},
+	"SELECT pg_catalog.pg_try_advisory_lock($1::bigint)",
+	"SELECT pg_catalog.pg_advisory_lock($1::bigint)",
+	"SELECT pg_catalog.pg_advisory_unlock($1::bigint)",
+}
+
 var gooseShared = advisory{
 	[]any{gooseKey},
 	"SELECT pg_catalog.pg_try_advisory_lock_shared($1::bigint)",
@@ -228,8 +235,8 @@ func checkDatabase(ctx context.Context, conn *pgx.Conn, where string, log *slog.
 // runs code that another role put there. It changes nothing.
 //
 // The schema must belong to the role TrueUp connects as, as must every
-// relation, function, type and operator in it, and no other role may create
-// objects in it: a role that could put a function there, one that matches a
+// object in it that has an owner, and no other role may create objects in
+// it: a role that could put a function there, one that matches a
 // call of TrueUp's better than the catalog's does, would have TrueUp run it.
 // Then the schema is TrueUp's if the first migration has marked it with its
 // comment, or new if it holds no tables or views but, perhaps, goose's, as
@@ -253,7 +260,14 @@ SELECT
     EXISTS (SELECT FROM pg_catalog.pg_class AS c WHERE c.relnamespace = n.oid AND c.relowner <> (SELECT oid FROM me))
         OR EXISTS (SELECT FROM pg_catalog.pg_proc AS f WHERE f.pronamespace = n.oid AND f.proowner <> (SELECT oid FROM me))
         OR EXISTS (SELECT FROM pg_catalog.pg_type AS t WHERE t.typnamespace = n.oid AND t.typowner <> (SELECT oid FROM me))
-        OR EXISTS (SELECT FROM pg_catalog.pg_operator AS o WHERE o.oprnamespace = n.oid AND o.oprowner <> (SELECT oid FROM me)),
+        OR EXISTS (SELECT FROM pg_catalog.pg_operator AS o WHERE o.oprnamespace = n.oid AND o.oprowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_collation AS x WHERE x.collnamespace = n.oid AND x.collowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_conversion AS x WHERE x.connamespace = n.oid AND x.conowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_opclass AS x WHERE x.opcnamespace = n.oid AND x.opcowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_opfamily AS x WHERE x.opfnamespace = n.oid AND x.opfowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_ts_config AS x WHERE x.cfgnamespace = n.oid AND x.cfgowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_ts_dict AS x WHERE x.dictnamespace = n.oid AND x.dictowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_statistic_ext AS x WHERE x.stxnamespace = n.oid AND x.stxowner <> (SELECT oid FROM me)),
     (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class AS c
         WHERE c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname <> 'goose_db_version')
 FROM (VALUES (1)) AS one
@@ -283,6 +297,9 @@ LEFT JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1`, Schema).Scan(&exists,
 // the schema's version and, if it migrates, until it is done. When it
 // fails, the caller closes conn, which releases what it holds.
 func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files fs.FS, known int64, timeout time.Duration, log *slog.Logger, migrated *store.Migrated) (err error) {
+	// The gate and goose's key both wait for a migration, within one
+	// timeout.
+	deadline := time.Now().Add(timeout)
 	gate := exclusive(gateKey)
 	if err := gate.acquire(ctx, conn, timeout, func() {
 		log.Info("waiting for another TrueUp process to finish migrating the database")
@@ -302,7 +319,7 @@ func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files 
 	if err := shared(lockKey).acquire(ctx, conn, timeout, nil); err != nil {
 		return lockError(ctx, err, "another TrueUp process holds the database's lock without its gate")
 	}
-	version, err := readVersion(ctx, conn, timeout, log)
+	version, err := readVersion(ctx, conn, time.Until(deadline), timeout, log)
 	if err != nil {
 		return err
 	}
@@ -321,7 +338,7 @@ func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files 
 	if migrated.Applied, err = migrateExclusively(ctx, conn, cfg, files, known, timeout, log, migrated.Location); err != nil {
 		return err
 	}
-	if migrated.Version, err = readVersion(ctx, conn, timeout, log); err != nil {
+	if migrated.Version, err = readVersion(ctx, conn, time.Until(deadline), timeout, log); err != nil {
 		return err
 	}
 	if migrated.Version != known {
@@ -381,8 +398,14 @@ func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig
 	}
 	db := stdlib.OpenDB(*migrationCfg)
 	defer func() { err = errors.Join(err, db.Close()) }()
+	// The lock connection's backend, as the server knows it, which is the
+	// pid that pg_locks gives even behind a pooler.
+	var pid int32
+	if err := conn.QueryRow(ctx, "SELECT pg_catalog.pg_backend_pid()").Scan(&pid); err != nil {
+		return nil, fmt.Errorf("read the lock connection's process: %w", err)
+	}
 	p, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true),
-		goose.WithTableName(Schema+".goose_db_version"), goose.WithSessionLocker(gooseLocker{}))
+		goose.WithTableName(Schema+".goose_db_version"), goose.WithSessionLocker(gooseLocker{pid}))
 	if err != nil {
 		return nil, fmt.Errorf("read the migrations: %w", err)
 	}
@@ -475,10 +498,10 @@ func latestVersion(files fs.FS) (int64, error) {
 
 // readVersion reads the schema's version as schemaVersion does, holding
 // gooseKey shared, so that a migration goose is still applying for a process
-// that has lost its other locks is waited for, up to timeout, rather than read
-// from before it.
-func readVersion(ctx context.Context, conn *pgx.Conn, timeout time.Duration, log *slog.Logger) (int64, error) {
-	if err := gooseShared.acquire(ctx, conn, timeout, func() {
+// that has lost its other locks is waited for, for what remains of the wait,
+// rather than read from before it. timeout is the whole wait, for the message.
+func readVersion(ctx context.Context, conn *pgx.Conn, remaining, timeout time.Duration, log *slog.Logger) (int64, error) {
+	if err := gooseShared.acquire(ctx, conn, remaining, func() {
 		log.Info("waiting for another TrueUp process to finish migrating the database")
 	}); err != nil {
 		return 0, lockError(ctx, err, fmt.Sprintf("another TrueUp process has been migrating the database for over %s: is a migration stuck?", timeout))
@@ -496,16 +519,17 @@ func readVersion(ctx context.Context, conn *pgx.Conn, timeout time.Duration, log
 // gooseLocker is the lock goose takes on the connection it migrates through,
 // before it reads which migrations are applied: gooseKey. It doesn't wait,
 // since gooseKey is free unless a migration whose process has lost its other
-// locks is still running. Once it holds gooseKey, it checks that a process
-// still holds lockKey exclusively, as the migrating one took it before goose
-// began: otherwise that process's lock connection broke before goose took
-// gooseKey, so another process may have opened the database since, and read
-// the schema as it was, and goose mustn't change it.
-type gooseLocker struct{}
+// locks is still running. Once it holds gooseKey, it checks that the session
+// with the backend process pid, the migrating process's lock connection,
+// still holds lockKey exclusively, as it took it before goose began:
+// otherwise that connection broke before goose took gooseKey, so another
+// process may have opened the database, or begun to migrate it, since, and
+// goose mustn't change it.
+type gooseLocker struct{ pid int32 }
 
-func (gooseLocker) SessionLock(ctx context.Context, conn *sql.Conn) (err error) {
+func (l gooseLocker) SessionLock(ctx context.Context, conn *sql.Conn) (err error) {
 	var ok bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.pg_try_advisory_lock($1::bigint)", gooseKey).Scan(&ok); err != nil {
+	if err := conn.QueryRowContext(ctx, gooseExclusive.try, gooseExclusive.keys...).Scan(&ok); err != nil {
 		return fmt.Errorf("take goose's lock: %w", withoutUser(err))
 	}
 	if !ok {
@@ -513,7 +537,7 @@ func (gooseLocker) SessionLock(ctx context.Context, conn *sql.Conn) (err error) 
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, gooseLocker{}.SessionUnlock(context.WithoutCancel(ctx), conn))
+			err = errors.Join(err, l.SessionUnlock(context.WithoutCancel(ctx), conn))
 		}
 	}()
 	var held bool
@@ -521,8 +545,9 @@ func (gooseLocker) SessionLock(ctx context.Context, conn *sql.Conn) (err error) 
 SELECT EXISTS (SELECT FROM pg_catalog.pg_locks AS l
     WHERE l.locktype = 'advisory' AND l.mode = 'ExclusiveLock' AND l.granted
         AND l.database = (SELECT d.oid FROM pg_catalog.pg_database AS d WHERE d.datname = pg_catalog.current_database())
-        AND l.classid = $1::integer::pg_catalog.oid AND l.objid = $2::integer::pg_catalog.oid AND l.objsubid = 2)`,
-		lockClass, lockKey).Scan(&held); err != nil {
+        AND l.classid = $1::integer::pg_catalog.oid AND l.objid = $2::integer::pg_catalog.oid AND l.objsubid = 2
+        AND l.pid = $3::integer)`,
+		lockClass, lockKey, l.pid).Scan(&held); err != nil {
 		return fmt.Errorf("check the database's lock: %w", withoutUser(err))
 	}
 	if !held {
@@ -533,7 +558,7 @@ SELECT EXISTS (SELECT FROM pg_catalog.pg_locks AS l
 
 func (gooseLocker) SessionUnlock(ctx context.Context, conn *sql.Conn) error {
 	var ok bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.pg_advisory_unlock($1::bigint)", gooseKey).Scan(&ok); err != nil {
+	if err := conn.QueryRowContext(ctx, gooseExclusive.unlock, gooseExclusive.keys...).Scan(&ok); err != nil {
 		return fmt.Errorf("release goose's lock: %w", withoutUser(err))
 	}
 	if !ok {

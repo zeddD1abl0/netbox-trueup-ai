@@ -134,16 +134,17 @@ func open(ctx context.Context, opts Options, files fs.FS, timeout time.Duration)
 // the version the store opened, in case a migration ran after that.
 func guardConn(known int64) func(context.Context, *pgx.Conn) error {
 	return func(ctx context.Context, conn *pgx.Conn) error {
-		// gooseKey too, for the version's sake, as readVersion holds it. A
-		// lock left behind when this fails goes with the connection, which
-		// the pool closes.
-		var connOK, gooseOK bool
+		// gooseKey too, once connKey is held, for the version's sake, as
+		// readVersion holds it: gooseLocker doesn't wait, so a connection
+		// the pool is about to close mustn't keep it. connKey, left held
+		// when gooseKey isn't free, only makes a migration wait for that.
+		var gooseOK pgtype.Bool
 		if err := conn.QueryRow(ctx,
-			"SELECT pg_catalog.pg_try_advisory_lock_shared($1::integer, $2::integer), pg_catalog.pg_try_advisory_lock_shared($3::bigint)",
-			lockClass, connKey, gooseKey).Scan(&connOK, &gooseOK); err != nil {
+			"SELECT CASE WHEN pg_catalog.pg_try_advisory_lock_shared($1::integer, $2::integer) THEN pg_catalog.pg_try_advisory_lock_shared($3::bigint) END",
+			lockClass, connKey, gooseKey).Scan(&gooseOK); err != nil {
 			return fmt.Errorf("lock the database: %w", err)
 		}
-		if !connOK || !gooseOK {
+		if !gooseOK.Valid || !gooseOK.Bool {
 			return errors.New("another TrueUp process is migrating the database: try again once it is done")
 		}
 		// The table exists once the store has opened. The version comes

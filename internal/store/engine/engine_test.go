@@ -37,7 +37,7 @@ func TestOpen(t *testing.T) {
 		// url.Parse refuses it, but libpq reads it, so it gets as far as
 		// connecting.
 		{name: "several PostgreSQL servers", url: "postgres://trueup:s3cret@127.0.0.1:1,[::1]:1/trueup?sslmode=disable", dataDir: dataDir, wantErr: "connect to the database at postgres://127.0.0.1:1,[::1]:1/trueup: "},
-		{name: "a PostgreSQL URL that libpq would misread", url: strings.Replace(postgresURL, "s3cret", "s3/cret", 1), dataDir: dataDir, wantErr: "database.url has an @ where libpq would read the host", configErr: true},
+		{name: "a PostgreSQL URL that libpq would misread", url: strings.Replace(postgresURL, "s3cret", "s3/cret", 1), dataDir: dataDir, wantErr: "database.url has an @ that libpq could read as part of the host", configErr: true},
 		{name: "another engine", url: strings.Replace(postgresURL, "postgres:", "mysql:", 1), dataDir: dataDir, wantErr: "must be a sqlite URL, or start postgres:// or postgresql://", configErr: true},
 		{name: "a URL that doesn't parse", url: "sqlite://trueup:s3cret@db.example.com:port/trueup.db", dataDir: dataDir, wantErr: "database.url is not a valid URL", configErr: true},
 	}
