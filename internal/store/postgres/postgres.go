@@ -102,7 +102,9 @@ func open(ctx context.Context, opts Options, files fs.FS, timeout time.Duration)
 		return nil, migrated, err
 	}
 
-	lock, err := pgx.ConnectConfig(ctx, cfg.ConnConfig)
+	lockCfg := cfg.ConnConfig.Copy()
+	lockCfg.AfterConnect = setLockSession
+	lock, err := pgx.ConnectConfig(ctx, lockCfg)
 	if err != nil {
 		return nil, migrated, fmt.Errorf("connect to the database at %s: %w", migrated.Location, withoutUser(err))
 	}
@@ -166,7 +168,7 @@ func closeLock(ctx context.Context, conn *pgx.Conn, failed string) error {
 	defer cancel()
 	var err error
 	if !conn.IsClosed() {
-		if _, unlockErr := conn.Exec(ctx, "SELECT pg_advisory_unlock_all()"); unlockErr != nil {
+		if _, unlockErr := conn.Exec(ctx, "SELECT pg_catalog.pg_advisory_unlock_all()"); unlockErr != nil {
 			err = fmt.Errorf("%s: %w", failed, unlockErr)
 		}
 	}

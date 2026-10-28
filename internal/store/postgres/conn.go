@@ -73,7 +73,7 @@ func connectTimeoutSet(raw string) bool {
 	return err == nil && q.Has("connect_timeout")
 }
 
-// setSession sets up each connection as it opens:
+// setSession sets up each of a store's connections as it opens:
 //
 //   - TrueUp's schema is the only one where a name without a schema is looked
 //     for, which also keeps objects that others can create, as in public,
@@ -85,8 +85,21 @@ func connectTimeoutSet(raw string) bool {
 //     connection that holds a store's lock is idle for as long as the store
 //     is open, and the server would end it, and the lock with it.
 func setSession(ctx context.Context, conn *pgconn.PgConn) error {
-	const sql = "SET search_path TO " + Schema + "; " +
-		"SELECT set_config('idle_session_timeout', '0', false) WHERE current_setting('server_version_num')::integer >= 140000"
+	return startSession(ctx, conn, Schema)
+}
+
+// setLockSession sets up the connection that holds a store's locks, which
+// checks TrueUp's schema before anything trusts it: its search_path is
+// pg_catalog alone, so that nothing in the schema can stand in for the
+// catalog's functions.
+func setLockSession(ctx context.Context, conn *pgconn.PgConn) error {
+	return startSession(ctx, conn, "pg_catalog")
+}
+
+func startSession(ctx context.Context, conn *pgconn.PgConn, searchPath string) error {
+	sql := "SELECT pg_catalog.set_config('idle_session_timeout', '0', false) " +
+		"WHERE pg_catalog.current_setting('server_version_num')::integer >= 140000; " +
+		"SET search_path TO " + searchPath
 	if _, err := conn.Exec(ctx, sql).ReadAll(); err != nil {
 		return fmt.Errorf("set up the session: %w", err)
 	}

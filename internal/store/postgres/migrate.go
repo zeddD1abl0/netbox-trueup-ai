@@ -83,17 +83,23 @@ type advisory struct {
 	try, wait, unlock string
 }
 
+// The lock functions are named with their schema, and their keys cast, so
+// that nothing of the same name in a search_path can stand in for them.
 func shared(key int32) advisory {
 	return advisory{
 		key,
-		"SELECT pg_try_advisory_lock_shared($1, $2)", "SELECT pg_advisory_lock_shared($1, $2)", "SELECT pg_advisory_unlock_shared($1, $2)",
+		"SELECT pg_catalog.pg_try_advisory_lock_shared($1::integer, $2::integer)",
+		"SELECT pg_catalog.pg_advisory_lock_shared($1::integer, $2::integer)",
+		"SELECT pg_catalog.pg_advisory_unlock_shared($1::integer, $2::integer)",
 	}
 }
 
 func exclusive(key int32) advisory {
 	return advisory{
 		key,
-		"SELECT pg_try_advisory_lock($1, $2)", "SELECT pg_advisory_lock($1, $2)", "SELECT pg_advisory_unlock($1, $2)",
+		"SELECT pg_catalog.pg_try_advisory_lock($1::integer, $2::integer)",
+		"SELECT pg_catalog.pg_advisory_lock($1::integer, $2::integer)",
+		"SELECT pg_catalog.pg_advisory_unlock($1::integer, $2::integer)",
 	}
 }
 
@@ -134,7 +140,7 @@ func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Dura
 		// For this transaction alone. The lock lasts beyond it, as a
 		// session's advisory locks do. A statement_timeout of the role's or
 		// the database's would end the wait sooner, and say less.
-		if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', '0', true)", milliseconds(timeout)); err != nil {
+		if _, err := tx.Exec(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', '0', true)", milliseconds(timeout)); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, l.wait, lockClass, l.key)
@@ -183,7 +189,7 @@ func checkDatabase(ctx context.Context, conn *pgx.Conn, where string, log *slog.
 	var encoding string
 	var version int
 	if err := conn.QueryRow(ctx,
-		"SELECT current_setting('server_encoding'), current_setting('server_version_num')::integer").Scan(&encoding, &version); err != nil {
+		"SELECT pg_catalog.current_setting('server_encoding'), pg_catalog.current_setting('server_version_num')::integer").Scan(&encoding, &version); err != nil {
 		return fmt.Errorf("read the database's settings: %w", err)
 	}
 	if encoding != "UTF8" {
@@ -195,31 +201,58 @@ func checkDatabase(ctx context.Context, conn *pgx.Conn, where string, log *slog.
 	return checkOwner(ctx, conn, where)
 }
 
-// checkOwner checks that the schema netbox_trueup_ai is TrueUp's, by the mark
-// the first migration leaves in its comment, or new: missing, or holding no
-// tables or views but, perhaps, goose's, as when a database administrator
-// created it for TrueUp, or a process stopped before the first migration
-// finished. So TrueUp never takes over another application's schema of that
-// name. It changes nothing.
+// checkOwner checks that the schema netbox_trueup_ai is TrueUp's, or new, so
+// that TrueUp never takes over another application's schema of that name, nor
+// runs code that another role put there. It changes nothing.
+//
+// The schema must belong to the role TrueUp connects as, as must every
+// relation, function, type and operator in it, and no other role may create
+// objects in it: a role that could put a function there, one that matches a
+// call of TrueUp's better than the catalog's does, would have TrueUp run it.
+// Then the schema is TrueUp's if the first migration has marked it with its
+// comment, or new if it holds no tables or views but, perhaps, goose's, as
+// when a database administrator created it for TrueUp, or a process stopped
+// before the first migration finished. A schema that doesn't exist is new.
+//
+// It runs on the lock connection, whose search_path is pg_catalog alone, so
+// that nothing in the schema can stand in for the catalog while it looks.
 func checkOwner(ctx context.Context, conn *pgx.Conn, where string) error {
-	var exists bool
+	var exists, owned, othersCreate, othersOwn bool
 	var comment pgtype.Text
 	var tables int64
 	err := conn.QueryRow(ctx, `
+WITH me AS (SELECT r.oid FROM pg_catalog.pg_roles AS r WHERE r.rolname = CURRENT_USER)
 SELECT
     n.oid IS NOT NULL,
-    obj_description(n.oid, 'pg_namespace'),
-    (SELECT count(*) FROM pg_class c
+    pg_catalog.obj_description(n.oid, 'pg_namespace'),
+    COALESCE(n.nspowner = (SELECT oid FROM me), false),
+    EXISTS (SELECT FROM pg_catalog.aclexplode(n.nspacl) AS a
+        WHERE a.privilege_type = 'CREATE' AND a.grantee <> n.nspowner),
+    EXISTS (SELECT FROM pg_catalog.pg_class AS c WHERE c.relnamespace = n.oid AND c.relowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_proc AS f WHERE f.pronamespace = n.oid AND f.proowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_type AS t WHERE t.typnamespace = n.oid AND t.typowner <> (SELECT oid FROM me))
+        OR EXISTS (SELECT FROM pg_catalog.pg_operator AS o WHERE o.oprnamespace = n.oid AND o.oprowner <> (SELECT oid FROM me)),
+    (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class AS c
         WHERE c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname <> 'goose_db_version')
 FROM (VALUES (1)) AS one
-LEFT JOIN pg_namespace n ON n.nspname = $1`, Schema).Scan(&exists, &comment, &tables)
+LEFT JOIN pg_catalog.pg_namespace AS n ON n.nspname = $1`, Schema).Scan(&exists, &comment, &owned, &othersCreate, &othersOwn, &tables)
 	if err != nil {
 		return fmt.Errorf("look for the schema %s: %w", Schema, err)
 	}
-	if !exists || comment.String == schemaMark || tables == 0 {
+	switch {
+	case !exists:
 		return nil
+	case !owned:
+		return fmt.Errorf("the schema %s in the database %s belongs to another role than the one TrueUp connects as, which could make TrueUp run its code: point database.url at a database of TrueUp's own, or have a database administrator drop the schema and create it with CREATE SCHEMA %s AUTHORIZATION followed by TrueUp's role", Schema, where, Schema)
+	case othersCreate:
+		return fmt.Errorf("other roles may create objects in the schema %s in the database %s, which could make TrueUp run their code: revoke CREATE on the schema from every role but TrueUp's", Schema, where)
+	case othersOwn:
+		return fmt.Errorf("the schema %s in the database %s holds objects that another role owns, which could make TrueUp run that role's code: point database.url at a database of TrueUp's own, or have a database administrator drop the schema and create it afresh for TrueUp's role", Schema, where)
+	case comment.String == schemaMark || tables == 0:
+		return nil
+	default:
+		return fmt.Errorf("the schema %s in the database %s holds another application's tables, not TrueUp's: point database.url at a database of TrueUp's own", Schema, where)
 	}
-	return fmt.Errorf("the schema %s in the database %s holds another application's tables, not TrueUp's: point database.url at a database of TrueUp's own", Schema, where)
 }
 
 // openSchema brings the schema to the latest version this release knows,
@@ -304,12 +337,13 @@ func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig
 			}
 		}()
 	}
-	// The schema may have changed since checkDatabase looked, before the
-	// gate.
-	if err := checkOwner(ctx, conn, where); err != nil {
+	// createSchema leaves a schema that already exists as it is, and the
+	// schema may have changed since checkDatabase looked, before the gate,
+	// so it is checked again, as it is now, before anything goes into it.
+	if err := createSchema(ctx, conn); err != nil {
 		return nil, err
 	}
-	if err := createSchema(ctx, conn); err != nil {
+	if err := checkOwner(ctx, conn, where); err != nil {
 		return nil, err
 	}
 	migrationCfg := cfg.Copy()
@@ -318,7 +352,7 @@ func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig
 			return err
 		}
 		// A role's statement_timeout could cut a migration short.
-		if _, err := c.Exec(ctx, "SELECT set_config('lock_timeout', '"+milliseconds(timeout)+"', false), set_config('statement_timeout', '0', false)").ReadAll(); err != nil {
+		if _, err := c.Exec(ctx, "SELECT pg_catalog.set_config('lock_timeout', '"+milliseconds(timeout)+"', false), pg_catalog.set_config('statement_timeout', '0', false)").ReadAll(); err != nil {
 			return fmt.Errorf("set the migration's timeouts: %w", err)
 		}
 		return nil
@@ -382,12 +416,12 @@ func isLockTimeout(err error) bool {
 }
 
 // createSchema creates TrueUp's schema, where goose keeps its table, if it
-// doesn't exist. That needs the CREATE privilege on the database, so a
-// database administrator can create the schema instead, owned by TrueUp's
-// role.
+// doesn't exist, and leaves one that does as it is, for checkOwner to judge.
+// Creating it needs the CREATE privilege on the database, so a database
+// administrator can create the schema instead, owned by TrueUp's role.
 func createSchema(ctx context.Context, conn *pgx.Conn) error {
 	var exists bool
-	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_namespace WHERE nspname = $1)", Schema).Scan(&exists); err != nil {
+	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_catalog.pg_namespace WHERE nspname = $1)", Schema).Scan(&exists); err != nil {
 		return fmt.Errorf("look for the schema %s: %w", Schema, err)
 	}
 	if exists {
@@ -433,14 +467,14 @@ type querier interface {
 // in its table, or 0 before the table exists. It writes nothing.
 func schemaVersion(ctx context.Context, q querier) (int64, error) {
 	var exists bool
-	if err := q.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", Schema+".goose_db_version").Scan(&exists); err != nil {
+	if err := q.QueryRow(ctx, "SELECT pg_catalog.to_regclass($1) IS NOT NULL", Schema+".goose_db_version").Scan(&exists); err != nil {
 		return 0, fmt.Errorf("read the database's schema version: %w", err)
 	}
 	if !exists {
 		return 0, nil
 	}
 	var version pgtype.Int8
-	if err := q.QueryRow(ctx, "SELECT max(version_id) FROM "+Schema+".goose_db_version").Scan(&version); err != nil {
+	if err := q.QueryRow(ctx, "SELECT pg_catalog.max(version_id) FROM "+Schema+".goose_db_version").Scan(&version); err != nil {
 		return 0, fmt.Errorf("read the database's schema version: %w", err)
 	}
 	return version.Int64, nil

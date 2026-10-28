@@ -852,3 +852,70 @@ func TestServerTimeouts(t *testing.T) {
 		}
 	})
 }
+
+func TestOtherRolesInTheSchema(t *testing.T) {
+	t.Parallel()
+	// plant is SQL another role runs: functions that would win a call of
+	// TrueUp's, were it to look in the schema, by matching better than the
+	// catalog's. Each records that it ran.
+	const plant = `
+CREATE FUNCTION netbox_trueup_ai.obj_description(oid, text) RETURNS text LANGUAGE sql
+    AS $$ INSERT INTO public.calls VALUES ('obj_description') RETURNING 'netbox-trueup-ai' $$;
+CREATE FUNCTION netbox_trueup_ai.pg_try_advisory_lock(text, text) RETURNS boolean LANGUAGE sql
+    AS $$ INSERT INTO public.calls VALUES ('pg_try_advisory_lock') RETURNING true $$;
+CREATE FUNCTION netbox_trueup_ai.pg_try_advisory_lock_shared(text, text) RETURNS boolean LANGUAGE sql
+    AS $$ INSERT INTO public.calls VALUES ('pg_try_advisory_lock_shared') RETURNING true $$;
+CREATE FUNCTION netbox_trueup_ai.to_regclass(text) RETURNS regclass LANGUAGE sql
+    AS $$ INSERT INTO public.calls VALUES ('to_regclass') RETURNING NULL::regclass $$;`
+	tests := []struct {
+		name  string
+		setup func(trueup, other string) string // SQL a database administrator, or the other role, ran first
+		want  string
+	}{
+		{
+			name: "a schema another role made first",
+			setup: func(_, other string) string {
+				return "SET ROLE " + other + "; CREATE SCHEMA netbox_trueup_ai; GRANT ALL ON SCHEMA netbox_trueup_ai TO PUBLIC;" + plant + " RESET ROLE"
+			},
+			want: "belongs to another role than the one TrueUp connects as, which could make TrueUp run its code",
+		},
+		{
+			name: "that schema, given to TrueUp's role afterwards",
+			setup: func(trueup, other string) string {
+				return "SET ROLE " + other + "; CREATE SCHEMA netbox_trueup_ai;" + plant + " RESET ROLE; ALTER SCHEMA netbox_trueup_ai OWNER TO " + trueup
+			},
+			want: "holds objects that another role owns, which could make TrueUp run that role's code",
+		},
+		{
+			name: "TrueUp's schema, which another role may create objects in",
+			setup: func(trueup, other string) string {
+				return "CREATE SCHEMA netbox_trueup_ai AUTHORIZATION " + trueup + "; GRANT CREATE ON SCHEMA netbox_trueup_ai TO " + other
+			},
+			want: "other roles may create objects in the schema netbox_trueup_ai",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			database := srv.NewDatabase(t)
+			trueup, url := newRole(t, database)
+			other := "other_" + database
+			srv.Exec(t, "postgres", "CREATE ROLE "+other)
+			srv.Exec(t, "postgres", "GRANT CREATE ON DATABASE "+database+" TO "+other+", "+trueup)
+			srv.Exec(t, database, "CREATE TABLE public.calls (what text); GRANT INSERT ON public.calls TO PUBLIC")
+			srv.Exec(t, database, tt.setup(trueup, other))
+
+			_, _, err := Open(t.Context(), Options{URL: url})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Open = %v, want an error saying %q", err, tt.want)
+			}
+			pool := srv.Pool(t, database)
+			if calls := query(t, pool, "SELECT what FROM public.calls"); len(calls) != 0 {
+				t.Errorf("TrueUp ran the other role's functions: %v", calls)
+			}
+			if got := comment(t, pool); slices.Equal(got, []string{schemaMark}) {
+				t.Error("Open marked the schema as TrueUp's")
+			}
+		})
+	}
+}
