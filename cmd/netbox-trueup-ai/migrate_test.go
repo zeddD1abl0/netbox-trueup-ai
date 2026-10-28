@@ -101,8 +101,13 @@ func TestMigrateFailures(t *testing.T) {
 		wantStderr string
 	}{
 		{
-			name: "PostgreSQL before it is supported", env: []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=" + postgresURL},
-			wantCode: exitConfig, wantStderr: "Error: database.url names a PostgreSQL database, which this release can't use yet: unset database.url to use SQLite in the data directory\n",
+			name: "a PostgreSQL URL that can't be used", env: []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=" + postgresURL + "?sslmode=bogus"},
+			wantCode: exitConfig, wantStderr: "Error: database.url can't be used to connect to PostgreSQL: failed to configure TLS (sslmode is invalid)\n",
+		},
+		{
+			// Nothing listens on port 1, so connecting fails at once.
+			name: "a PostgreSQL server that can't be reached", env: []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=" + strings.Replace(postgresURL, "db.example.com", "127.0.0.1:1", 1) + "?sslmode=disable"},
+			wantCode: exitFailure, wantStderr: "Error: open the database: connect to the database at postgres://127.0.0.1:1/trueup: ",
 		},
 		{
 			name: "a relative sqlite URL", env: []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=sqlite:trueup.db"},
@@ -124,8 +129,8 @@ func TestMigrateFailures(t *testing.T) {
 			if r.code != tt.wantCode || r.stdout != "" || !strings.Contains(r.stderr, tt.wantStderr) {
 				t.Errorf("exit code %d, stdout %q, stderr %q; want %d, nothing, and %q", r.code, r.stdout, r.stderr, tt.wantCode, tt.wantStderr)
 			}
-			if strings.Contains(r.stderr, "s3cret") {
-				t.Errorf("stderr repeats the database's password: %s", r.stderr)
+			if strings.Contains(r.stderr, "s3cret") || strings.Contains(r.stderr, "user=") {
+				t.Errorf("stderr repeats the database's password or names its user: %s", r.stderr)
 			}
 		})
 	}

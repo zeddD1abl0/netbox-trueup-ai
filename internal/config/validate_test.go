@@ -265,3 +265,48 @@ func TestErrorListsEveryProblem(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
+
+func TestPostgresURLProblem(t *testing.T) {
+	t.Parallel()
+	for raw, wantProblem := range map[string]bool{
+		"postgres://db.example.com/trueup":                                          false,
+		"postgresql://trueup:s3cret@db.example.com:5433/trueup?sslmode=verify-full": false,
+		// url.Parse refuses these, but libpq reads them.
+		"postgres://trueup:s3cret@db1.example.com:5433,db2.example.com/trueup":  false,
+		"postgres://trueup:s3cret@[2001:db8::1]:5432,[2001:db8::2]:5433/trueup": false,
+		"postgres://trueup:p%40ss%2Fword@db.example.com/trueup":                 false,
+		"postgres:///trueup?host=/var/run/postgresql":                           false,
+		// After a user name, an @ in a parameter's value is a value.
+		"postgres://trueup:s3cret@db.example.com/trueup?sslrootcert=/etc/ssl/ca@corp.pem": false,
+		"postgres://trueup%40EXAMPLE.COM@db.example.com/trueup?gssencmode=require":        false,
+		"postgres://db.example.com/trueup?sslmode":                                        false,
+		// Without one, it must be percent-encoded, since it is where a
+		// password's would be.
+		"postgres://db.example.com/trueup?user=trueup@EXAMPLE.COM":                 true,
+		"postgres://db.example.com/trueup?user=trueup%40EXAMPLE.COM":               false,
+		"postgres:///trueup?host=/run/postgresql&sslrootcert=/etc/ssl/ca@corp.pem": true,
+		// An @, /, ? or # in the password, not percent-encoded.
+		"postgres://trueup:p@ss@db.example.com/trueup":                  true,
+		"postgres://trueup:20/24@db.example.com/trueup":                 true,
+		"postgres://trueup:p@ss/word@db.example.com/trueup":             true,
+		"postgres://trueup:pa?ss@db.example.com/trueup":                 true,
+		"postgres://trueup:1234?k=v@db.example.com/trueup":              true,
+		"postgres://trueup:p@ss?word@db.example.com/trueup":             true,
+		"postgres://trueup:pa?ss@db.example.com/trueup?sslmode=require": true,
+		"postgres://trueup:pa#ss@db.example.com/trueup":                 true,
+		"postgres://trueup:p@ss#word@db.example.com/trueup":             true,
+		"postgres://trueup:s3cret@db.example.com/my@db":                 true,
+	} {
+		if got := PostgresURLProblem(raw) != ""; got != wantProblem {
+			t.Errorf("PostgresURLProblem(%q) = %q, want a problem: %v", raw, PostgresURLProblem(raw), wantProblem)
+		}
+		if !IsPostgresURL(raw) {
+			t.Errorf("IsPostgresURL(%q) = false", raw)
+		}
+	}
+	for _, raw := range []string{"postgres:trueup", "sqlite:///srv/trueup.db", "POSTGRES://db.example.com/trueup", "mysql://db.example.com/trueup"} {
+		if IsPostgresURL(raw) {
+			t.Errorf("IsPostgresURL(%q) = true", raw)
+		}
+	}
+}

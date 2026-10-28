@@ -390,10 +390,10 @@ func TestSourceFetchFailures(t *testing.T) {
 	// fetches anything.
 	r = runCLI(t, nil, []string{
 		"TRUEUP_DATA_DIR=" + t.TempDir(),
-		"TRUEUP_DATABASE_URL=" + postgresURL,
+		"TRUEUP_DATABASE_URL=" + postgresURL + "?sslmode=bogus",
 		`TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
 	}, "source", "fetch", "-o", "json")
-	if r.code != exitConfig || r.stdout != "" || !strings.Contains(r.stderr, "names a PostgreSQL database") || strings.Contains(r.stderr, "example.com/lib") {
+	if r.code != exitConfig || r.stdout != "" || !strings.Contains(r.stderr, "can't be used to connect to PostgreSQL") || strings.Contains(r.stderr, "example.com/lib") {
 		t.Errorf("with PostgreSQL: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 }

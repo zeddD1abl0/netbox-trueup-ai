@@ -1,0 +1,22 @@
+# The PostgreSQL that TrueUp's storage tests run against: 16, the release
+# tested for now. pgtest reads the image from here, and Dependabot keeps it
+# current. Only the image is read: pgtest sets everything else itself.
+#
+# To try TrueUp against it by hand, on 127.0.0.1 only:
+#
+#   docker compose --file internal/store/postgres/pgtest/compose.yaml up --detach --wait
+#   TRUEUP_DATABASE_URL=postgres://postgres:pgtest-only@127.0.0.1:5433/postgres netbox-trueup-ai migrate
+#   docker compose --file internal/store/postgres/pgtest/compose.yaml down --volumes
+name: netbox-trueup-ai-pgtest
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16.14-alpine3.24@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_PASSWORD: pgtest-only # a dummy, for a disposable server
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "postgres", "--host", "127.0.0.1"]
+      interval: 2s
+      retries: 30

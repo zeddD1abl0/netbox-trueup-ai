@@ -1,7 +1,7 @@
 // Package engine opens TrueUp's database with the engine that database.url
-// names: SQLite, by default in the data directory, and from roadmap step 7
-// PostgreSQL. It is the only package that knows which engines exist, so the
-// rest of TrueUp works with store.Store alone.
+// names: SQLite, by default in the data directory, or PostgreSQL. It is the
+// only package that knows which engines exist, so the rest of TrueUp works
+// with store.Store alone.
 package engine
 
 import (
@@ -13,6 +13,7 @@ import (
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/postgres"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/sqlite"
 )
 
@@ -32,7 +33,7 @@ type Config struct {
 }
 
 // ConfigError means database.url names a database this release can't open,
-// such as one on an engine it doesn't support yet. It is a problem with the
+// such as one on an engine it doesn't know. It is a problem with the
 // configuration rather than with the database.
 type ConfigError struct{ msg string }
 
@@ -43,41 +44,42 @@ func (e *ConfigError) Error() string { return e.msg }
 // than this release knows, with a *store.SchemaTooNewError. Close the store
 // when done.
 func Open(ctx context.Context, cfg Config) (store.Store, store.Migrated, error) {
-	path, err := sqlitePath(cfg)
-	if err != nil {
-		return nil, store.Migrated{}, err
+	if !cfg.URL.IsSet() {
+		if !filepath.IsAbs(cfg.DataDir) {
+			return nil, store.Migrated{}, errors.New("the data directory must be an absolute path")
+		}
+		return openSQLite(ctx, filepath.Join(cfg.DataDir, DefaultFile), cfg.Logger)
 	}
-	s, migrated, err := sqlite.Open(ctx, sqlite.Options{Path: path, Logger: cfg.Logger})
+	// Messages never repeat the URL, which can hold a password.
+	raw := cfg.URL.Reveal()
+	if config.IsPostgresURL(raw) {
+		s, migrated, err := postgres.Open(ctx, postgres.Options{URL: cfg.URL, Logger: cfg.Logger})
+		if pgErr, ok := errors.AsType[*postgres.ConfigError](err); ok {
+			return nil, migrated, &ConfigError{pgErr.Error()}
+		}
+		if err != nil {
+			return nil, migrated, err
+		}
+		return s, migrated, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, store.Migrated{}, &ConfigError{"database.url is not a valid URL"}
+	}
+	if u.Scheme != "sqlite" {
+		return nil, store.Migrated{}, &ConfigError{"database.url must be a sqlite URL, or start postgres:// or postgresql://"}
+	}
+	path, problem := config.SQLitePath(raw)
+	if problem != "" {
+		return nil, store.Migrated{}, &ConfigError{"database.url " + problem}
+	}
+	return openSQLite(ctx, path, cfg.Logger)
+}
+
+func openSQLite(ctx context.Context, path string, logger *slog.Logger) (store.Store, store.Migrated, error) {
+	s, migrated, err := sqlite.Open(ctx, sqlite.Options{Path: path, Logger: logger})
 	if err != nil {
 		return nil, migrated, err
 	}
 	return s, migrated, nil
-}
-
-// sqlitePath returns the SQLite database's file. It never repeats the URL,
-// which can hold a password.
-func sqlitePath(cfg Config) (string, error) {
-	if !cfg.URL.IsSet() {
-		if !filepath.IsAbs(cfg.DataDir) {
-			return "", errors.New("the data directory must be an absolute path")
-		}
-		return filepath.Join(cfg.DataDir, DefaultFile), nil
-	}
-	raw := cfg.URL.Reveal()
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", &ConfigError{"database.url is not a valid URL"}
-	}
-	switch u.Scheme {
-	case "sqlite":
-		path, problem := config.SQLitePath(raw)
-		if problem != "" {
-			return "", &ConfigError{"database.url " + problem}
-		}
-		return path, nil
-	case "postgres", "postgresql":
-		return "", &ConfigError{"database.url names a PostgreSQL database, which this release can't use yet: unset database.url to use SQLite in the data directory"}
-	default:
-		return "", &ConfigError{"database.url must be a sqlite, postgres or postgresql URL"}
-	}
 }

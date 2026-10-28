@@ -89,11 +89,19 @@ func (ld *loader) logFormat(r resolved) LogFormat {
 }
 
 // databaseURL checks the database URL's scheme, and that a sqlite URL names
-// a file. The URL can hold a password, so messages never repeat it, nor
-// url.Parse's errors, which quote it.
+// a file. The PostgreSQL store reads the rest of a PostgreSQL URL. The URL
+// can hold a password, so messages never repeat it, nor url.Parse's errors,
+// which quote it.
 func (ld *loader) databaseURL(r resolved) Secret {
 	if r.str == "" {
 		return Secret{}
+	}
+	if IsPostgresURL(r.str) {
+		if problem := PostgresURLProblem(r.str); problem != "" {
+			ld.problem(r.key, r.where, problem)
+			return Secret{}
+		}
+		return NewSecret(r.str)
 	}
 	u, err := url.Parse(r.str)
 	if err != nil {
@@ -108,11 +116,58 @@ func (ld *loader) databaseURL(r resolved) Secret {
 		}
 		return NewSecret(r.str)
 	case "postgres", "postgresql":
-		return NewSecret(r.str)
+		ld.problem(r.key, r.where, "must start postgres:// or postgresql://, as in postgres://db.example.com/trueup")
+		return Secret{}
 	default:
 		ld.problem(r.key, r.where, "must be a sqlite, postgres or postgresql URL")
 		return Secret{}
 	}
+}
+
+// IsPostgresURL reports whether raw is a PostgreSQL URL, as pgx and libpq
+// tell one: by how it starts. Its form is theirs to check, since some of
+// libpq's URLs, such as those that list several hosts with their ports, are
+// URLs that url.Parse refuses.
+func IsPostgresURL(raw string) bool {
+	return strings.HasPrefix(raw, "postgres://") || strings.HasPrefix(raw, "postgresql://")
+}
+
+// PostgresURLProblem returns what is wrong with a PostgreSQL URL that libpq
+// would misread, or "" if nothing is. A character in the password that isn't
+// percent-encoded can make libpq read part of the password as the host, the
+// port, the database's name or a parameter, which messages show. So the URL
+// is refused if an @ is where only such a password would put one: after the
+// host when nothing before it has an @, a second before the host, or, after
+// a user name and password, one in the database's name, in a parameter's
+// name or after a #. Where the URL has no user name, an @ in a parameter,
+// as in user=trueup@EXAMPLE.COM, must be percent-encoded too. The PostgreSQL
+// store checks its URL with it too, so that the two agree. The message never
+// repeats the URL.
+func PostgresURLProblem(raw string) string {
+	_, rest, _ := strings.Cut(raw, "://")
+	authority, after := rest, ""
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority, after = rest[:i], rest[i:]
+	}
+	misread := false
+	switch strings.Count(authority, "@") {
+	case 0:
+		misread = strings.Contains(after, "@")
+	case 1:
+		after, fragment, _ := strings.Cut(after, "#")
+		database, query, _ := strings.Cut(after, "?")
+		misread = strings.Contains(database, "@") || strings.Contains(fragment, "@")
+		for param := range strings.SplitSeq(query, "&") {
+			name, _, _ := strings.Cut(param, "=")
+			misread = misread || strings.Contains(name, "@")
+		}
+	default:
+		misread = true
+	}
+	if misread {
+		return "has an @ that libpq could read as part of the host, the database's name or a parameter, so that part of a password would show: percent-encode special characters in the password, such as @ as %40, / as %2F, ? as %3F and # as %23, and any @ after the host as %40"
+	}
+	return ""
 }
 
 // SQLitePath returns the file that a sqlite database URL names, or what is

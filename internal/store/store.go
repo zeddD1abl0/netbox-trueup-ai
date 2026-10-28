@@ -219,9 +219,11 @@ func (e *SchemaTooNewError) Error() string {
 
 // Migrated says what opening a database did to its schema.
 type Migrated struct {
-	// Engine is the database engine, such as "sqlite".
+	// Engine is the database engine: "sqlite" or "postgres".
 	Engine string
-	// Location is where the database is: a SQLite database's file.
+	// Location is where the database is: a SQLite database's file, or a
+	// PostgreSQL database's URL with its hosts, ports and name alone, never
+	// its user name or password.
 	Location string
 	// VersionBefore and Version are the schema's version before and after
 	// opening: 0 before for a new database.

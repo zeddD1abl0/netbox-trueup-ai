@@ -30,10 +30,16 @@ func TestOpen(t *testing.T) {
 		{name: "a sqlite URL", url: otherURL, dataDir: dataDir, want: other},
 		{name: "a relative data directory", dataDir: "data", wantErr: "the data directory must be an absolute path"},
 		{name: "a relative sqlite URL", url: "sqlite:trueup.db", dataDir: dataDir, wantErr: "database.url must give the database file's absolute path", configErr: true},
-		{name: "PostgreSQL", url: postgresURL, dataDir: dataDir, wantErr: "database.url names a PostgreSQL database, which this release can't use yet", configErr: true},
-		{name: "postgresql", url: strings.Replace(postgresURL, "postgres:", "postgresql:", 1), dataDir: dataDir, wantErr: "PostgreSQL", configErr: true},
-		{name: "another engine", url: strings.Replace(postgresURL, "postgres:", "mysql:", 1), dataDir: dataDir, wantErr: "must be a sqlite, postgres or postgresql URL", configErr: true},
-		{name: "a URL that doesn't parse", url: strings.Replace(postgresURL, ".com/", ".com:port/", 1), dataDir: dataDir, wantErr: "database.url is not a valid URL", configErr: true},
+		{name: "a PostgreSQL URL pgx can't use", url: postgresURL + "?sslmode=bogus", dataDir: dataDir, wantErr: "database.url can't be used to connect to PostgreSQL: failed to configure TLS (sslmode is invalid)", configErr: true},
+		{name: "a postgresql URL pgx can't use", url: strings.Replace(postgresURL, "postgres:", "postgresql:", 1) + "?connect_timeout=soon", dataDir: dataDir, wantErr: "database.url can't be used to connect to PostgreSQL", configErr: true},
+		// Nothing listens on port 1, so connecting fails at once.
+		{name: "a PostgreSQL server that can't be reached", url: strings.Replace(postgresURL, "db.example.com", "127.0.0.1:1", 1) + "?sslmode=disable", dataDir: dataDir, wantErr: "connect to the database at postgres://127.0.0.1:1/trueup: "},
+		// url.Parse refuses it, but libpq reads it, so it gets as far as
+		// connecting.
+		{name: "several PostgreSQL servers", url: "postgres://trueup:s3cret@127.0.0.1:1,[::1]:1/trueup?sslmode=disable", dataDir: dataDir, wantErr: "connect to the database at postgres://127.0.0.1:1,[::1]:1/trueup: "},
+		{name: "a PostgreSQL URL that libpq would misread", url: strings.Replace(postgresURL, "s3cret", "s3/cret", 1), dataDir: dataDir, wantErr: "database.url has an @ that libpq could read as part of the host", configErr: true},
+		{name: "another engine", url: strings.Replace(postgresURL, "postgres:", "mysql:", 1), dataDir: dataDir, wantErr: "must be a sqlite URL, or start postgres:// or postgresql://", configErr: true},
+		{name: "a URL that doesn't parse", url: "sqlite://trueup:s3cret@db.example.com:port/trueup.db", dataDir: dataDir, wantErr: "database.url is not a valid URL", configErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -43,8 +49,8 @@ func TestOpen(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("Open = %v, want an error saying %q", err, tt.wantErr)
 				}
-				if strings.Contains(err.Error(), "s3cret") {
-					t.Errorf("the error repeats the password: %v", err)
+				if strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "user=") {
+					t.Errorf("the error repeats the password or names the user: %v", err)
 				}
 				if _, ok := errors.AsType[*ConfigError](err); ok != tt.configErr {
 					t.Errorf("the error is a *ConfigError: %v, want %v", ok, tt.configErr)

@@ -4,7 +4,7 @@
 # generated packages by hand.
 #
 # Each engine reads its schema from its goose migrations, of which sqlc
-# applies only the Up sections. PostgreSQL joins in roadmap step 7.
+# applies only the Up sections.
 version: "2"
 sql:
   - engine: sqlite
@@ -14,3 +14,15 @@ sql:
       go:
         package: sqlitedb
         out: internal/store/sqlite/sqlitedb
+  # PostgreSQL's tables live in the schema netbox_trueup_ai, which TrueUp
+  # creates before migrating; schema.sql tells sqlc so.
+  - engine: postgresql
+    schema:
+      - internal/store/postgres/schema.sql
+      - internal/store/postgres/migrations
+    queries: internal/store/postgres/queries
+    gen:
+      go:
+        package: postgresdb
+        out: internal/store/postgres/postgresdb
+        sql_package: pgx/v5

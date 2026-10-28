@@ -6,7 +6,7 @@ Instructions for AI coding agents working on NetBox TrueUp AI. Human contributor
 
 NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories and, later, other sources. See [README.md](README.md) for the planned feature set.
 
-**Status:** early development. The command tree, configuration and logging exist, integration tests can start a disposable NetBox, a read-only NetBox client backs `netbox check`, `source fetch` fetches Git sources into a cache and records each fetch in a SQLite database, and `migrate` creates and migrates that database. Nothing parses source files or writes to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+**Status:** early development. The command tree, configuration and logging exist, integration tests can start a disposable NetBox, a read-only NetBox client backs `netbox check`, `source fetch` fetches Git sources into a cache and records each fetch in a database, on SQLite or PostgreSQL, and `migrate` creates and migrates that database. Nothing parses source files or writes to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
 
 **NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
 
@@ -17,7 +17,7 @@ NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-co
 | Install the pinned toolchain | `make tools` (needs [mise](https://mise.jdx.dev)) |
 | Build | `make build` |
 | Test (with race detector) | `make test` |
-| Integration tests, against a disposable NetBox (needs Docker) | `make test-integration` |
+| Integration tests, against a disposable NetBox and PostgreSQL (needs Docker) | `make test-integration` |
 | Start or remove a disposable NetBox for manual testing | `make netbox-up`, `make netbox-down` |
 | Regenerate the code generated from SQL, and check it | `make generate`, `make generate-check` |
 | Format | `make fmt` |
@@ -39,8 +39,9 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 | `internal/netboxtest/` | The disposable NetBox: `compose.yaml`, and the package that starts it for integration tests and seeds it. See its README |
 | `internal/source/` | Sources: snapshots, file listings, path checks and limits for every kind ([ADR 0009](docs/adr/0009-source-kinds-and-format-adapters.md)); `source/git/` is the Git kind ([ADR 0020](docs/adr/0020-git-sources-with-go-git.md)) |
 | `internal/glob/` | Include and exclude patterns, with `**` |
+| `internal/localdocker/` | Checks that tests' containers run on this machine's Docker and publish ports on 127.0.0.1 only, for `netboxtest` and `pgtest` |
 | `internal/filelock/` | Operating system file locks, shared and exclusive |
-| `internal/store/` | The storage interface; `store/sqlite/` is the SQLite engine, with its migrations, queries and sqlc's generated `sqlitedb/`, `store/engine/` chooses the engine, and `store/storetest/` holds the tests every engine runs ([ADR 0011](docs/adr/0011-store-state-with-sqlc-and-goose.md), [ADR 0021](docs/adr/0021-forward-only-migrations-when-opening.md)) |
+| `internal/store/` | The storage interface; `store/sqlite/` and `store/postgres/` are the engines, each with its migrations, queries and sqlc's generated package, `store/engine/` chooses the engine, `store/storetest/` holds the tests every engine runs, and `store/postgres/pgtest/` starts PostgreSQL for them ([ADR 0011](docs/adr/0011-store-state-with-sqlc-and-goose.md), [ADR 0021](docs/adr/0021-forward-only-migrations-when-opening.md), [ADR 0022](docs/adr/0022-postgresql-schema-and-advisory-locks.md)) |
 | `docs/` | Documentation. `docs/architecture.md` describes the design, `docs/roadmap.md` the planned steps, `docs/adr/` holds decision records, and `docs/tooling.md` lists every tool and why it was chosen |
 | `.github/` | CI workflows, Dependabot, issue and PR templates |
 | `.claude/` | Claude Code project settings and skills |

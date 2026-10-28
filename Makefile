@@ -51,10 +51,11 @@ test: ## Run tests with the race detector
 	go test -race -shuffle=on ./...
 
 # Each package with integration tests starts its own NetBox, which takes
-# about 4 minutes and 1 GB, so packages run one at a time (-p 1). The long
-# timeout applies to each package.
+# about 4 minutes and 1 GB, or its own PostgreSQL, which takes seconds, so
+# packages run one at a time (-p 1). The long timeout applies to each
+# package.
 .PHONY: test-integration
-test-integration: ## Run tests and integration tests against a disposable NetBox (needs Docker)
+test-integration: ## Run tests and integration tests against a disposable NetBox and PostgreSQL (needs Docker)
 	go test -race -shuffle=on -tags integration -p 1 -timeout 30m ./...
 
 .PHONY: netbox-up
