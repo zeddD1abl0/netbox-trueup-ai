@@ -7,9 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -33,7 +36,30 @@ import (
 var srv *pgtest.Server
 
 func TestMain(m *testing.M) {
+	if url := os.Getenv(helperURL); url != "" {
+		os.Exit(interruptedOpen(url))
+	}
 	os.Exit(pgtest.Run(m, &srv))
+}
+
+// helperURL names, for a test binary that TestAnInterruptedProcess runs, the
+// database to open as an interrupted command does.
+const helperURL = "TRUEUP_PGTEST_INTERRUPTED_OPEN"
+
+// interruptedOpen opens the database at url with a migration it must wait to
+// apply, until its context ends, and exits at once, as the CLI does when it
+// is interrupted.
+func interruptedOpen(url string) int {
+	files, err := migrationsWith("00002_x.sql", "-- +goose Up\n")
+	if err != nil {
+		fmt.Println(err)
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, err = open(ctx, Options{URL: config.NewSecret(url)}, files, time.Minute)
+	fmt.Println(err)
+	return 0
 }
 
 // openURL opens the database at url, and closes it when the test ends.
@@ -80,6 +106,14 @@ func query(t *testing.T, pool *pgxpool.Pool, q string, args ...any) []string {
 // withMigration returns this release's migrations and one more.
 func withMigration(t *testing.T, name, content string) fs.FS {
 	t.Helper()
+	files, err := migrationsWith(name, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func migrationsWith(name, content string) (fs.FS, error) {
 	files := fstest.MapFS{name: {Data: []byte(content)}}
 	err := fs.WalkDir(migrationFiles, "migrations", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -89,10 +123,7 @@ func withMigration(t *testing.T, name, content string) fs.FS {
 		files[filepath.Base(p)] = &fstest.MapFile{Data: data}
 		return err
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return files
+	return files, err
 }
 
 func failedFetch() store.Fetch {
@@ -392,8 +423,8 @@ func TestAStoreThatLosesItsOwnConnection(t *testing.T) {
 		// Close can't release a lock that went with its session, and
 		// says so.
 		t.Cleanup(func() {
-			if err := s.Close(); err == nil || !strings.Contains(err.Error(), "release the database's lock: ") {
-				t.Errorf("Close = %v, want it to say the lock's connection was lost", err)
+			if err := s.Close(); err == nil || !strings.Contains(err.Error(), "the connection that held off migrations broke while the database was open: ") {
+				t.Errorf("Close = %v, want it to say the lock's connection broke", err)
 			}
 		})
 		if _, err := s.Sources(t.Context()); err != nil {
@@ -565,4 +596,259 @@ func TestSearchPath(t *testing.T) {
 			t.Errorf("%s holds %v rows, want none", table, n)
 		}
 	}
+}
+
+// advisoryLocks lists the advisory locks in the database, granted or waited
+// for, as "key mode granted".
+func advisoryLocks(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	return query(t, pool, `
+SELECT objid || ' ' || mode || ' ' || granted FROM pg_locks
+WHERE locktype = 'advisory' AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+ORDER BY 1`)
+}
+
+// relay forwards connections to target, delaying each piece of data as a
+// network does, and returns its address. What a process sends as it opens a
+// connection is lost if the process has closed the connection, as it does
+// when it exits, before the delay is over: the network would not have
+// carried it yet.
+func relay(t *testing.T, target string, delay time.Duration) string {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	pipe := func(dst, src net.Conn) {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := src.Read(buf)
+			if n > 0 {
+				time.Sleep(delay)
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					err = werr
+				}
+			}
+			if err != nil {
+				_ = dst.Close()
+				_ = src.Close()
+				return
+			}
+		}
+	}
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				time.Sleep(delay)
+				first := make([]byte, 32*1024)
+				n, err := client.Read(first)
+				if err != nil {
+					_ = client.Close()
+					return
+				}
+				// A client that waits for an answer is still there; one that
+				// has gone reads as the end of the connection at once.
+				_ = client.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+				more, err := client.Read(first[n:])
+				if more == 0 && errors.Is(err, io.EOF) {
+					_ = client.Close()
+					return
+				}
+				_ = client.SetReadDeadline(time.Time{})
+				var d net.Dialer
+				server, err := d.DialContext(t.Context(), "tcp", target)
+				if err != nil {
+					_ = client.Close()
+					return
+				}
+				if _, err := server.Write(first[:n+more]); err != nil {
+					_ = client.Close()
+					_ = server.Close()
+					return
+				}
+				go pipe(server, client)
+				pipe(client, server)
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestAnInterruptedProcess(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	openURL(t, config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))) // an older store, open throughout
+	host, port, err := net.SplitHostPort(relay(t, net.JoinHostPort(srv.Host, srv.Port), 20*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaRelay := strings.Replace(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database), srv.Host+":"+srv.Port, host+":"+port, 1)
+
+	// A newer release, interrupted while it waits to migrate, holding the
+	// gate, exits at once. Its wait ends on the server too, though the
+	// cancel request takes a while to cross the network.
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^$") //nolint:gosec // G204: the test binary runs itself as a helper
+	// The race detector waits a second as a process exits, which a release
+	// build doesn't.
+	cmd.Env = append(os.Environ(), helperURL+"="+viaRelay, "GORACE=atexit_sleep_ms=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "waiting for the database's lock: context deadline exceeded") {
+		t.Fatalf("the interrupted process: %v\n%s", err, out)
+	}
+	pool := srv.Pool(t, database)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		locks := advisoryLocks(t, pool)
+		if slices.Equal(locks, []string{"1 ShareLock true"}) { // the older store's
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the interrupted process exited, the database's advisory locks are %v, want only the older store's", locks)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+	seed := openURL(t, url)
+	if err := seed.RecordFetch(t.Context(), failedFetch()); err != nil {
+		t.Fatal(err)
+	}
+	closeStore(t, seed)
+	// A migration that isn't safe to apply twice, and takes a while.
+	files := withMigration(t, "00002_data.sql", "-- +goose Up\nUPDATE sources SET url = url || '/x';\nSELECT pg_sleep(2);\n")
+	pool := srv.Pool(t, database)
+
+	first := make(chan error, 1)
+	go func() {
+		s, _, err := open(t.Context(), Options{URL: url}, files, 10*time.Second)
+		if err == nil {
+			closeStore(t, s)
+		}
+		first <- err
+	}()
+	// Once the migration runs, end the session that holds the process's
+	// locks, as a network failure would.
+	var pid int32
+	deadline := time.Now().Add(5 * time.Second)
+	for running := []string(nil); len(running) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the migration didn't start")
+		}
+		time.Sleep(20 * time.Millisecond)
+		running = query(t, pool, "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND query LIKE '%pg_sleep(2)%' AND query NOT LIKE '%pg_stat_activity%'")
+	}
+	if err := pool.QueryRow(t.Context(), "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = 1 AND mode = 'ExclusiveLock' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())").Scan(&pid); err != nil {
+		t.Fatalf("find the migrating process's lock connection: %v", err)
+	}
+	var ended bool
+	if err := pool.QueryRow(t.Context(), "SELECT pg_terminate_backend($1)", pid).Scan(&ended); err != nil || !ended {
+		t.Fatalf("end the migrating process's lock connection: %v, %v", ended, err)
+	}
+
+	// Another process, which now gets past the gate, waits for goose's lock
+	// and finds the migration applied.
+	second, migrated, err := open(t.Context(), Options{URL: url}, files, 10*time.Second)
+	if err != nil {
+		t.Fatalf("the second process: %v", err)
+	}
+	closeStore(t, second)
+	if len(migrated.Applied) != 0 || migrated.Version != 2 {
+		t.Errorf("the second process migrated %+v, want nothing applied, at version 2", migrated)
+	}
+	if err := <-first; err == nil || !strings.Contains(err.Error(), "the migrations were applied, but the connection that held the database's lock broke meanwhile") {
+		t.Errorf("the first process = %v, want it to say it lost its lock after migrating", err)
+	}
+	if got := query(t, pool, "SELECT url FROM netbox_trueup_ai.sources"); !slices.Equal(got, []string{"https://git.example.com/lib.git/x"}) {
+		t.Errorf("the migrated URL = %v, want it changed once", got)
+	}
+	if n := query(t, pool, "SELECT count(*) FROM netbox_trueup_ai.goose_db_version WHERE version_id = 2"); !slices.Equal(n, []string{"1"}) {
+		t.Errorf("migration 2 is recorded %v times, want once", n)
+	}
+}
+
+func TestServerTimeouts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle_session_timeout doesn't end a store's lock", func(t *testing.T) {
+		t.Parallel()
+		database := srv.NewDatabase(t)
+		srv.Exec(t, "postgres", "ALTER DATABASE "+database+" SET idle_session_timeout = '300ms'")
+		url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+		s := openURL(t, url)
+		time.Sleep(time.Second)
+		files := withMigration(t, "00002_x.sql", "-- +goose Up\n")
+		if _, _, err := open(t.Context(), Options{URL: url}, files, time.Second); !errors.Is(err, errTimeout) {
+			t.Errorf("migrating while an idle store is open = %v, want it to wait and give up", err)
+		}
+		if _, err := s.Sources(t.Context()); err != nil {
+			t.Errorf("Sources on the idle store: %v", err)
+		}
+	})
+
+	t.Run("statement_timeout doesn't cut waits or migrations short", func(t *testing.T) {
+		t.Parallel()
+		database := srv.NewDatabase(t)
+		srv.Exec(t, "postgres", "ALTER DATABASE "+database+" SET statement_timeout = '200ms'")
+		url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+		migrating, err := pgx.Connect(t.Context(), url.Reveal())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = migrating.Close(context.Background()) }()
+		if err := exclusive(gateKey).acquire(t.Context(), migrating, 0, nil); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, _, err = open(t.Context(), Options{URL: url}, withMigration(t, "00002_x.sql", "-- +goose Up\n"), time.Second)
+		if !errors.Is(err, errTimeout) || time.Since(start) < time.Second {
+			t.Errorf("Open while the gate is held = %v after %v, want it to wait its second and give up", err, time.Since(start))
+		}
+		if err := exclusive(gateKey).release(t.Context(), migrating); err != nil {
+			t.Fatal(err)
+		}
+		slow := withMigration(t, "00002_slow.sql", "-- +goose Up\nSELECT pg_sleep(0.5);\n")
+		s, _, err := open(t.Context(), Options{URL: url}, slow, time.Second)
+		if err != nil {
+			t.Fatalf("a migration that takes longer than statement_timeout: %v", err)
+		}
+		closeStore(t, s)
+	})
+
+	t.Run("a migration waits only so long for a table", func(t *testing.T) {
+		t.Parallel()
+		database := srv.NewDatabase(t)
+		url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+		closeStore(t, openURL(t, url))
+		// Another session reads the table, as pg_dump does.
+		reader, err := pgx.Connect(t.Context(), url.Reveal())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = reader.Close(context.Background()) }()
+		tx, err := reader.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		if _, err := tx.Exec(t.Context(), "LOCK TABLE netbox_trueup_ai.sources IN ACCESS SHARE MODE"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
+		_, _, err = open(ctx, Options{URL: url}, files, time.Second)
+		if err == nil || !strings.Contains(err.Error(), "migration 00002_more.sql waited over 1s for a table that another session holds, such as a pg_dump") {
+			t.Errorf("migrating while another session reads the table = %v", err)
+		}
+	})
 }

@@ -54,8 +54,11 @@ Chosen options: "a schema of its own, `netbox_trueup_ai`", "advisory locks, on a
 | 1 | the lock | shared by each open store, on a connection of its own, for as long as it is open; exclusively by a migration |
 | 2 | the gate | by a migration from before it waits for the lock until it is done; by each store for a moment as it opens |
 | 3 | connections | shared by each of a store's pooled connections; exclusively by a migration once it holds the lock |
+| 4, in PostgreSQL's form with one key | goose's | by goose, on the connection a migration runs on, before it reads which migrations are applied |
 
-A wait for a lock is a wait in PostgreSQL's queue for it, under `lock_timeout`, so that waiters get the lock in turn and the server ends the wait itself after 2 minutes. When a command is interrupted, pgx asks the server to cancel the wait, so that it doesn't keep its place in the queue. Each pooled connection also checks, as it connects, that the schema is at the version the store opened.
+A wait for a lock is a wait in PostgreSQL's queue for it, under `lock_timeout`, so that waiters get the lock in turn and the server ends the wait itself after 2 minutes; a `statement_timeout` set for the role or the database doesn't end it sooner. When a command is interrupted, pgx asks the server to cancel the wait, and the command waits for that request to go before it exits, so that the wait doesn't keep its place in the queue, holding the gate. Each pooled connection also checks, as it connects, that the schema is at the version the store opened. TrueUp turns `idle_session_timeout` off for its sessions, since the connection that holds a store's lock is idle while the store is open.
+
+The fourth key covers a migration whose process loses the connection that holds the other locks: goose's own connection, and its transaction, go on, so another process could otherwise pass the gate, read the version from before the migration, and apply it again. goose takes its lock on the connection it migrates through, and reads which migrations are applied only then. A migration's statements wait up to 2 minutes for a table that another session holds, such as one `pg_dump` reads, and then fail, saying so.
 
 The third key covers a store whose own connection is lost, through a network failure or `pg_terminate_backend`: its pooled connections still hold key 3, so a migration waits for them, and any connection the store opens after that fails. Pooled connections can't hold key 1 instead. PostgreSQL queues a request behind any waiting request it conflicts with, so while a migration waits for key 1, a running store's new connection would wait behind it, and the migration waits for that same store.
 
@@ -72,6 +75,7 @@ A session's advisory locks belong to its server connection. TrueUp therefore sup
 - Good, because a process that crashes releases its locks with its sessions, and an interrupted wait leaves nothing in the queue.
 - Bad, because a session whose client host vanishes keeps its locks until PostgreSQL notices, which with the operating system's TCP keepalive defaults can take hours. A migration then waits its 2 minutes and fails, saying other processes have the database open, and a database administrator can end the session with `pg_terminate_backend`.
 - Bad, because transaction pooling isn't supported, and nothing detects it.
+- Bad, because PostgreSQL's own messages, such as a failed login's, name the role. TrueUp prints neither the URL nor the password, and its locations name no user.
 - Bad, because, by default, the connection isn't verified: anyone on the network path can read or change what crosses it unless the URL asks for `verify-full`. This follows libpq, as the maintainer chose. configuration.md recommends `verify-full`.
 - Bad, because TrueUp needs the CREATE privilege on the database for its first migration, unless the schema is made for it.
 
@@ -107,3 +111,5 @@ A session's advisory locks belong to its server connection. TrueUp therefore sup
 - The lock queue: `LockAcquireExtended` in PostgreSQL's `src/backend/storage/lmgr/lock.c` treats a request that conflicts with a waiting one as a conflict, so `pg_try_advisory_lock_shared` fails while an exclusive request waits.
 - `CREATE SCHEMA IF NOT EXISTS` checks the CREATE privilege on the database before it looks for the schema, so TrueUp looks first.
 - pgx v5.11.0's `ParseConfig` defaults `sslmode` to `prefer` (`configTLS` in `pgconn/config.go`), and its connection errors name the user, so TrueUp prints neither the URL nor pgx's prefix.
+- When a context ends during a query, pgx closes the connection in the background (`asyncClose` in `pgconn/pgconn.go`), sending the cancel request from a goroutine that a process exiting at once would end; TrueUp waits for `CleanupDone`.
+- goose v3.29.0's providers take a session locker's lock on the connection they migrate through, before they read the applied versions (`initialize` in `provider_run.go`).

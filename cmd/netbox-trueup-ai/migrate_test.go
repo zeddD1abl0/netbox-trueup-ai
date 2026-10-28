@@ -102,7 +102,7 @@ func TestMigrateFailures(t *testing.T) {
 	}{
 		{
 			name: "a PostgreSQL URL that can't be used", env: []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=" + postgresURL + "?sslmode=bogus"},
-			wantCode: exitConfig, wantStderr: "Error: database.url can't be used to connect to PostgreSQL: sslmode is invalid\n",
+			wantCode: exitConfig, wantStderr: "Error: database.url can't be used to connect to PostgreSQL: failed to configure TLS (sslmode is invalid)\n",
 		},
 		{
 			// Nothing listens on port 1, so connecting fails at once.

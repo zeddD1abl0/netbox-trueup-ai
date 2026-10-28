@@ -32,7 +32,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -103,16 +102,13 @@ func open(ctx context.Context, opts Options, files fs.FS, timeout time.Duration)
 		return nil, migrated, err
 	}
 
-	// When ctx ends during a query, such as a wait for a lock, pgx closes
-	// the connection and asks the server to cancel the query, so that the
-	// wait doesn't keep its place in the lock's queue.
 	lock, err := pgx.ConnectConfig(ctx, cfg.ConnConfig)
 	if err != nil {
 		return nil, migrated, fmt.Errorf("connect to the database at %s: %w", migrated.Location, withoutUser(err))
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, closeLock(ctx, lock))
+			err = errors.Join(err, closeLock(ctx, lock, "release the database's lock"))
 		}
 	}()
 	if err := checkDatabase(ctx, lock, migrated.Location, logger); err != nil {
@@ -158,24 +154,32 @@ func guardConn(known int64) func(context.Context, *pgx.Conn) error {
 // lock that holds off migrations.
 func (s *Store) Close() error {
 	s.pool.Close()
-	return closeLock(context.Background(), s.lock)
+	return closeLock(context.Background(), s.lock, "the connection that held off migrations broke while the database was open")
 }
 
 // closeLock releases the locks the lock connection holds and closes it, even
-// once ctx has ended. Closing alone would release them too, but only once
-// the server notices, so a migration that waits for them goes ahead as soon
-// as this returns.
-func closeLock(ctx context.Context, conn *pgx.Conn) error {
+// once ctx has ended, and says why it couldn't release them with failed.
+// Closing alone would release them too, but only once the server notices,
+// so a migration that waits for them goes ahead as soon as this returns.
+func closeLock(ctx context.Context, conn *pgx.Conn, failed string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
 	defer cancel()
 	var err error
 	if !conn.IsClosed() {
 		if _, unlockErr := conn.Exec(ctx, "SELECT pg_advisory_unlock_all()"); unlockErr != nil {
-			err = fmt.Errorf("release the database's lock: %w", unlockErr)
+			err = fmt.Errorf("%s: %w", failed, unlockErr)
 		}
 	}
 	if closeErr := conn.Close(ctx); closeErr != nil {
 		err = errors.Join(err, fmt.Errorf("close the database's connection: %w", closeErr))
+	}
+	// When ctx ended during a query, such as a wait for a lock, pgx closed
+	// the connection in the background, asking the server to cancel the
+	// query. Waiting for that keeps a process that exits next from leaving
+	// the server to wait on for the lock, holding the gate.
+	select {
+	case <-conn.PgConn().CleanupDone():
+	case <-ctx.Done():
 	}
 	return err
 }
@@ -327,18 +331,15 @@ func (s *Store) Snapshot(ctx context.Context, source string) (store.Snapshot, er
 
 // RemoveSources removes every source not named in keep, and its snapshot,
 // in one transaction. Foreign keys don't cascade, so it deletes each
-// source's rows from the bottom up, having locked every source's row first.
+// source's rows from the bottom up, having locked the sources' rows first.
 func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, error) {
 	var removed []string
 	err := s.inTx(ctx, pgx.TxOptions{}, func(q *postgresdb.Queries) error {
-		names, err := q.ListSourceNames(ctx)
+		names, err := q.LockSourcesToRemove(ctx, keep)
 		if err != nil {
 			return err
 		}
 		for _, name := range names {
-			if slices.Contains(keep, name) {
-				continue
-			}
 			for _, del := range []func(context.Context, string) error{
 				q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,
 			} {

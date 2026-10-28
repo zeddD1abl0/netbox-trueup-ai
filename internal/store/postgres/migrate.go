@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 )
@@ -41,7 +42,12 @@ var migrationFiles embed.FS
 //     that open meanwhile don't keep a migration waiting for ever;
 //   - connKey is held shared by each pooled connection, and exclusively by a
 //     migration once it holds lockKey, so that a migration also waits for
-//     the connections of a store whose own connection was lost.
+//     the connections of a store whose own connection was lost;
+//   - gooseKey, in PostgreSQL's form with one key, is goose's: it holds it on
+//     the connection it migrates through, and reads the schema's version only
+//     then, so that two processes never apply one migration even if the
+//     connection that holds the others breaks while a migration runs, which
+//     leaves the migration's own connection, and its transaction, alone.
 //
 // A store's pooled connections can't hold lockKey themselves: PostgreSQL
 // queues a request behind any waiting one it conflicts with, so a store's
@@ -53,6 +59,7 @@ const (
 	lockKey   int32 = 1
 	gateKey   int32 = 2
 	connKey   int32 = 3
+	gooseKey        = int64(lockClass)<<32 | 4
 )
 
 // lockTimeout is the longest to wait for a lock: for a migration to finish,
@@ -103,9 +110,10 @@ func (e *heldError) Unwrap() error { return errTimeout }
 
 // acquire takes the lock on conn, for its session, waiting up to timeout for
 // other sessions to release it, and calling notice, if not nil, once it has
-// waited for noticeAfter. notice can run on another goroutine. It waits in PostgreSQL's queue for the lock, so that waiters get it
-// in turn, and lock_timeout ends the wait on the server too, even if this
-// process goes away without a word while it waits.
+// waited for noticeAfter. notice can run on another goroutine. It waits in
+// PostgreSQL's queue for the lock, so that waiters get it in turn, and
+// lock_timeout ends the wait on the server too, even if this process goes
+// away without a word while it waits.
 func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Duration, notice func()) error {
 	var ok bool
 	if err := conn.QueryRow(ctx, l.try, lockClass, l.key).Scan(&ok); err != nil {
@@ -124,16 +132,22 @@ func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Dura
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		// For this transaction alone. The lock lasts beyond it, as a
-		// session's advisory locks do.
-		if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true)", strconv.FormatInt(timeout.Milliseconds(), 10)+"ms"); err != nil {
+		// session's advisory locks do. A statement_timeout of the role's or
+		// the database's would end the wait sooner, and say less.
+		if _, err := tx.Exec(ctx, "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', '0', true)", milliseconds(timeout)); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, l.wait, lockClass, l.key)
-		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "55P03" { // lock_not_available
+		if isLockTimeout(err) {
 			return errTimeout
 		}
 		return err
 	})
+}
+
+// milliseconds gives d as a setting such as lock_timeout takes it.
+func milliseconds(d time.Duration) string {
+	return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 }
 
 // release releases the lock on conn.
@@ -249,7 +263,7 @@ func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files 
 	// doesn't wait for this session's own shared one, and no other session
 	// waits for what this one holds but those that wait for the gate, which
 	// hold nothing yet, so nothing deadlocks.
-	if migrated.Applied, err = migrateExclusively(ctx, conn, cfg, files, known, timeout, log); err != nil {
+	if migrated.Applied, err = migrateExclusively(ctx, conn, cfg, files, known, timeout, log, migrated.Location); err != nil {
 		return err
 	}
 	if migrated.Version, err = schemaVersion(ctx, conn); err != nil {
@@ -266,8 +280,9 @@ func openSchema(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files 
 // other store has the database open, and then connKey, which waits until no
 // other store's pooled connection does. It migrates through a pool of
 // connections of its own, closed afterwards, so that no setting a migration
-// changes outlives it.
-func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files fs.FS, known int64, timeout time.Duration, log *slog.Logger) (_ []store.Migration, err error) {
+// changes outlives it, under goose's own lock, gooseKey. A migration's
+// statements wait up to timeout for a table another session holds.
+func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig, files fs.FS, known int64, timeout time.Duration, log *slog.Logger, where string) (_ []store.Migration, err error) {
 	var once sync.Once
 	notice := func() {
 		once.Do(func() { log.Info("waiting for other TrueUp processes to close the database, to migrate it") })
@@ -278,19 +293,47 @@ func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig
 		if err := l.acquire(ctx, conn, time.Until(deadline), notice); err != nil {
 			return nil, lockError(ctx, err, held)
 		}
+		// After a failure, the caller closes conn, which releases it. The
+		// migrations were applied, if release fails, under goose's lock.
 		defer func() {
+			if err != nil {
+				return
+			}
 			if unlockErr := l.release(ctx, conn); unlockErr != nil {
-				err = errors.Join(err, fmt.Errorf("release the database's lock: %w", unlockErr))
+				err = fmt.Errorf("the migrations were applied, but the connection that held the database's lock broke meanwhile: %w", unlockErr)
 			}
 		}()
+	}
+	// The schema may have changed since checkDatabase looked, before the
+	// gate.
+	if err := checkOwner(ctx, conn, where); err != nil {
+		return nil, err
 	}
 	if err := createSchema(ctx, conn); err != nil {
 		return nil, err
 	}
-	db := stdlib.OpenDB(*cfg)
+	migrationCfg := cfg.Copy()
+	migrationCfg.AfterConnect = func(ctx context.Context, c *pgconn.PgConn) error {
+		if err := setSession(ctx, c); err != nil {
+			return err
+		}
+		// A role's statement_timeout could cut a migration short.
+		if _, err := c.Exec(ctx, "SELECT set_config('lock_timeout', '"+milliseconds(timeout)+"', false), set_config('statement_timeout', '0', false)").ReadAll(); err != nil {
+			return fmt.Errorf("set the migration's timeouts: %w", err)
+		}
+		return nil
+	}
+	db := stdlib.OpenDB(*migrationCfg)
 	defer func() { err = errors.Join(err, db.Close()) }()
-	p, err := goose.NewProvider(goose.DialectPostgres, db, files,
-		goose.WithDisableGlobalRegistry(true), goose.WithTableName(Schema+".goose_db_version"))
+	// goose's lock is free unless the connection that holds the others has
+	// broken, so a wait for it is rare and short.
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(gooseKey),
+		lock.WithLockTimeout(1, uint64(max(1, time.Until(deadline)/time.Second))))
+	if err != nil {
+		return nil, fmt.Errorf("set up goose's lock: %w", err)
+	}
+	p, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true),
+		goose.WithTableName(Schema+".goose_db_version"), goose.WithSessionLocker(locker))
 	if err != nil {
 		return nil, fmt.Errorf("read the migrations: %w", err)
 	}
@@ -319,13 +362,23 @@ func migrateExclusively(ctx context.Context, conn *pgx.Conn, cfg *pgx.ConnConfig
 		log.Info("applied a database migration", "version", m.Version, "migration", m.Name, "duration", r.Duration)
 	}
 	switch {
+	case isPartial && isLockTimeout(partial.Err):
+		return applied, fmt.Errorf("migrate the database's schema from version %d: migration %s waited over %s for a table that another session holds, such as a pg_dump: try again once it is done: %w",
+			before, path.Base(partial.Failed.Source.Path), timeout, withoutUser(partial.Err))
 	case isPartial:
 		return applied, fmt.Errorf("migrate the database's schema from version %d: migration %s failed: %w",
-			before, path.Base(partial.Failed.Source.Path), partial.Err)
+			before, path.Base(partial.Failed.Source.Path), withoutUser(partial.Err))
 	case err != nil:
 		return applied, fmt.Errorf("migrate the database's schema from version %d: %w", before, withoutUser(err))
 	}
 	return applied, nil
+}
+
+// isLockTimeout reports whether err is PostgreSQL's lock_not_available, which
+// lock_timeout raises.
+func isLockTimeout(err error) bool {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && pgErr.Code == "55P03"
 }
 
 // createSchema creates TrueUp's schema, where goose keeps its table, if it

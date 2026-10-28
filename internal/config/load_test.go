@@ -759,9 +759,20 @@ func TestLoadProblems(t *testing.T) {
 		},
 		{
 			name:   "a database URL that doesn't parse",
-			in:     input{env: []string{"TRUEUP_DATABASE_URL=postgres://trueup:s3cret@db.example.com:port/trueup"}},
+			in:     input{env: []string{"TRUEUP_DATABASE_URL=sqlite://trueup:s3cret@db.example.com:port/trueup.db"}},
 			want:   []string{"database.url (env TRUEUP_DATABASE_URL): is not a valid URL; percent-encode any special characters in the password"},
 			secret: "s3cret",
+		},
+		{
+			name:   "a PostgreSQL URL that libpq would misread",
+			in:     input{env: []string{"TRUEUP_DATABASE_URL=postgres://trueup:s3/cret@db.example.com/trueup"}},
+			want:   []string{"database.url (env TRUEUP_DATABASE_URL): has an @ where libpq would read the host or the database's name, and so part of the password: percent-encode special characters in the password, such as @ as %40, / as %2F, ? as %3F and # as %23"},
+			secret: "cret",
+		},
+		{
+			name: "a PostgreSQL URL without its slashes",
+			in:   input{env: []string{"TRUEUP_DATABASE_URL=postgres:trueup"}},
+			want: []string{"database.url (env TRUEUP_DATABASE_URL): must start postgres:// or postgresql://, as in postgres://db.example.com/trueup"},
 		},
 		{
 			name: "a sqlite URL that doesn't give an absolute path",

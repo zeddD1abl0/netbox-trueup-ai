@@ -18,20 +18,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
-	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
-	mobynetwork "github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/localdocker"
 )
 
 // Version is the NetBox release that tests run against: the project's target
@@ -74,7 +71,7 @@ func start(ctx context.Context, compose []byte) (_ *NetBox, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose.yaml: %w", err)
 	}
-	if err := checkLocalDocker(); err != nil {
+	if err := localdocker.Check("NetBox"); err != nil {
 		return nil, err
 	}
 
@@ -141,50 +138,6 @@ func (nb *NetBox) Stop(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// checkLocalDocker fails early unless the Docker daemon runs on this machine,
-// where ports published on 127.0.0.1 can be reached.
-func checkLocalDocker() error {
-	p, err := testcontainers.NewDockerProvider()
-	if err != nil {
-		return fmt.Errorf("connect to Docker: %w", err)
-	}
-	defer func() { _ = p.Close() }()
-	override, overridden := os.LookupEnv("TESTCONTAINERS_HOST_OVERRIDE")
-	return localDocker(p.Client().DaemonHost(), override, overridden)
-}
-
-// localDocker checks the daemon's address, such as unix:///var/run/docker.sock
-// or tcp://127.0.0.1:2375, and the host testcontainers-go would reach ports on.
-func localDocker(daemon, override string, overridden bool) error {
-	const why = "netboxtest publishes NetBox only on 127.0.0.1, so it needs a Docker daemon on this machine"
-	u, err := url.Parse(daemon)
-	if err != nil {
-		return fmt.Errorf("the Docker daemon's address %q: %w", daemon, err)
-	}
-	switch u.Scheme {
-	case "unix", "npipe":
-	case "tcp", "http", "https":
-		if !isLoopbackHost(u.Hostname()) {
-			return fmt.Errorf("the Docker daemon is at %s, but %s", daemon, why)
-		}
-	default:
-		return fmt.Errorf("the Docker daemon is at %s, but %s", daemon, why)
-	}
-	if overridden && !isLoopbackHost(override) {
-		return fmt.Errorf("TESTCONTAINERS_HOST_OVERRIDE is %q, but %s", override, why)
-	}
-	return nil
-}
-
-// isLoopbackHost reports whether host, a name or address, is this machine.
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	return err == nil && ip.Unmap().IsLoopback()
-}
-
 // startService runs one service from compose.yaml and waits until its health
 // check passes, as `docker compose up --wait` does. It returns the container
 // whenever one was created, even with an error, so that it can be removed.
@@ -207,7 +160,7 @@ func startService(ctx context.Context, nw *testcontainers.DockerNetwork, name st
 			}
 		}),
 		testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
-			hc.PortBindings = loopbackBindings(ports)
+			hc.PortBindings = localdocker.Bindings(ports)
 		}),
 		// Runs once the container has started, before the wait below.
 		testcontainers.WithAdditionalLifecycleHooks(testcontainers.ContainerLifecycleHooks{
@@ -231,15 +184,6 @@ func startService(ctx context.Context, nw *testcontainers.DockerNetwork, name st
 	return ctr, nil
 }
 
-// loopbackBindings publishes each port on a random port of 127.0.0.1.
-func loopbackBindings(ports []string) mobynetwork.PortMap {
-	bindings := mobynetwork.PortMap{}
-	for _, p := range ports {
-		bindings[mobynetwork.MustParsePort(p)] = []mobynetwork.PortBinding{{HostIP: netip.AddrFrom4([4]byte{127, 0, 0, 1})}}
-	}
-	return bindings
-}
-
 // checkStarted checks that Docker did what netboxtest asked: every port
 // published on 127.0.0.1 only, and the container on the stack's network
 // under its service name. Both rest on how testcontainers-go merges its own
@@ -253,12 +197,8 @@ func checkStarted(ctx context.Context, c testcontainers.Container, networkName, 
 	if info.NetworkSettings == nil {
 		return errors.New("no network settings reported for the container")
 	}
-	for port, bindings := range info.NetworkSettings.Ports {
-		for _, b := range bindings {
-			if !b.HostIP.Unmap().IsLoopback() {
-				return fmt.Errorf("port %s is published on %s, not 127.0.0.1", port, b.HostIP)
-			}
-		}
+	if err := localdocker.CheckPorts(info.NetworkSettings.Ports); err != nil {
+		return err
 	}
 	ep, ok := info.NetworkSettings.Networks[networkName]
 	if !ok || ep == nil {

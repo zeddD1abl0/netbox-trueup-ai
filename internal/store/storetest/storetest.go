@@ -441,8 +441,10 @@ func testReadsAgree(t *testing.T, s store.Store) {
 	defer wg.Wait()
 	defer close(stop)
 	start := time.Now()
+	versions := map[string]bool{}
 	for reads := 0; reads < 20 || time.Since(start) < time.Second; reads++ {
 		snap := snapshot(t, s, "lib")
+		versions[snap.Version] = true
 		var i int
 		if _, err := fmt.Sscanf(snap.Version, "v%d", &i); err != nil {
 			t.Fatalf("Snapshot returned version %q", snap.Version)
@@ -450,6 +452,10 @@ func testReadsAgree(t *testing.T, s store.Store) {
 		if diff := cmp.Diff(snapshotOf(fetch(i)), snap, equateEmpty); diff != "" {
 			t.Fatalf("read %d: a snapshot mixes fetches (-want +got):\n%s", reads, diff)
 		}
+	}
+	// Otherwise no read overlapped a write, and the test proved nothing.
+	if len(versions) < 3 {
+		t.Errorf("the reads saw %d versions, want at least 3", len(versions))
 	}
 }
 

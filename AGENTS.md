@@ -39,6 +39,7 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 | `internal/netboxtest/` | The disposable NetBox: `compose.yaml`, and the package that starts it for integration tests and seeds it. See its README |
 | `internal/source/` | Sources: snapshots, file listings, path checks and limits for every kind ([ADR 0009](docs/adr/0009-source-kinds-and-format-adapters.md)); `source/git/` is the Git kind ([ADR 0020](docs/adr/0020-git-sources-with-go-git.md)) |
 | `internal/glob/` | Include and exclude patterns, with `**` |
+| `internal/localdocker/` | Checks that tests' containers run on this machine's Docker and publish ports on 127.0.0.1 only, for `netboxtest` and `pgtest` |
 | `internal/filelock/` | Operating system file locks, shared and exclusive |
 | `internal/store/` | The storage interface; `store/sqlite/` and `store/postgres/` are the engines, each with its migrations, queries and sqlc's generated package, `store/engine/` chooses the engine, `store/storetest/` holds the tests every engine runs, and `store/postgres/pgtest/` starts PostgreSQL for them ([ADR 0011](docs/adr/0011-store-state-with-sqlc-and-goose.md), [ADR 0021](docs/adr/0021-forward-only-migrations-when-opening.md), [ADR 0022](docs/adr/0022-postgresql-schema-and-advisory-locks.md)) |
 | `docs/` | Documentation. `docs/architecture.md` describes the design, `docs/roadmap.md` the planned steps, `docs/adr/` holds decision records, and `docs/tooling.md` lists every tool and why it was chosen |

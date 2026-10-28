@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,46 +44,74 @@ func (e *ConfigError) Error() string { return e.msg }
 // connection: its schema as the search_path, a connect timeout and its
 // application name.
 func parseURL(u config.Secret) (*pgxpool.Config, error) {
+	if problem := config.PostgresURLProblem(u.Reveal()); problem != "" {
+		return nil, &ConfigError{"database.url " + problem}
+	}
 	cfg, err := pgxpool.ParseConfig(u.Reveal())
 	if err != nil {
 		return nil, parseError(err)
 	}
 	conn := cfg.ConnConfig
-	if conn.ConnectTimeout == 0 {
+	if !connectTimeoutSet(u.Reveal()) {
 		conn.ConnectTimeout = connectTimeout
 	}
 	if conn.RuntimeParams["application_name"] == "" {
 		conn.RuntimeParams["application_name"] = applicationName
 	}
-	// A search_path in the URL's options, the role's settings or a pooler's
-	// would otherwise decide where tables go, so it is set as each
-	// connection opens instead of passed along as a startup parameter,
-	// which some poolers drop.
-	conn.AfterConnect = setSearchPath
+	conn.AfterConnect = setSession
 	return cfg, nil
 }
 
-// setSearchPath makes TrueUp's schema the only one where a name without a
-// schema is looked for. That also keeps objects that others can create, as
-// in public, from standing in for TrueUp's.
-func setSearchPath(ctx context.Context, conn *pgconn.PgConn) error {
-	if _, err := conn.Exec(ctx, "SET search_path TO "+Schema).ReadAll(); err != nil {
-		return fmt.Errorf("set the search path: %w", err)
+// connectTimeoutSet reports whether the URL or libpq's environment sets
+// connect_timeout. 0 is a setting too: it means no limit.
+func connectTimeoutSet(raw string) bool {
+	if os.Getenv("PGCONNECT_TIMEOUT") != "" {
+		return true
+	}
+	_, query, _ := strings.Cut(raw, "?")
+	q, err := url.ParseQuery(query)
+	return err == nil && q.Has("connect_timeout")
+}
+
+// setSession sets up each connection as it opens:
+//
+//   - TrueUp's schema is the only one where a name without a schema is looked
+//     for, which also keeps objects that others can create, as in public,
+//     from standing in for TrueUp's. A search_path in the URL's options, the
+//     role's settings or a pooler's would otherwise decide where tables go,
+//     so it is set here rather than passed along as a startup parameter,
+//     which some poolers drop.
+//   - idle_session_timeout is off, from PostgreSQL 14, which has it: the
+//     connection that holds a store's lock is idle for as long as the store
+//     is open, and the server would end it, and the lock with it.
+func setSession(ctx context.Context, conn *pgconn.PgConn) error {
+	const sql = "SET search_path TO " + Schema + "; " +
+		"SELECT set_config('idle_session_timeout', '0', false) WHERE current_setting('server_version_num')::integer >= 140000"
+	if _, err := conn.Exec(ctx, sql).ReadAll(); err != nil {
+		return fmt.Errorf("set up the session: %w", err)
 	}
 	return nil
 }
 
-// parseError describes why pgx can't read database.url. pgx's own message
-// repeats the URL, with the password hidden but the user name not, and the
-// error from url.Parse that it wraps repeats it whole, so only what follows
-// is kept, when it is safe.
+// parseError describes why pgx can't read database.url. pgx's message quotes
+// the URL, with the password hidden but the user name not, so it is made
+// again without the URL. When the URL itself can't be read, pgx's reason can
+// quote a part of it, such as the user name, and url.Parse's, should pgx
+// wrap one, quotes it whole, so then only a hint is given.
 func parseError(err error) error {
 	const msg = "database.url can't be used to connect to PostgreSQL"
-	inner := errors.Unwrap(err)
-	if _, isURL := errors.AsType[*url.Error](inner); inner == nil || isURL {
-		return &ConfigError{msg + ": check its host, port and parameters"}
+	const hint = msg + ": it isn't a URL that libpq would read: check its percent-encoding, host and port"
+	pce, ok := errors.AsType[*pgconn.ParseConfigError](err)
+	if _, isURL := errors.AsType[*url.Error](err); !ok || isURL {
+		return &ConfigError{hint}
 	}
-	return &ConfigError{msg + ": " + inner.Error()}
+	without := *pce
+	without.ConnString = ""
+	reason := strings.TrimPrefix(without.Error(), "cannot parse ``: ")
+	if strings.HasPrefix(reason, "failed to parse as URL") {
+		return &ConfigError{hint}
+	}
+	return &ConfigError{msg + ": " + reason}
 }
 
 // location says where the database is, for people and scripts: a postgres

@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -22,14 +21,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/api/types/container"
-	mobynetwork "github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/localdocker"
 )
 
 //go:embed compose.yaml
@@ -76,7 +76,7 @@ func Start(ctx context.Context) (_ *Server, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkLocalDocker(); err != nil {
+	if err := localdocker.Check("PostgreSQL"); err != nil {
 		return nil, err
 	}
 	const port = "5432/tcp"
@@ -84,9 +84,7 @@ func Start(ctx context.Context) (_ *Server, err error) {
 		testcontainers.WithEnv(map[string]string{"POSTGRES_PASSWORD": SuperuserPassword}),
 		testcontainers.WithExposedPorts(port),
 		testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
-			hc.PortBindings = mobynetwork.PortMap{
-				mobynetwork.MustParsePort(port): {{HostIP: netip.AddrFrom4([4]byte{127, 0, 0, 1})}},
-			}
+			hc.PortBindings = localdocker.Bindings([]string{port})
 		}),
 		// Durability doesn't matter for a server that tests throw away.
 		testcontainers.WithCmd("postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"),
@@ -108,7 +106,14 @@ func Start(ctx context.Context) (_ *Server, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("start PostgreSQL: %w", err)
 	}
-	if err := checkLoopback(ctx, ctr); err != nil {
+	info, err := ctr.Inspect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect PostgreSQL's container: %w", err)
+	}
+	if info.NetworkSettings == nil {
+		return nil, errors.New("no network settings reported for PostgreSQL's container")
+	}
+	if err := localdocker.CheckPorts(info.NetworkSettings.Ports); err != nil {
 		return nil, err
 	}
 	mapped, err := ctr.MappedPort(ctx, port)
@@ -201,8 +206,12 @@ func (s *Server) Exec(t testing.TB, database, sql string) {
 		}
 		return
 	}
-	pool := s.Pool(t, database)
-	if _, err := pool.Exec(t.Context(), sql); err != nil {
+	conn, err := pgx.Connect(t.Context(), s.URL(Superuser, SuperuserPassword, database))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(t.Context())) }()
+	if _, err := conn.Exec(t.Context(), sql); err != nil {
 		t.Fatalf("%s: %v", sql, err)
 	}
 }
@@ -218,61 +227,4 @@ func (s *Server) Pool(t testing.TB, database string) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
-}
-
-// checkLocalDocker fails early unless the Docker daemon runs on this machine,
-// where a port published on 127.0.0.1 can be reached.
-func checkLocalDocker() error {
-	p, err := testcontainers.NewDockerProvider()
-	if err != nil {
-		return fmt.Errorf("connect to Docker: %w", err)
-	}
-	defer func() { _ = p.Close() }()
-	const why = "pgtest publishes PostgreSQL only on 127.0.0.1, so it needs a Docker daemon on this machine"
-	daemon := p.Client().DaemonHost()
-	u, err := url.Parse(daemon)
-	if err != nil {
-		return fmt.Errorf("the Docker daemon's address %q: %w", daemon, err)
-	}
-	switch u.Scheme {
-	case "unix", "npipe":
-	case "tcp", "http", "https":
-		if !isLoopback(u.Hostname()) {
-			return fmt.Errorf("the Docker daemon is at %s, but %s", daemon, why)
-		}
-	default:
-		return fmt.Errorf("the Docker daemon is at %s, but %s", daemon, why)
-	}
-	if override, ok := os.LookupEnv("TESTCONTAINERS_HOST_OVERRIDE"); ok && !isLoopback(override) {
-		return fmt.Errorf("TESTCONTAINERS_HOST_OVERRIDE is %q, but %s", override, why)
-	}
-	return nil
-}
-
-// checkLoopback checks that Docker published every port on 127.0.0.1 only,
-// since that rests on how testcontainers-go merges its own defaults.
-func checkLoopback(ctx context.Context, c testcontainers.Container) error {
-	info, err := c.Inspect(ctx)
-	if err != nil {
-		return fmt.Errorf("inspect the container: %w", err)
-	}
-	if info.NetworkSettings == nil {
-		return errors.New("no network settings reported for the container")
-	}
-	for port, bindings := range info.NetworkSettings.Ports {
-		for _, b := range bindings {
-			if !b.HostIP.Unmap().IsLoopback() {
-				return fmt.Errorf("port %s is published on %s, not 127.0.0.1", port, b.HostIP)
-			}
-		}
-	}
-	return nil
-}
-
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	return err == nil && ip.Unmap().IsLoopback()
 }

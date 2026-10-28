@@ -23,7 +23,9 @@ func TestLocation(t *testing.T) {
 	}{
 		{"a host", "postgres://trueup-user:s3cret@db.example.com/trueup", "postgres://db.example.com:5432/trueup"},
 		{"postgresql, and a port", "postgresql://trueup-user:s3cret@db.example.com:5433/trueup?sslmode=require", "postgres://db.example.com:5433/trueup"},
+		// url.Parse refuses these two, which libpq takes.
 		{"several hosts", "postgres://trueup-user:s3cret@db1.example.com:5433,db2.example.com/trueup", "postgres://db1.example.com:5433,db2.example.com:5432/trueup"},
+		{"several IPv6 addresses", "postgres://trueup-user:s3cret@[2001:db8::1]:5432,[2001:db8::2]:5433/trueup", "postgres://[2001:db8::1]:5432,[2001:db8::2]:5433/trueup"},
 		{"an IPv6 address", "postgres://trueup-user:s3cret@[2001:db8::1]/trueup?sslmode=disable", "postgres://[2001:db8::1]:5432/trueup"},
 		{"a Unix socket", "postgres:///trueup?host=/var/run/postgresql&user=trueup-user&password=s3cret", "postgres:///trueup?host=%2Fvar%2Frun%2Fpostgresql&port=5432"},
 		{"a name to escape", "postgres://trueup-user:s3cret@db.example.com/trueup%20test", "postgres://db.example.com:5432/trueup%20test"},
@@ -52,11 +54,17 @@ func TestParseURLErrors(t *testing.T) {
 	tests := []struct {
 		name, url, want string
 	}{
-		{"an unknown sslmode", "postgres://trueup-user:s3cret@db.example.com/trueup?sslmode=bogus", "database.url can't be used to connect to PostgreSQL: sslmode is invalid"},
-		{"a connect_timeout that isn't a number", "postgres://trueup-user:s3cret@db.example.com/trueup?connect_timeout=soon", "database.url can't be used to connect to PostgreSQL: strconv.ParseInt"},
-		// url.Parse's error repeats the whole URL.
-		{"a port that isn't a number", "postgres://trueup-user:s3cret@db.example.com:port/trueup", "database.url can't be used to connect to PostgreSQL: check its host, port and parameters"},
-		{"more ports than hosts", "postgres:///trueup?host=a.example.com,b.example.com&port=1,2,3&user=trueup-user&password=s3cret", "database.url can't be used to connect to PostgreSQL: check its host, port and parameters"},
+		{"an unknown sslmode", "postgres://trueup-user:s3cret@db.example.com/trueup?sslmode=bogus", "database.url can't be used to connect to PostgreSQL: failed to configure TLS (sslmode is invalid)"},
+		{"a connect_timeout that isn't a number", "postgres://trueup-user:s3cret@db.example.com/trueup?connect_timeout=soon", "database.url can't be used to connect to PostgreSQL: invalid connect_timeout (strconv.ParseInt"},
+		{"more ports than hosts", "postgres:///trueup?host=a.example.com,b.example.com&port=1,2,3&user=trueup-user&password=s3cret", "database.url can't be used to connect to PostgreSQL: could not match 3 port numbers to 2 hosts"},
+		{"an unknown target_session_attrs", "postgres://trueup-user:s3cret@db.example.com/trueup?target_session_attrs=bogus", "database.url can't be used to connect to PostgreSQL: unknown target_session_attrs value: bogus"},
+		{"a pool size that isn't a number", "postgres://trueup-user:s3cret@db.example.com/trueup?pool_max_conns=many", "database.url can't be used to connect to PostgreSQL: cannot parse pool_max_conns"},
+		{"a port that isn't a number", "postgres://trueup-user:s3cret@db.example.com:port/trueup", "database.url can't be used to connect to PostgreSQL: invalid port"},
+		// When the URL itself can't be read, pgx can quote the user name.
+		{"an escape that isn't one", "postgres://trueup-user:s3cret@db.example.com/trueup%zz", "database.url can't be used to connect to PostgreSQL: it isn't a URL that libpq would read"},
+		{"an escape in the user name", "postgres://trueup-user%zz:s3cret@db.example.com/trueup", "it isn't a URL that libpq would read"},
+		{"an escape in the password", "postgres://trueup-user:s3cret%zz@db.example.com/trueup", "it isn't a URL that libpq would read"},
+		{"an IPv6 address without its bracket", "postgres://trueup-user:s3cret@[2001:db8::1/trueup", "it isn't a URL that libpq would read"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,6 +89,7 @@ func TestConnectionDefaults(t *testing.T) {
 	}{
 		{"TrueUp's defaults", "postgres://db.example.com/trueup", connectTimeout, applicationName},
 		{"the URL's", "postgres://db.example.com/trueup?connect_timeout=3&application_name=other", 3 * time.Second, "other"},
+		{"no connect timeout", "postgres://db.example.com/trueup?connect_timeout=0", 0, applicationName},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,5 +107,17 @@ func TestConnectionDefaults(t *testing.T) {
 				t.Error("connections don't set the search path")
 			}
 		})
+	}
+}
+
+func TestConnectTimeoutFromTheEnvironment(t *testing.T) {
+	// libpq's variable, which pgx reads, wins over TrueUp's default, 0 too.
+	t.Setenv("PGCONNECT_TIMEOUT", "0")
+	cfg, err := parseURL(config.NewSecret("postgres://db.example.com/trueup"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnConfig.ConnectTimeout != 0 {
+		t.Errorf("connect timeout %v, want none, as PGCONNECT_TIMEOUT says", cfg.ConnConfig.ConnectTimeout)
 	}
 }

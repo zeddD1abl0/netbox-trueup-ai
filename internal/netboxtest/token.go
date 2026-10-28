@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/localdocker"
 )
 
 // maxResponse caps how much of a NetBox response netboxtest reads. A token
@@ -130,7 +131,7 @@ func localEndpoint(baseURL, path string) (string, error) {
 	if u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return "", fmt.Errorf("NetBox URL %q must be http://HOST:PORT, with nothing else", baseURL)
 	}
-	if !isLoopbackHost(u.Hostname()) {
+	if !localdocker.IsLoopback(u.Hostname()) {
 		return "", fmt.Errorf("NetBox URL %q isn't on this machine; netboxtest only talks to a disposable local NetBox", baseURL)
 	}
 	return u.Scheme + "://" + u.Host + path, nil

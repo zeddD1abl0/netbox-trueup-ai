@@ -58,11 +58,15 @@ SELECT path, size, digest FROM snapshot_files WHERE source = $1 ORDER BY path;
 -- name: ListSnapshotSkipped :many
 SELECT path, reason FROM snapshot_skipped WHERE source = $1 ORDER BY seq;
 
--- name: ListSourceNames :many
--- Locks every source's row until the transaction ends, so that a fetch
--- being recorded meanwhile either finishes first, and is removed with the
--- rest, or waits, and records the source afresh.
-SELECT name FROM sources ORDER BY name FOR UPDATE;
+-- name: LockSourcesToRemove :many
+-- Returns the sources not named in keep, sorted, and locks their rows until
+-- the transaction ends, so that a fetch of one being recorded meanwhile
+-- either finishes first, and is removed with the rest, or waits, and records
+-- the source afresh. Fetches of the sources kept never wait.
+SELECT name FROM sources
+WHERE name <> ALL (coalesce(sqlc.arg(keep)::text[], '{}'))
+ORDER BY name
+FOR UPDATE;
 
 -- name: DeleteSnapshot :exec
 -- Deletes a source's snapshot, once its lists are deleted.

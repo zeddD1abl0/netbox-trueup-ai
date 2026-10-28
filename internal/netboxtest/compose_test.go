@@ -376,16 +376,3 @@ func TestStartOrder(t *testing.T) {
 		t.Errorf("startOrder (-want +got):\n%s", diff)
 	}
 }
-
-func TestLoopbackBindings(t *testing.T) {
-	t.Parallel()
-	got := loopbackBindings([]string{"8080/tcp", "5432/tcp"})
-	if len(got) != 2 {
-		t.Fatalf("loopbackBindings returned %d ports, want 2", len(got))
-	}
-	for port, bindings := range got {
-		if len(bindings) != 1 || bindings[0].HostIP.String() != "127.0.0.1" || bindings[0].HostPort != "" {
-			t.Errorf("port %v bindings = %+v, want one binding to 127.0.0.1 on a random port", port, bindings)
-		}
-	}
-}

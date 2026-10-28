@@ -52,18 +52,7 @@ func Open(ctx context.Context, cfg Config) (store.Store, store.Migrated, error) 
 	}
 	// Messages never repeat the URL, which can hold a password.
 	raw := cfg.URL.Reveal()
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, store.Migrated{}, &ConfigError{"database.url is not a valid URL"}
-	}
-	switch u.Scheme {
-	case "sqlite":
-		path, problem := config.SQLitePath(raw)
-		if problem != "" {
-			return nil, store.Migrated{}, &ConfigError{"database.url " + problem}
-		}
-		return openSQLite(ctx, path, cfg.Logger)
-	case "postgres", "postgresql":
+	if config.IsPostgresURL(raw) {
 		s, migrated, err := postgres.Open(ctx, postgres.Options{URL: cfg.URL, Logger: cfg.Logger})
 		if pgErr, ok := errors.AsType[*postgres.ConfigError](err); ok {
 			return nil, migrated, &ConfigError{pgErr.Error()}
@@ -72,9 +61,19 @@ func Open(ctx context.Context, cfg Config) (store.Store, store.Migrated, error) 
 			return nil, migrated, err
 		}
 		return s, migrated, nil
-	default:
-		return nil, store.Migrated{}, &ConfigError{"database.url must be a sqlite, postgres or postgresql URL"}
 	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, store.Migrated{}, &ConfigError{"database.url is not a valid URL"}
+	}
+	if u.Scheme != "sqlite" {
+		return nil, store.Migrated{}, &ConfigError{"database.url must be a sqlite URL, or start postgres:// or postgresql://"}
+	}
+	path, problem := config.SQLitePath(raw)
+	if problem != "" {
+		return nil, store.Migrated{}, &ConfigError{"database.url " + problem}
+	}
+	return openSQLite(ctx, path, cfg.Logger)
 }
 
 func openSQLite(ctx context.Context, path string, logger *slog.Logger) (store.Store, store.Migrated, error) {

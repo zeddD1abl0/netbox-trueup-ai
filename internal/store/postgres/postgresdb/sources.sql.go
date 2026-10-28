@@ -139,33 +139,6 @@ func (q *Queries) ListSnapshotSkipped(ctx context.Context, source string) ([]Lis
 	return items, nil
 }
 
-const listSourceNames = `-- name: ListSourceNames :many
-SELECT name FROM sources ORDER BY name FOR UPDATE
-`
-
-// Locks every source's row until the transaction ends, so that a fetch
-// being recorded meanwhile either finishes first, and is removed with the
-// rest, or waits, and records the source afresh.
-func (q *Queries) ListSourceNames(ctx context.Context) ([]string, error) {
-	rows, err := q.db.Query(ctx, listSourceNames)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		items = append(items, name)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listSources = `-- name: ListSources :many
 SELECT
     sources.name,
@@ -220,6 +193,37 @@ func (q *Queries) ListSources(ctx context.Context) ([]ListSourcesRow, error) {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSourcesToRemove = `-- name: LockSourcesToRemove :many
+SELECT name FROM sources
+WHERE name <> ALL (coalesce($1::text[], '{}'))
+ORDER BY name
+FOR UPDATE
+`
+
+// Returns the sources not named in keep, sorted, and locks their rows until
+// the transaction ends, so that a fetch of one being recorded meanwhile
+// either finishes first, and is removed with the rest, or waits, and records
+// the source afresh. Fetches of the sources kept never wait.
+func (q *Queries) LockSourcesToRemove(ctx context.Context, keep []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockSourcesToRemove, keep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -265,3 +265,34 @@ func TestErrorListsEveryProblem(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
+
+func TestPostgresURLProblem(t *testing.T) {
+	t.Parallel()
+	for raw, wantProblem := range map[string]bool{
+		"postgres://db.example.com/trueup":                                          false,
+		"postgresql://trueup:s3cret@db.example.com:5433/trueup?sslmode=verify-full": false,
+		// url.Parse refuses these, but libpq reads them.
+		"postgres://trueup:s3cret@db1.example.com:5433,db2.example.com/trueup":  false,
+		"postgres://trueup:s3cret@[2001:db8::1]:5432,[2001:db8::2]:5433/trueup": false,
+		"postgres://trueup:p%40ss%2Fword@db.example.com/trueup":                 false,
+		"postgres:///trueup?host=/var/run/postgresql":                           false,
+		// An @, / , ? or # in the password, not percent-encoded.
+		"postgres://trueup:p@ss@db.example.com/trueup":    true,
+		"postgres://trueup:20/24@db.example.com/trueup":   true,
+		"postgres://trueup:pa?ss@db.example.com/trueup":   true,
+		"postgres://trueup:pa#ss@db.example.com/trueup":   true,
+		"postgres://db.example.com/trueup?user=me@x.test": true,
+	} {
+		if got := PostgresURLProblem(raw) != ""; got != wantProblem {
+			t.Errorf("PostgresURLProblem(%q) = %q, want a problem: %v", raw, PostgresURLProblem(raw), wantProblem)
+		}
+		if !IsPostgresURL(raw) {
+			t.Errorf("IsPostgresURL(%q) = false", raw)
+		}
+	}
+	for _, raw := range []string{"postgres:trueup", "sqlite:///srv/trueup.db", "POSTGRES://db.example.com/trueup", "mysql://db.example.com/trueup"} {
+		if IsPostgresURL(raw) {
+			t.Errorf("IsPostgresURL(%q) = true", raw)
+		}
+	}
+}
