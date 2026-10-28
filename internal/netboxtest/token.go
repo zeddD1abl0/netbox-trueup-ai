@@ -166,17 +166,22 @@ func dialLoopbackOnly(_, address string, _ syscall.RawConn) error {
 
 // do sends req and returns the status and up to maxResponse bytes of body.
 func do(req *http.Request) (int, []byte, error) {
+	return doUpTo(req, maxResponse)
+}
+
+// doUpTo sends req and returns the status and up to limit bytes of body.
+func doUpTo(req *http.Request, limit int) (int, []byte, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return 0, nil, fmt.Errorf("read NetBox's answer: %w", err)
 	}
-	if len(body) > maxResponse {
-		return 0, nil, fmt.Errorf("NetBox's answer is over %d bytes", maxResponse)
+	if len(body) > limit {
+		return 0, nil, fmt.Errorf("NetBox's answer is over %d bytes", limit)
 	}
 	return resp.StatusCode, body, nil
 }

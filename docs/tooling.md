@@ -3,7 +3,7 @@
 This document lists the tools, libraries, and AI skills used to build NetBox TrueUp AI, and why each was chosen. It doubles as a reference for setting up a complete development environment, including AI-assisted development with your own Claude account.
 
 **Audience:** human contributors and AI coding agents.
-**Last reviewed:** 2026-10-26. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
+**Last reviewed:** 2026-10-28. Versions mentioned are current as of that date; `mise.toml`, `go.mod`, and the workflow files are the source of truth once they exist.
 
 ## Status legend
 
@@ -110,7 +110,7 @@ These live in `.claude/skills/` and are versioned with the code. Each one is wri
 | Skill | Purpose |
 | --- | --- |
 | `add-netbox-object` | Checklist for teaching the comparison and sync engine a new NetBox object type by writing its spec (ADR 0008): uniqueness rules, dependency order, field semantics checked against NetBox's OpenAPI schema, override handling, fixtures, and a parity test against a real NetBox. |
-| `netbox-parity` | Before writing comparison rules for a field, look up how NetBox itself validates and serializes it in the pinned NetBox source (section 3.1). The aim is to match NetBox's behaviour, not guess at it. |
+| `netbox-parity` | Before writing comparison rules for a field, look up how NetBox itself validates and serializes it in the pinned NetBox source (section 3.1). The aim is to match NetBox's behaviour, not guess at it. Written in roadmap step 8, from writing the manufacturer and device type specs. |
 | `db-change` | Add a migration and queries for **both** SQLite and PostgreSQL, regenerate sqlc, extend the shared storage tests, and run them on both engines. Written in roadmap step 6; its PostgreSQL steps are required since step 7. |
 | `write-adr` | Create a numbered ADR from the template, add it to the index, and link any ADR it supersedes. |
 
@@ -173,7 +173,7 @@ Personal overrides go in `.claude/settings.local.json`, which is gitignored.
 | Tool | Status | Why |
 | --- | --- | --- |
 | Own REST client (`net/http`) | Use | `internal/netbox`, a thin client that handles exactly what we need: the version check, v2 tokens, cursor pagination, filtered listings, timeouts, retries with backoff, size limits and TLS, and in milestone 2 `ETag`/`If-Match` for safe concurrent updates and bulk operations. We keep control of NetBox version support instead of depending on a generated SDK release (see go-netbox in section 9), and add no dependency. Confirmed by [ADR 0019](adr/0019-own-netbox-rest-client.md) with the milestone 1 client, which only reads. |
-| NetBox's OpenAPI schema (`/api/schema/`) + [kin-openapi](https://github.com/getkin/kin-openapi) | Spike | Each NetBox object type is described by a hand-written spec (ADR 0008). A contract test checks every spec against the schema the target NetBox publishes: fields, writability, types, choices, nullability. Choice values may later be generated from it. The spike decides whether kin-openapi earns its place over plain JSON decoding. |
+| NetBox's OpenAPI schema (`/api/schema/`), read with `encoding/json` | Use | Each NetBox object type is described by a hand-written spec (ADR 0008). A contract test checks every spec against the schema the target NetBox publishes: fields, writability, types, choices, nullability, lengths and bounds. `internal/model/openapi` reads it with the standard library alone, which in the step 8 spike was about ten times faster than kin-openapi and used a sixth of the memory, with no new dependency (see kin-openapi in section 9). Each spec package commits a trimmed snapshot in `testdata/openapi.json`, which `make test` checks specs against; integration tests check the snapshot against the disposable NetBox, and `make schema` refreshes it. Choice values are generated from the snapshot by `make generate` (`netbox-choices`), and checked by `make generate-check`. [ADR 0023](adr/0023-check-specs-against-the-schema-with-plain-json.md) records the measurements. |
 | NetBox source at pinned tags (`.cache/reference/`, gitignored) | Use | `make reference` shallow-clones [netbox-community/netbox](https://github.com/netbox-community/netbox) at the supported version (4.7.2, see ADR 0003). Humans and agents read NetBox's own import and validation code there so our comparison logic matches it. |
 | [devicetype-library](https://github.com/netbox-community/devicetype-library) | Use | Real-world YAML for fixtures and tests. Likely the first supported sync source. |
 
@@ -326,6 +326,7 @@ These settings are applied by a repository admin. They are listed here so the se
 | Task (go-task) | A good tool, but Make is already installed nearly everywhere. Revisit if Windows-native development becomes common. |
 | Renovate | More capable than Dependabot (it can update `mise.toml`), but requires installing a third-party app with write access. Revisit if keeping tool pins current by hand becomes a burden. |
 | Trivy | Capable scanner. Grype was chosen to stay on one SBOM toolchain with Syft. |
+| [kin-openapi](https://github.com/getkin/kin-openapi) | Reads OpenAPI documents into a typed model. For checking specs against NetBox 4.7.2's schema, v0.151.0 added six modules, took about 1.1 s and 166 MB to load the 14.7 MB schema against 0.1 s and 27 MB for plain decoding, and its own validation rejects NetBox's schema, whose `servers` list has an empty URL. Plain JSON decoding needs about 330 lines of our own ([ADR 0023](adr/0023-check-specs-against-the-schema-with-plain-json.md)). |
 
 ---
 

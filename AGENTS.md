@@ -6,7 +6,7 @@ Instructions for AI coding agents working on NetBox TrueUp AI. Human contributor
 
 NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-community/netbox) in step with YAML definitions held in Git repositories and, later, other sources. See [README.md](README.md) for the planned feature set.
 
-**Status:** early development. The command tree, configuration and logging exist, integration tests can start a disposable NetBox, a read-only NetBox client backs `netbox check`, `source fetch` fetches Git sources into a cache and records each fetch in a database, on SQLite or PostgreSQL, and `migrate` creates and migrates that database. Nothing parses source files or writes to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
+**Status:** early development. The command tree, configuration and logging exist, integration tests can start a disposable NetBox, a read-only NetBox client backs `netbox check`, `source fetch` fetches Git sources into a cache and records each fetch in a database, on SQLite or PostgreSQL, and `migrate` creates and migrates that database. `internal/model` holds the object model and the specs of manufacturers and device types, checked against NetBox's OpenAPI schema. Nothing parses source files or writes to NetBox yet. The planned design is in [docs/architecture.md](docs/architecture.md) and the order of work in [docs/roadmap.md](docs/roadmap.md). Before assuming a component exists, check the code, [docs/adr/](docs/adr/) and [docs/tooling.md](docs/tooling.md).
 
 **NetBox target:** 4.7 ([ADR 0003](docs/adr/0003-initial-netbox-target.md)). Your training data about NetBox may be out of date; verify against the reference source (below) or current documentation.
 
@@ -19,7 +19,8 @@ NetBox TrueUp AI is a Go server that keeps [NetBox](https://github.com/netbox-co
 | Test (with race detector) | `make test` |
 | Integration tests, against a disposable NetBox and PostgreSQL (needs Docker) | `make test-integration` |
 | Start or remove a disposable NetBox for manual testing | `make netbox-up`, `make netbox-down` |
-| Regenerate the code generated from SQL, and check it | `make generate`, `make generate-check` |
+| Regenerate the code generated from SQL and from schema snapshots, and check it | `make generate`, `make generate-check` |
+| Refresh the specs' OpenAPI schema snapshots from a disposable NetBox, and regenerate (needs Docker) | `make schema` |
 | Format | `make fmt` |
 | Lint Go | `make lint` |
 | Lint workflows and Markdown, scan for secrets | `make lint-repo` |
@@ -35,6 +36,7 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 | --- | --- |
 | `cmd/netbox-trueup-ai/` | Entry point and cobra commands |
 | `internal/` | Application packages |
+| `internal/model/` | The object model: generic objects, values, and specs of NetBox object types ([ADR 0008](docs/adr/0008-describe-object-types-with-specs.md)); `model/dcim/` holds dcim's specs, `model/openapi/` reads NetBox's OpenAPI schema, and `model/spectest/` holds the tests every spec package runs ([ADR 0023](docs/adr/0023-check-specs-against-the-schema-with-plain-json.md)). See its README |
 | `internal/netbox/` | The NetBox REST client, read-only for now ([ADR 0019](docs/adr/0019-own-netbox-rest-client.md)) |
 | `internal/netboxtest/` | The disposable NetBox: `compose.yaml`, and the package that starts it for integration tests and seeds it. See its README |
 | `internal/source/` | Sources: snapshots, file listings, path checks and limits for every kind ([ADR 0009](docs/adr/0009-source-kinds-and-format-adapters.md)); `source/git/` is the Git kind ([ADR 0020](docs/adr/0020-git-sources-with-go-git.md)) |
@@ -80,7 +82,7 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 
 ## Matching NetBox behaviour
 
-The comparison engine must treat fields the way NetBox does. Before writing comparison rules for a model or field, read NetBox's own code at the target version: `make reference` puts it in `.cache/reference/`. Cite the NetBox source you followed in the PR description.
+The comparison engine must treat fields the way NetBox does. Before writing a spec or comparison rules for a model or field, read NetBox's own code at the target version: `make reference` puts it in `.cache/reference/`. The `netbox-parity` project skill says where to look and how to check what you find. Cite the NetBox source you followed in the spec and in the PR description.
 
 ## Security
 
