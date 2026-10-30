@@ -18,12 +18,14 @@ LIMIT: int = 2
 
 class Thing(models.Model):
     """
-A docstring with a line that isn't indented.
+A docstring with lines that aren't indented.
+save = see below
     """
     name = models.CharField(
         verbose_name='name',
     )
 # a comment at the start of a line, inside the class
+    # a comment with """ in it
     def clean(self):
         if self.name == 'x':
             pass
@@ -37,6 +39,9 @@ class ThingChoices(ChoiceSet):
     CHOICES = [('a', 'A')]
 
 class PlainChoices(ChoiceSet):
+    """
+key = 'Not.this'
+    """
     CHOICES = [('a', 'A')]
 `
 
@@ -71,6 +76,9 @@ func TestSources(t *testing.T) {
 		{name: "an annotated constant", symbol: "LIMIT"},
 		{name: "a method of another class", symbol: "Other.clean", want: "doesn't define clean"},
 		{name: "a keyword argument", symbol: "Thing.verbose_name", want: "doesn't define verbose_name"},
+		{name: "a class attribute", symbol: "Thing.name"},
+		{name: "a choice set's key", symbol: "ThingChoices.key"},
+		{name: "a name in a docstring", symbol: "Thing.save", want: "doesn't define save"},
 		{name: "a keyword argument at the top", symbol: "verbose_name", want: "doesn't define verbose_name"},
 		{name: "a comparison", symbol: "Thing.clean.self", want: "doesn't define self"},
 		{name: "a missing class", symbol: "Missing", want: "doesn't define Missing"},

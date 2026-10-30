@@ -106,6 +106,10 @@ func TestContractFinds(t *testing.T) {
 		{"a tighter minimum whose source is gone", func(s specs) { field(s, "devicetype", "weight").TighterBounds = model.Source{} }, "dcim.devicetype.weight: its spec's minimum 0 is tighter than NetBox's API's -1000000"},
 		// A Source for something else doesn't excuse a tighter bound.
 		{"a tighter minimum with another source", func(s specs) { field(s, "devicetype", "u_height").Min = model.NewDecimal(10, 0) }, "dcim.devicetype.u_height: its spec's minimum 10 is tighter than NetBox's API's 0.0, so it needs TighterBounds"},
+		{"tighter bounds that aren't", func(s specs) {
+			f := field(s, "frontporttemplate", "positions")
+			f.TighterBounds = model.Source{File: "dcim/models/device_component_templates.py", Symbol: "FrontPortTemplate"}
+		}, "dcim.frontporttemplate.positions: it cites TighterBounds, but its bounds are no tighter than NetBox's API's"},
 		{"an exclusive bound made inclusive", func(s specs) { field(s, "devicetype", "weight").Max = model.NewDecimal(1000000, 0) }, "dcim.devicetype.weight: its spec's maximum is 1000000 (exclusive false), NetBox's API's 1000000 (exclusive true)"},
 		{"no minimum", func(s specs) { field(s, "devicetype", "u_height").Min = nil }, "its spec's minimum is -1000 (exclusive true), NetBox's API's 0.0 (exclusive false)"},
 		{"fewer places", func(s specs) { field(s, "devicetype", "weight").Places = 1 }, "dcim.devicetype.weight: its spec's maximum is 10000000"},
@@ -164,7 +168,7 @@ func TestContractFinds(t *testing.T) {
 			f.ReadOnly, f.Default, f.Source = true, nil, model.Source{}
 			f.Ref = &model.Ref{Types: []string{"dcim.frontporttemplate"}, Within: "dcim.devicetype", Shape: model.ShapeID}
 			d.Ignored = append(d.Ignored, model.Ignored{Name: "component_type", Reason: "x"}, model.Ignored{Name: "component_id", Reason: "x"})
-		}, "dcim.inventoryitemtemplate.component: its spec says NetBox's API carries it as an ID, but it gives  and takes nothing"},
+		}, "dcim.inventoryitemtemplate.component: its spec says NetBox's API carries it as an ID, but it gives a schema with no type and takes nothing"},
 		{"an endpoint NetBox hasn't got", func(s specs) { s["dcim.manufacturer"].Endpoint = "/api/dcim/makers/" }, "dcim.manufacturer: the schema has no GET /api/dcim/makers/"},
 	}
 	for _, tt := range tests {

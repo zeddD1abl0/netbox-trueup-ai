@@ -218,8 +218,9 @@ type Source struct {
 	// File is a path under the netbox directory of NetBox's repository,
 	// such as dcim/models/devices.py.
 	File string
-	// Symbol is a class, function or method in File, such as DeviceType or
-	// DeviceType.clean.
+	// Symbol is a class, function, method, class attribute or module-level
+	// name in File, such as DeviceType, DeviceType.clean or
+	// MODULAR_COMPONENT_TEMPLATE_MODELS.
 	Symbol string
 }
 

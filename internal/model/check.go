@@ -155,7 +155,7 @@ func (c *checker) checkNames(s *Spec) {
 
 func (c *checker) checkSource(s *Spec, where string, src Source) {
 	if !sourceFile.MatchString(src.File) || !sourceSymbol.MatchString(src.Symbol) {
-		c.fail(s, "%sit cites %q in %q, which isn't a Python file and a class or function in it", where, src.Symbol, src.File)
+		c.fail(s, "%sit cites %q in %q, which isn't a Python file and a name defined in it", where, src.Symbol, src.File)
 	}
 }
 
@@ -510,7 +510,10 @@ func (c *checker) checkCollection(s *Spec, col *Collection) {
 // holdsWithin reports whether a uniqueness rule of a collection's children
 // holds among one parent's children: it has no gap, or its gap comes only
 // from the children's parent field being nullable, which it never is in the
-// collection.
+// collection. A Gap is free text, so this takes every gap to come from null
+// values, as all of NetBox's rules that specs cite do. A rule that holds only
+// under a condition, such as a UniqueConstraint with condition=, needs the
+// collection to state the gap itself.
 func holdsWithin(u Unique, child *Spec, col *Collection) bool {
 	if u.Gap == "" {
 		return true

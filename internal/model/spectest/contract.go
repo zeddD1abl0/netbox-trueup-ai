@@ -244,8 +244,9 @@ func (c *contract) checkKind(where string, f *model.Field, r, w openapi.Prop) {
 			return
 		}
 		takes()
-		c.checkBound(where, "minimum", f, f.Min, false, r.Minimum, r.ExclusiveMinimum)
-		c.checkBound(where, "maximum", f, f.Max, false, r.Maximum, r.ExclusiveMaximum)
+		c.checkTighter(where, f,
+			c.checkBound(where, "minimum", f, f.Min, false, r.Minimum, r.ExclusiveMinimum),
+			c.checkBound(where, "maximum", f, f.Max, false, r.Maximum, r.ExclusiveMaximum))
 	case model.KindDecimal:
 		if r.Type != "number" {
 			mismatch(r.Type)
@@ -373,15 +374,26 @@ func (c *contract) checkDecimalBounds(where string, f *model.Field, r openapi.Pr
 	for range f.Digits - f.Places {
 		whole *= 10
 	}
+	var tighterMax, tighterMin bool
 	if f.Max == nil {
 		c.checkBound(where, "maximum", f, model.NewDecimal(whole, 0), true, r.Maximum, r.ExclusiveMaximum)
 	} else {
-		c.checkBound(where, "maximum", f, f.Max, false, r.Maximum, r.ExclusiveMaximum)
+		tighterMax = c.checkBound(where, "maximum", f, f.Max, false, r.Maximum, r.ExclusiveMaximum)
 	}
 	if f.Min == nil {
 		c.checkBound(where, "minimum", f, model.NewDecimal(-whole, 0), true, r.Minimum, r.ExclusiveMinimum)
 	} else {
-		c.checkBound(where, "minimum", f, f.Min, false, r.Minimum, r.ExclusiveMinimum)
+		tighterMin = c.checkBound(where, "minimum", f, f.Min, false, r.Minimum, r.ExclusiveMinimum)
+	}
+	c.checkTighter(where, f, tighterMin, tighterMax)
+}
+
+// checkTighter reports a field that cites TighterBounds though none of its
+// bounds is tighter than the API's any more, as when NetBox's API comes to
+// state the bound itself.
+func (c *contract) checkTighter(where string, f *model.Field, tighter ...bool) {
+	if f.TighterBounds != (model.Source{}) && !slices.Contains(tighter, true) {
+		c.fail(where, "it cites TighterBounds, but its bounds are no tighter than NetBox's API's")
 	}
 }
 
@@ -390,22 +402,23 @@ func (c *contract) checkDecimalBounds(where string, f *model.Field, r openapi.Pr
 // the schema's, or tighter where NetBox's model enforces more than its API
 // states, as it refuses a negative weight when it saves one: the field must
 // then cite where, in TighterBounds, and integration tests check it against
-// NetBox. A bound the spec states is inclusive.
-func (c *contract) checkBound(where, which string, f *model.Field, want model.Value, implied bool, got *json.Number, exclusive bool) {
+// NetBox. A bound the spec states is inclusive. It returns whether the
+// spec's bound is tighter than the API's.
+func (c *contract) checkBound(where, which string, f *model.Field, want model.Value, implied bool, got *json.Number, exclusive bool) bool {
 	cited := f.TighterBounds != (model.Source{})
 	switch {
 	case want == nil && got == nil:
-		return
+		return false
 	case got == nil && !implied && cited:
-		return // tighter than no bound at all
+		return true // tighter than no bound at all
 	case want == nil || got == nil:
 		c.fail(where, "its spec's %s is %s, NetBox's API's %s", which, describe(want), numberString(got))
-		return
+		return false
 	}
 	n, err := model.ParseDecimal(got.String())
 	if err != nil {
 		c.fail(where, "NetBox's API's %s %s: %v", which, got, err)
-		return
+		return false
 	}
 	var w model.Decimal
 	switch want := want.(type) {
@@ -426,11 +439,13 @@ func (c *contract) checkBound(where, which string, f *model.Field, want model.Va
 		if !cited {
 			c.fail(where, "its spec's %s %s is tighter than NetBox's API's %s, so it needs TighterBounds saying where NetBox enforces it", which, w, got)
 		}
+		return true
 	default:
 		// Looser than the API's, an inclusive bound the API states as
 		// exclusive included, or not the bound the digits imply.
 		c.fail(where, "its spec's %s is %s (exclusive %t), NetBox's API's %s (exclusive %t)", which, w, implied, got, exclusive)
 	}
+	return false
 }
 
 func (c *contract) checkChoice(where string, f *model.Field, r, w openapi.Prop) {
@@ -533,10 +548,15 @@ func (c *contract) checkDefault(where string, f *model.Field, schemas ...*openap
 // typeOf describes a property's type for a message, or says there is none,
 // as for a field the API doesn't take.
 func typeOf(p openapi.Prop) string {
-	if p.Schema == nil {
+	switch {
+	case p.Schema == nil:
 		return "nothing"
+	case p.Type != "":
+		return strings.TrimSpace(p.Type + " " + p.Format)
+	case p.Component != "":
+		return p.Component
 	}
-	return strings.TrimSpace(p.Type + " " + p.Format)
+	return "a schema with no type"
 }
 
 func describe(v model.Value) string {

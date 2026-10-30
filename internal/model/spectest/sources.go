@@ -109,52 +109,85 @@ func (r *reader) definition(src model.Source) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	level := 0 // the indentation of a module's or block's own statements
 	for part := range strings.SplitSeq(src.Symbol, ".") {
-		if lines = block(lines, part); lines == nil {
+		if lines = block(lines, part, level); lines == nil {
 			return nil, fmt.Errorf("%s doesn't define %s where the citation says", src.File, part)
 		}
+		level = bodyIndent(lines)
 	}
 	return lines, nil
 }
 
+// code reports, for each line, whether it is a line of code: not blank, not
+// a comment, and not inside a string over several lines, such as a docstring,
+// which can have lines at any indentation.
+func code(lines []string) []bool {
+	out := make([]bool, len(lines))
+	inString := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		starting := inString
+		if strings.Count(line, `"""`)%2 == 1 || strings.Count(line, `'''`)%2 == 1 {
+			inString = !inString
+		}
+		out[i] = trimmed != "" && !starting
+	}
+	return out
+}
+
+func indentation(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+// bodyIndent is the indentation of the first line of code after a block's
+// first line: that of the statements in its body.
+func bodyIndent(block []string) int {
+	isCode := code(block)
+	for i := 1; i < len(block); i++ {
+		if isCode[i] {
+			return indentation(block[i])
+		}
+	}
+	return -1
+}
+
 // block finds the shallowest definition of name among lines, as a class or
-// function, or by assignment at the top of a module, such as a constant, and
-// returns it with the lines indented under it, or nil if there is none. An
-// assignment further in, such as a keyword argument, doesn't count.
-func block(lines []string, name string) []string {
+// function, or by an assignment among the statements at indentation level,
+// such as a module's constant or a class's attribute, and returns it with the
+// lines indented under it, or nil if there is none. An assignment further
+// in, such as a keyword argument, doesn't count, and nor does anything in a
+// comment or string.
+func block(lines []string, name string, level int) []string {
 	defined := regexp.MustCompile(`^(\s*)(?:class|def)\s+` + regexp.QuoteMeta(name) + `\b`)
-	assigned := regexp.MustCompile(`^` + regexp.QuoteMeta(name) + `\s*(:[^=]*)?=([^=]|$)`)
+	assigned := regexp.MustCompile(`^(\s*)` + regexp.QuoteMeta(name) + `\s*(:[^=]*)?=([^=]|$)`)
+	isCode := code(lines)
 	start, indent := -1, 0
 	for i, line := range lines {
+		if !isCode[i] {
+			continue
+		}
 		m := defined.FindStringSubmatch(line)
-		switch {
-		case m != nil && (start < 0 || len(m[1]) < indent):
+		if m == nil {
+			if m = assigned.FindStringSubmatch(line); m != nil && len(m[1]) != level {
+				m = nil
+			}
+		}
+		if m != nil && (start < 0 || len(m[1]) < indent) {
 			start, indent = i, len(m[1])
-		case m == nil && assigned.MatchString(line) && (start < 0 || indent > 0):
-			start, indent = i, 0
 		}
 	}
 	if start < 0 {
 		return nil
 	}
 	// The block ends at the first line of code indented no deeper than its
-	// first. Comments and the lines of strings over several lines, such as
-	// docstrings, don't end it, wherever they start.
+	// first.
 	end := start + 1
-	inString := false
-	for ; end < len(lines); end++ {
-		line := lines[end]
-		trimmed := strings.TrimSpace(line)
-		starting := inString
-		if strings.Count(line, `"""`)%2 == 1 || strings.Count(line, "'''")%2 == 1 {
-			inString = !inString
-		}
-		if trimmed == "" || starting || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if len(line)-len(strings.TrimLeft(line, " \t")) <= indent {
-			break
-		}
+	for end < len(lines) && (!isCode[end] || indentation(lines[end]) > indent) {
+		end++
 	}
 	return lines[start:end]
 }
@@ -176,12 +209,13 @@ func (r *reader) checkConfigurable(f *model.Field) error {
 		return fmt.Errorf("it cites %s, which isn't a choice set", f.Source.Symbol)
 	}
 	want := ""
-	for _, line := range def[1:] {
-		if m := choiceKey.FindStringSubmatch(line); m != nil {
-			app, _, _ := strings.Cut(f.Source.File, "/")
-			want = app + "." + m[1]
-			break
+	if key := block(def, "key", bodyIndent(def)); key != nil {
+		m := choiceKey.FindStringSubmatch(key[0])
+		if m == nil {
+			return fmt.Errorf("%s's key isn't a string NetBox's source spells out", f.Source.Symbol)
 		}
+		app, _, _ := strings.Cut(f.Source.File, "/")
+		want = app + "." + m[1]
 	}
 	if f.Choices.Configurable != want {
 		return fmt.Errorf("its FIELD_CHOICES key is %q, but %s's is %q", f.Choices.Configurable, f.Source.Symbol, want)
@@ -227,6 +261,7 @@ func citations(s *model.Spec) []model.Source {
 		add(f.TighterBounds)
 		if f.Elem != nil {
 			add(f.Elem.Source)
+			add(f.Elem.TighterBounds)
 		}
 	}
 	for _, col := range s.Children {
