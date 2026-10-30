@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,17 +226,30 @@ func TestSourceFetchWaitsForAnotherFetch(t *testing.T) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Another process is fetching lib, and finishes a little later.
+	// Another process is fetching lib, and finishes once this one has said
+	// it is waiting, which it does after a second. A fixed delay instead
+	// raced with creating and migrating the database, which can take longer
+	// on a slow CI runner.
 	unlock, err := source.LockCache(t.Context(), root, "lib", 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	waiting := &signalWriter{want: "waiting for another TrueUp process to finish fetching the source", seen: make(chan struct{})}
+	released := make(chan struct{})
 	go func() {
-		time.Sleep(1500 * time.Millisecond)
+		defer close(released)
+		select {
+		case <-waiting.seen:
+		case <-time.After(time.Minute):
+		}
 		_ = unlock()
 	}()
+	t.Cleanup(func() { <-released })
 
-	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	r := runCLIApp(t, nil, func(a *app) {
+		trust(pool)(a)
+		a.stderr = io.MultiWriter(a.stderr, waiting)
+	}, env, "source", "fetch")
 	if r.code != exitOK {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
@@ -245,6 +259,21 @@ func TestSourceFetchWaitsForAnotherFetch(t *testing.T) {
 	if _, snaps := records(t, dataDir); snaps["lib"].Version != commit {
 		t.Errorf("lib's recorded snapshot = %+v, want %s", snaps["lib"], commit)
 	}
+}
+
+// signalWriter closes seen the first time something written to it holds
+// want.
+type signalWriter struct {
+	want string
+	seen chan struct{}
+	once sync.Once
+}
+
+func (w *signalWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.want) {
+		w.once.Do(func() { close(w.seen) })
+	}
+	return len(p), nil
 }
 
 func TestSourceFetchLeavesASourceAnotherProcessFetches(t *testing.T) {
