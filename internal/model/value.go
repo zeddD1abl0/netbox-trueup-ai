@@ -250,6 +250,10 @@ func sameElements[T any](a, b []T, equal func(T, T) bool) bool {
 			}
 		}
 		if !found {
+			// Most often x has no equal at all, and a and b just differ.
+			if !slices.ContainsFunc(b, func(y T) bool { return equal(x, y) }) {
+				return false
+			}
 			greedy = false
 			break
 		}

@@ -118,26 +118,43 @@ func (r *reader) definition(src model.Source) ([]string, error) {
 }
 
 // block finds the shallowest definition of name among lines, as a class or
-// function or by assignment, and returns it with the lines indented under
-// it, or nil if there is none.
+// function, or by assignment at the top of a module, such as a constant, and
+// returns it with the lines indented under it, or nil if there is none. An
+// assignment further in, such as a keyword argument, doesn't count.
 func block(lines []string, name string) []string {
-	defined := regexp.MustCompile(`^(\s*)(?:(?:class|def)\s+` + regexp.QuoteMeta(name) + `\b|` + regexp.QuoteMeta(name) + `\s*[:=])`)
+	defined := regexp.MustCompile(`^(\s*)(?:class|def)\s+` + regexp.QuoteMeta(name) + `\b`)
+	assigned := regexp.MustCompile(`^` + regexp.QuoteMeta(name) + `\s*(:[^=]*)?=([^=]|$)`)
 	start, indent := -1, 0
 	for i, line := range lines {
-		if m := defined.FindStringSubmatch(line); m != nil && (start < 0 || len(m[1]) < indent) {
+		m := defined.FindStringSubmatch(line)
+		switch {
+		case m != nil && (start < 0 || len(m[1]) < indent):
 			start, indent = i, len(m[1])
+		case m == nil && assigned.MatchString(line) && (start < 0 || indent > 0):
+			start, indent = i, 0
 		}
 	}
 	if start < 0 {
 		return nil
 	}
+	// The block ends at the first line of code indented no deeper than its
+	// first. Comments and the lines of strings over several lines, such as
+	// docstrings, don't end it, wherever they start.
 	end := start + 1
-	for end < len(lines) {
+	inString := false
+	for ; end < len(lines); end++ {
 		line := lines[end]
-		if strings.TrimSpace(line) != "" && len(line)-len(strings.TrimLeft(line, " \t")) <= indent {
+		trimmed := strings.TrimSpace(line)
+		starting := inString
+		if strings.Count(line, `"""`)%2 == 1 || strings.Count(line, "'''")%2 == 1 {
+			inString = !inString
+		}
+		if trimmed == "" || starting || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if len(line)-len(strings.TrimLeft(line, " \t")) <= indent {
 			break
 		}
-		end++
 	}
 	return lines[start:end]
 }
@@ -207,6 +224,7 @@ func citations(s *model.Spec) []model.Source {
 	}
 	for _, f := range s.Fields {
 		add(f.Source)
+		add(f.TighterBounds)
 		if f.Elem != nil {
 			add(f.Elem.Source)
 		}

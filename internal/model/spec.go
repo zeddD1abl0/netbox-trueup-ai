@@ -101,6 +101,10 @@ type Field struct {
 	// Step, for a decimal, is what it must be a whole multiple of, such as a
 	// device type's height in units of 0.5; nil means any.
 	Step Value
+	// TighterBounds cites where NetBox enforces Min or Max beyond the bounds
+	// its API states, such as a weight's minimum of 0, which NetBox's model
+	// enforces when it saves one. A bound tighter than the API's needs it.
+	TighterBounds Source
 
 	// Choices are a choice field's values.
 	Choices *Choices

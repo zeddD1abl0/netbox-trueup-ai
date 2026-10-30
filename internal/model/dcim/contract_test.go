@@ -102,8 +102,10 @@ func TestContractFinds(t *testing.T) {
 		{"a date as a string", func(s specs) { field(s, "devicetype", "end_of_life").Kind = model.KindString }, "its spec says it is a string, but NetBox's API gives string date"},
 		{"more digits", func(s specs) { field(s, "devicetype", "u_height").Digits = 5 }, "dcim.devicetype.u_height: its spec's maximum is 10000 (exclusive true), NetBox's API's 1000"},
 		{"a looser minimum", func(s specs) { field(s, "devicetype", "u_height").Min = model.NewDecimal(-1, 0) }, "its spec's minimum is -1 (exclusive false), NetBox's API's 0.0 (exclusive false)"},
-		{"a tighter minimum without a source", func(s specs) { field(s, "rearporttemplate", "positions").Min = model.Integer(2) }, "dcim.rearporttemplate.positions: its spec's minimum 2 is tighter than NetBox's API's 1, so it needs a Source"},
-		{"a tighter minimum whose source is gone", func(s specs) { field(s, "devicetype", "weight").Source = model.Source{} }, "dcim.devicetype.weight: its spec's minimum 0 is tighter than NetBox's API's -1000000"},
+		{"a tighter minimum without a source", func(s specs) { field(s, "rearporttemplate", "positions").Min = model.Integer(2) }, "dcim.rearporttemplate.positions: its spec's minimum 2 is tighter than NetBox's API's 1, so it needs TighterBounds"},
+		{"a tighter minimum whose source is gone", func(s specs) { field(s, "devicetype", "weight").TighterBounds = model.Source{} }, "dcim.devicetype.weight: its spec's minimum 0 is tighter than NetBox's API's -1000000"},
+		// A Source for something else doesn't excuse a tighter bound.
+		{"a tighter minimum with another source", func(s specs) { field(s, "devicetype", "u_height").Min = model.NewDecimal(10, 0) }, "dcim.devicetype.u_height: its spec's minimum 10 is tighter than NetBox's API's 0.0, so it needs TighterBounds"},
 		{"an exclusive bound made inclusive", func(s specs) { field(s, "devicetype", "weight").Max = model.NewDecimal(1000000, 0) }, "dcim.devicetype.weight: its spec's maximum is 1000000 (exclusive false), NetBox's API's 1000000 (exclusive true)"},
 		{"no minimum", func(s specs) { field(s, "devicetype", "u_height").Min = nil }, "its spec's minimum is -1000 (exclusive true), NetBox's API's 0.0 (exclusive false)"},
 		{"fewer places", func(s specs) { field(s, "devicetype", "weight").Places = 1 }, "dcim.devicetype.weight: its spec's maximum is 10000000"},
@@ -149,6 +151,20 @@ func TestContractFinds(t *testing.T) {
 			f := field(s, "devicetype", "comments")
 			f.Kind, f.Trim, f.Blank, f.MaxLength, f.Default, f.Elem = model.KindSet, false, false, 0, model.Set{}, &model.Field{Kind: model.KindString}
 		}, "dcim.devicetype.comments: its spec says it is a set, but NetBox's API gives string and takes string"},
+		// Read-only fields have no request property, which once crashed
+		// Contract when it described what NetBox's API takes.
+		{"a read-only set that isn't", func(s specs) {
+			d := s["dcim.devicetype"]
+			d.Ignored = slices.DeleteFunc(d.Ignored, func(ig model.Ignored) bool { return ig.Name == "device_count" })
+			d.Fields = append(d.Fields, model.Field{Name: "device_count", Kind: model.KindSet, ReadOnly: true, Elem: &model.Field{Kind: model.KindString}})
+		}, "dcim.devicetype.device_count: its spec says it is a set, but NetBox's API gives integer and takes nothing"},
+		{"a read-only ID reference that isn't", func(s specs) {
+			d := s["dcim.inventoryitemtemplate"]
+			f := d.Field("component")
+			f.ReadOnly, f.Default, f.Source = true, nil, model.Source{}
+			f.Ref = &model.Ref{Types: []string{"dcim.frontporttemplate"}, Within: "dcim.devicetype", Shape: model.ShapeID}
+			d.Ignored = append(d.Ignored, model.Ignored{Name: "component_type", Reason: "x"}, model.Ignored{Name: "component_id", Reason: "x"})
+		}, "dcim.inventoryitemtemplate.component: its spec says NetBox's API carries it as an ID, but it gives  and takes nothing"},
 		{"an endpoint NetBox hasn't got", func(s specs) { s["dcim.manufacturer"].Endpoint = "/api/dcim/makers/" }, "dcim.manufacturer: the schema has no GET /api/dcim/makers/"},
 	}
 	for _, tt := range tests {
@@ -320,8 +336,16 @@ func TestContractFindsNetBoxChanges(t *testing.T) {
 			d.Components.Schemas["FrontPortTemplateMapping"].Properties["cable"] = &openapi.Schema{Type: "integer"}
 		}, "dcim.porttemplatemapping: NetBox's API has cable, which the spec neither describes nor ignores"},
 	}
-	// A null default, where the spec's is null too, agrees.
+	// A field only patching takes can be ignored.
 	d := loadSnapshot(t)
+	d.Components.Schemas["PatchedWritableDeviceTypeRequest"].Properties["colour"] = &openapi.Schema{Type: "string"}
+	s := cloneSpecs(withPrototypes())
+	s["dcim.devicetype"].Ignored = append(s["dcim.devicetype"].Ignored, model.Ignored{Name: "colour", Reason: "only patched"})
+	if err := spectest.Contract(d, listOf(s)); err != nil {
+		t.Errorf("Contract with a field only patching takes, ignored: %v", err)
+	}
+	// A null default, where the spec's is null too, agrees.
+	d = loadSnapshot(t)
 	prop(d, "DeviceType", "end_of_life").Default = []byte("null")
 	if err := spectest.Contract(d, withPrototypes()); err != nil {
 		t.Errorf("Contract with a null default for end_of_life: %v", err)

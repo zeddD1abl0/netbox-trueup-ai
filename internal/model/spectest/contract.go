@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/openapi"
@@ -83,7 +84,7 @@ func (c *contract) checkObject(s *model.Spec, resp, req, patch *openapi.Schema) 
 	for _, ig := range s.Ignored {
 		covered[ig.Name] = true
 		switch {
-		case resp.Properties[ig.Name] == nil && req.Properties[ig.Name] == nil:
+		case resp.Properties[ig.Name] == nil && req.Properties[ig.Name] == nil && patch.Properties[ig.Name] == nil:
 			c.fail(s.Type, "it ignores %s, which NetBox's API hasn't got", ig.Name)
 		case slices.Contains(req.Required, ig.Name):
 			c.fail(s.Type, "it ignores %s, which NetBox's API requires when creating one", ig.Name)
@@ -279,7 +280,7 @@ func (c *contract) checkKind(where string, f *model.Field, r, w openapi.Prop) {
 // API gives and takes.
 func (c *contract) checkSet(where string, f *model.Field, r, w openapi.Prop) {
 	if r.Type != "array" || r.Items == nil || w.Schema != nil && (w.Type != "array" || w.Items == nil) {
-		c.fail(where, "its spec says it is a set, but NetBox's API gives %s and takes %s", r.Type, w.Type)
+		c.fail(where, "its spec says it is a set, but NetBox's API gives %s and takes %s", typeOf(r), typeOf(w))
 		return
 	}
 	if f.Elem == nil {
@@ -343,12 +344,14 @@ func (c *contract) checkString(where string, f *model.Field, r, w openapi.Prop) 
 		return
 	}
 	wMaxLength, wPattern, blank, ok := stringShape(w.Schema)
-	switch {
-	case !ok:
-		c.fail(where, "NetBox's API gives it as a string but takes it as %s %s", w.Type, w.Format)
-	case wMaxLength != maxLength || wPattern != pattern:
+	if !ok {
+		c.fail(where, "NetBox's API gives it as a string but takes it as %s", typeOf(w))
+		return
+	}
+	if wMaxLength != maxLength || wPattern != pattern {
 		c.fail(where, "NetBox's API takes it with at most %d characters and the pattern %q, but gives it with %d and %q", wMaxLength, wPattern, maxLength, pattern)
-	case blank != f.Blank:
+	}
+	if blank != f.Blank {
 		c.fail(where, "its spec says blank is %t, NetBox's API %t", f.Blank, blank)
 	}
 }
@@ -386,10 +389,10 @@ func (c *contract) checkDecimalBounds(where string, f *model.Field, r openapi.Pr
 // when implied is set, against the schema's, got. The spec's bound must be
 // the schema's, or tighter where NetBox's model enforces more than its API
 // states, as it refuses a negative weight when it saves one: the field must
-// then cite where, in its Source, and integration tests check it against
+// then cite where, in TighterBounds, and integration tests check it against
 // NetBox. A bound the spec states is inclusive.
 func (c *contract) checkBound(where, which string, f *model.Field, want model.Value, implied bool, got *json.Number, exclusive bool) {
-	cited := f.Source != (model.Source{})
+	cited := f.TighterBounds != (model.Source{})
 	switch {
 	case want == nil && got == nil:
 		return
@@ -421,7 +424,7 @@ func (c *contract) checkBound(where, which string, f *model.Field, want model.Va
 		// The same bound.
 	case !implied && tighter > 0:
 		if !cited {
-			c.fail(where, "its spec's %s %s is tighter than NetBox's API's %s, so it needs a Source saying where NetBox enforces it", which, w, got)
+			c.fail(where, "its spec's %s %s is tighter than NetBox's API's %s, so it needs TighterBounds saying where NetBox enforces it", which, w, got)
 		}
 	default:
 		// Looser than the API's, an inclusive bound the API states as
@@ -465,7 +468,7 @@ func (c *contract) checkRef(where string, f *model.Field, r, w openapi.Prop) {
 	switch f.Ref.Shape {
 	case model.ShapeID:
 		if r.Type != "integer" || w.Schema != nil && w.Type != "integer" {
-			c.fail(where, "its spec says NetBox's API carries it as an ID, but it gives %s and takes %s", r.Type, w.Type)
+			c.fail(where, "its spec says NetBox's API carries it as an ID, but it gives %s and takes %s", typeOf(r), typeOf(w))
 		}
 	case model.ShapeNested:
 		if len(f.Ref.Types) != 1 {
@@ -525,6 +528,15 @@ func (c *contract) checkDefault(where string, f *model.Field, schemas ...*openap
 			c.fail(where, "its spec's default is %s, NetBox's API's %s", describe(f.Default), got)
 		}
 	}
+}
+
+// typeOf describes a property's type for a message, or says there is none,
+// as for a field the API doesn't take.
+func typeOf(p openapi.Prop) string {
+	if p.Schema == nil {
+		return "nothing"
+	}
+	return strings.TrimSpace(p.Type + " " + p.Format)
 }
 
 func describe(v model.Value) string {

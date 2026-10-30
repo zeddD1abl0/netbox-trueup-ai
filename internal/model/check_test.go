@@ -114,6 +114,7 @@ func TestCheckFinds(t *testing.T) {
 	t.Parallel()
 	type specs = map[string]*Spec
 	field := func(s *Spec, name string) *Field { return s.Field(name) }
+	src := []Source{{File: "test/models.py", Symbol: "Thing.clean"}}
 	tests := []struct {
 		name   string
 		breaks func(s specs) []*Spec
@@ -262,6 +263,26 @@ func TestCheckFinds(t *testing.T) {
 		{
 			"a choice field without a source", func(s specs) []*Spec { field(s["thing"], "role").Source = Source{}; return list(s) },
 			"role is a choice field, so it needs a Source citing its choice set",
+		},
+		{"a key backed by a rule that doesn't hold among the children", func(s specs) []*Spec {
+			field(s["item"], "thing").Nullable = true
+			return list(s)
+		}, "the collection child_items has no gap, but no uniqueness rule of test.item's makes its key [name] unique"},
+		{
+			"tighter bounds on a string", func(s specs) []*Spec { field(s["thing"], "model").TighterBounds = src[0]; return list(s) },
+			"model isn't a number, so it can't have bounds",
+		},
+		{"tighter bounds that aren't", func(s specs) []*Spec {
+			f := field(s["port"], "positions")
+			f.Min, f.Max, f.TighterBounds = nil, nil, src[0]
+			return list(s)
+		}, "positions cites TighterBounds, but has no bounds"},
+		{
+			"a bad bounds source", func(s specs) []*Spec {
+				field(s["port"], "positions").TighterBounds = Source{File: "x", Symbol: "y"}
+				return list(s)
+			},
+			"positions's bounds: it cites",
 		},
 		{"a shared field neither has", func(s specs) []*Spec { s["item"].Children[0].Shared = []string{"label"}; return list(s) }, "shares label, which isn't a field of both"},
 		{"a shared field the parent hasn't", func(s specs) []*Spec { s["thing"].Children[0].Shared = []string{"positions"}; return list(s) }, "shares positions, which isn't a field of both test.thing and test.port"},

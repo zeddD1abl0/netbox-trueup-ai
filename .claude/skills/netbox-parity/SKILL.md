@@ -80,7 +80,7 @@ What they decide, as of NetBox 4.7.2 (Django 6.1, DRF 3.18, Python 3.14):
    Behaviour you rely on belongs in an integration test too (step 6), not only in your notes.
 
 4. **Write the spec**, in field order as the API gives them:
-   - `Kind`, `MaxLength`, `Pattern` (no anchors), `Digits` and `Places`, `Min`, `Max` and `Step` from the model and serializer. A bound tighter than the schema's, which NetBox's model enforces beyond its API (a weight can't be negative: `_normalized_measurement` in `utilities/conversion.py`), needs the field's `Source` to say where.
+   - `Kind`, `MaxLength`, `Pattern` (no anchors), `Digits` and `Places`, `Min`, `Max` and `Step` from the model and serializer. A bound tighter than the schema's, which NetBox's model enforces beyond its API (a weight can't be negative: `_normalized_measurement` in `utilities/conversion.py`), needs the field's `TighterBounds` to cite where.
    - `Required` as the create component's `required` says; `Nullable` from `null=True` or `allow_null`; `Blank` from `blank=True` or `allow_blank`.
    - `Default` for every writable field that isn't required: the model's default, or the serializer's, or blank or null. `ImportDefault` and `ImportRequired` where the import differs.
    - `Trim` on every string field; `BlankIsNull` on choice fields that read blank as null. A choice field's `Source` is its choice set, and its `Choices.Configurable` is `<app>.<key>` if the set has a `key`, empty if not: the `Sources` test checks both.

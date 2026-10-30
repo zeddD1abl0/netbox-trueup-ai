@@ -291,8 +291,14 @@ func (c *checker) checkField(s *Spec, f *Field, name string) {
 	if f.Kind != KindDecimal && (f.Digits != 0 || f.Places != 0 || f.Step != nil) {
 		fail("isn't a decimal, so it can't have digits, places or a step")
 	}
-	if f.Kind != KindInteger && f.Kind != KindDecimal && (f.Min != nil || f.Max != nil) {
+	if f.Kind != KindInteger && f.Kind != KindDecimal && (f.Min != nil || f.Max != nil || f.TighterBounds != (Source{})) {
 		fail("isn't a number, so it can't have bounds")
+	}
+	if f.TighterBounds != (Source{}) {
+		if f.Min == nil && f.Max == nil {
+			fail("cites TighterBounds, but has no bounds")
+		}
+		c.checkSource(s, name+"'s bounds: ", f.TighterBounds)
 	}
 	if f.Kind != KindString && f.Kind != KindChoice && (f.Blank || f.BlankIsNull) {
 		fail("isn't a string or choice, so it can't be blank")
@@ -479,7 +485,7 @@ func (c *checker) checkCollection(s *Spec, col *Collection) {
 	default:
 		scope := append([]string{col.Parent}, col.Shared...)
 		scope = append(scope, col.Key...)
-		if !slices.ContainsFunc(child.Unique, func(u Unique) bool { return isSubset(u.Fields, scope) }) {
+		if !slices.ContainsFunc(child.Unique, func(u Unique) bool { return isSubset(u.Fields, scope) && holdsWithin(u, child, col) }) {
 			fail("has no gap, but no uniqueness rule of %s's makes its key %v unique among one parent's children", col.Type, col.Key)
 		}
 	}
@@ -499,6 +505,22 @@ func (c *checker) checkCollection(s *Spec, col *Collection) {
 			fail("shares its parent field %s", name)
 		}
 	}
+}
+
+// holdsWithin reports whether a uniqueness rule of a collection's children
+// holds among one parent's children: it has no gap, or its gap comes only
+// from the children's parent field being nullable, which it never is in the
+// collection.
+func holdsWithin(u Unique, child *Spec, col *Collection) bool {
+	if u.Gap == "" {
+		return true
+	}
+	for _, name := range u.Fields {
+		if f := child.Field(name); f != nil && f.Nullable && name != col.Parent {
+			return false
+		}
+	}
+	return true
 }
 
 // isSubset reports whether every name in a is in b.

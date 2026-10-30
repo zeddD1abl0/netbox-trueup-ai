@@ -76,7 +76,7 @@ var deviceType = &model.Spec{
 			// WeightMixin.clean refuses a weight anyway.
 			Name: "weight", Kind: model.KindDecimal, Digits: 8, Places: 2, Min: model.NewDecimal(0, 0),
 			Nullable: true, Default: model.Null{},
-			Source: model.Source{File: "utilities/conversion.py", Symbol: "_normalized_measurement"},
+			TighterBounds: model.Source{File: "utilities/conversion.py", Symbol: "_normalized_measurement"},
 		},
 		{
 			Name: "weight_unit", Kind: model.KindChoice,
