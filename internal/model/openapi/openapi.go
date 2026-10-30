@@ -98,12 +98,14 @@ const maxRefs = 8
 // component's name, or s itself and no name if it isn't a $ref.
 func (d *Document) Resolve(s *Schema) (*Schema, string, error) {
 	name := ""
-	for range maxRefs {
-		if s == nil {
+	for hops := 0; ; hops++ {
+		switch {
+		case s == nil:
 			return nil, "", errors.New("a schema is missing")
-		}
-		if s.Ref == "" {
+		case s.Ref == "":
 			return s, name, nil
+		case hops == maxRefs:
+			return nil, "", fmt.Errorf("a $ref chain is longer than %d", maxRefs)
 		}
 		ref := s.Ref
 		var ok bool
@@ -114,7 +116,6 @@ func (d *Document) Resolve(s *Schema) (*Schema, string, error) {
 			return nil, "", fmt.Errorf("$ref %q names no component", ref)
 		}
 	}
-	return nil, "", fmt.Errorf("a $ref chain is longer than %d", maxRefs)
 }
 
 // Prop is a property of a component, unwrapped from the allOf with a single

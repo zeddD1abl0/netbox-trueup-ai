@@ -1,6 +1,10 @@
 package dcim
 
-import "github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+import (
+	"slices"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+)
 
 // Prototype specs of the component templates that roadmap steps 11 and 12
 // bring, to show that the object model already holds what they need, checked
@@ -50,7 +54,10 @@ func portFields(choicesOf string) []model.Field {
 		},
 		{Name: "name", Kind: model.KindString, Required: true, MaxLength: 64, Trim: true},
 		{Name: "label", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 64, Trim: true},
-		{Name: "type", Kind: model.KindChoice, Required: true, Choices: &model.Choices{Values: choices(choicesOf, "type")}},
+		{
+			Name: "type", Kind: model.KindChoice, Required: true, Choices: &model.Choices{Values: choices(choicesOf, "type")},
+			Source: model.Source{File: "dcim/choices.py", Symbol: "PortTypeChoices"},
+		},
 		{Name: "color", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 6, Pattern: "[0-9a-f]{6}", Trim: true},
 		{Name: "positions", Kind: model.KindInteger, Min: model.Integer(1), Max: model.Integer(1024), Default: model.Integer(1)},
 		{Name: "description", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 200, Trim: true},
@@ -69,7 +76,7 @@ var rearPortTemplate = &model.Spec{
 	DependsOn: []string{"dcim.devicetype"},
 	Unique:    templateUnique,
 	Fields:    portFields("RearPortTemplate"),
-	Ignored: ignored(ignoredTemplate, []model.Ignored{
+	Ignored: slices.Concat(ignoredTemplate, []model.Ignored{
 		{Name: "front_ports", Reason: "the mappings again, which the front port templates carry"},
 	}),
 	Sources: []model.Source{
@@ -145,12 +152,13 @@ var inventoryItemTemplate = &model.Spec{
 				Types:  []string{"dcim.frontporttemplate", "dcim.rearporttemplate"},
 				Within: "dcim.devicetype", Shape: model.ShapeTypeAndID, TypeField: "component_type", IDField: "component_id",
 			},
+			Source: model.Source{File: "dcim/constants.py", Symbol: "MODULAR_COMPONENT_TEMPLATE_MODELS"},
 		},
 	},
 	Children: []model.Collection{{
 		Name: "child_items", Type: "dcim.inventoryitemtemplate", Parent: "parent", Key: []string{"name"}, Shared: []string{"device_type"},
 	}},
-	Ignored: ignored(ignoredTemplate[:5], []model.Ignored{
+	Ignored: slices.Concat(ignoredTemplate[:5], []model.Ignored{
 		{Name: "role", Reason: "a reference to a dcim.inventoryitemrole, which has no spec yet"},
 		{Name: "_depth", Reason: "read-only: how deep in the tree the item is"},
 	}),

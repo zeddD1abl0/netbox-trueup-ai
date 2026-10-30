@@ -49,14 +49,6 @@ var (
 	}
 )
 
-func ignored(lists ...[]model.Ignored) []model.Ignored {
-	var all []model.Ignored
-	for _, l := range lists {
-		all = append(all, l...)
-	}
-	return all
-}
-
 // slugPattern is a SlugField's pattern: Django's validate_slug, which the
 // schema gives as ^[-a-zA-Z0-9_]+$.
 const slugPattern = `[-a-zA-Z0-9_]+`

@@ -4,11 +4,21 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // maxSchema caps the OpenAPI schema Schema reads. NetBox 4.7.2's is about
 // 15 MB.
 const maxSchema = 64 << 20
+
+// schemaClient is client with time for NetBox to generate its schema, which
+// it does afresh for every request: about 4 seconds for NetBox 4.7.2 on a
+// developer's machine, and more on a slow CI runner.
+var schemaClient = func() *http.Client {
+	c := *client
+	c.Timeout = 2 * time.Minute
+	return &c
+}()
 
 // Schema returns this NetBox's OpenAPI schema, in JSON, from /api/schema/.
 // The spec packages' integration tests check their specs against it
@@ -24,7 +34,7 @@ func (nb *NetBox) Schema(ctx context.Context) ([]byte, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+nb.Token.Reveal())
 	req.Header.Set("Accept", "application/json")
-	status, body, err := doUpTo(req, maxSchema)
+	status, body, err := doUpTo(schemaClient, req, maxSchema)
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("GET /api/schema/: %w", err)

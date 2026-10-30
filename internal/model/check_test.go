@@ -42,6 +42,7 @@ func testSpecs() map[string]*Spec {
 				{
 					Name: "role", Kind: KindChoice, Nullable: true, Blank: true, BlankIsNull: true, Default: Null{},
 					Choices: &Choices{Values: []string{"parent", "child"}, Configurable: "test.Thing.role"},
+					Source:  Source{File: "test/choices.py", Symbol: "ThingRoleChoices"},
 				},
 				{Name: "end", Kind: KindDate, Nullable: true, Default: Null{}},
 				{Name: "tags", Kind: KindSet, Default: Set{}, Elem: &Field{Kind: KindString, MaxLength: 10}},
@@ -61,7 +62,7 @@ func testSpecs() map[string]*Spec {
 				name,
 				{Name: "positions", Kind: KindInteger, Min: Integer(1), Max: Integer(1024), Default: Integer(1)},
 			},
-			Children: []Collection{{Name: "links", Type: "test.link", Key: []string{"position"}, Nested: true}},
+			Children: []Collection{{Name: "links", Type: "test.link", Key: []string{"position"}, Nested: true, Source: Source{File: "test/utils.py", Symbol: "reconcile"}}},
 			Sources:  src,
 		},
 		"link": {
@@ -83,7 +84,8 @@ func testSpecs() map[string]*Spec {
 				name,
 				{
 					Name: "component", Kind: KindReference, Nullable: true, Default: Null{},
-					Ref: &Ref{Types: []string{"test.port"}, Within: "test.thing", Shape: ShapeTypeAndID, TypeField: "component_type", IDField: "component_id"},
+					Ref:    &Ref{Types: []string{"test.port"}, Within: "test.thing", Shape: ShapeTypeAndID, TypeField: "component_type", IDField: "component_id"},
+					Source: Source{File: "test/constants.py", Symbol: "COMPONENTS"},
 				},
 			},
 			Children: []Collection{{Name: "child_items", Type: "test.item", Parent: "parent", Key: []string{"name"}, Shared: []string{"thing"}}},
@@ -226,6 +228,41 @@ func TestCheckFinds(t *testing.T) {
 		{"a collection without a key", func(s specs) []*Spec { s["thing"].Children[0].Key = nil; return list(s) }, "the collection ports has no key"},
 		{"a key of no field", func(s specs) []*Spec { s["thing"].Children[0].Key = []string{"label"}; return list(s) }, "has the key field label, which isn't one of its fields of test.port"},
 		{"a key with the parent field", func(s specs) []*Spec { s["thing"].Children[0].Key = []string{"thing", "name"}; return list(s) }, "the collection ports has its parent field thing in its key"},
+		{"a set of references that isn't a dependency", func(s specs) []*Spec {
+			field(s["thing"], "tags").Elem = &Field{Kind: KindReference, Ref: &Ref{Types: []string{"test.port"}}}
+			return list(s)
+		}, "tags refers to a test.port, which it doesn't depend on"},
+		{"a reference within a type that doesn't hold it", func(s specs) []*Spec {
+			s["maker"].Fields = append(s["maker"].Fields, Field{
+				Name: "port", Kind: KindReference, Nullable: true, Default: Null{},
+				Ref: &Ref{Types: []string{"test.port"}, Within: "test.thing", Shape: ShapeID},
+			})
+			return list(s)
+		}, "port refers within a test.thing, which doesn't hold a test.maker"},
+		{
+			"a rule over a nullable field without a gap", func(s specs) []*Spec { s["item"].Unique[0].Gap = ""; return list(s) },
+			"the uniqueness rule [thing parent name] has no gap, though parent can be null",
+		},
+		{
+			"an identity with a gap", func(s specs) []*Spec { s["maker"].Unique[0].Gap = "sometimes"; return list(s) },
+			"its identity [name] is a uniqueness rule with a gap",
+		},
+		{
+			"a key no rule backs", func(s specs) []*Spec { s["thing"].Children[0].Key = []string{"positions"}; return list(s) },
+			"the collection ports has no gap, but no uniqueness rule of test.port's makes its key [positions] unique",
+		},
+		{
+			"a nested collection without a source or gap", func(s specs) []*Spec { s["port"].Children[0].Source = Source{}; return list(s) },
+			"the collection links is nested and has no gap, so it needs a Source",
+		},
+		{
+			"a generic reference without a source", func(s specs) []*Spec { field(s["item"], "component").Source = Source{}; return list(s) },
+			"component is a generic reference, whose types NetBox's schema doesn't list, so it needs a Source",
+		},
+		{
+			"a choice field without a source", func(s specs) []*Spec { field(s["thing"], "role").Source = Source{}; return list(s) },
+			"role is a choice field, so it needs a Source citing its choice set",
+		},
 		{"a shared field neither has", func(s specs) []*Spec { s["item"].Children[0].Shared = []string{"label"}; return list(s) }, "shares label, which isn't a field of both"},
 		{"a shared field the parent hasn't", func(s specs) []*Spec { s["thing"].Children[0].Shared = []string{"positions"}; return list(s) }, "shares positions, which isn't a field of both test.thing and test.port"},
 		{"a shared parent field", func(s specs) []*Spec { s["item"].Children[0].Shared = []string{"parent"}; return list(s) }, "the collection child_items shares its parent field parent"},

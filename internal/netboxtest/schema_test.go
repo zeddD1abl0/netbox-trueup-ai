@@ -66,3 +66,16 @@ func TestSchemaFails(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaClient checks that the schema's client differs from client only
+// in its timeout: it dials only this machine, through no proxy, and follows
+// no redirect.
+func TestSchemaClient(t *testing.T) {
+	t.Parallel()
+	if schemaClient.Transport != client.Transport || schemaClient.CheckRedirect == nil || schemaClient.Jar != nil {
+		t.Errorf("schemaClient doesn't share client's transport and redirect policy")
+	}
+	if schemaClient.Timeout <= client.Timeout {
+		t.Errorf("schemaClient's timeout %v isn't longer than client's %v", schemaClient.Timeout, client.Timeout)
+	}
+}

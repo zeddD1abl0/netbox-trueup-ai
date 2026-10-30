@@ -7,6 +7,7 @@
 package spectest
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,12 +82,16 @@ func (c *contract) checkObject(s *model.Spec, resp, req, patch *openapi.Schema) 
 	}
 	for _, ig := range s.Ignored {
 		covered[ig.Name] = true
-		if resp.Properties[ig.Name] == nil && req.Properties[ig.Name] == nil {
+		switch {
+		case resp.Properties[ig.Name] == nil && req.Properties[ig.Name] == nil:
 			c.fail(s.Type, "it ignores %s, which NetBox's API hasn't got", ig.Name)
+		case slices.Contains(req.Required, ig.Name):
+			c.fail(s.Type, "it ignores %s, which NetBox's API requires when creating one", ig.Name)
 		}
 	}
 	all := maps.Clone(resp.Properties)
 	maps.Copy(all, req.Properties)
+	maps.Copy(all, patch.Properties)
 	for _, name := range slices.Sorted(maps.Keys(all)) {
 		if !covered[name] {
 			c.fail(s.Type, "NetBox's API has %s, which the spec neither describes nor ignores", name)
@@ -99,6 +104,10 @@ func (c *contract) checkObject(s *model.Spec, resp, req, patch *openapi.Schema) 
 func (c *contract) checkNested(s *model.Spec, col model.Collection, resp, req, patch *openapi.Schema) {
 	where := s.Type + "." + col.Name
 	child := c.specs[col.Type]
+	if child == nil {
+		c.fail(where, "the collection holds %s, which has no spec", col.Type)
+		return
+	}
 	var items [3]*openapi.Schema
 	for i, parent := range []*openapi.Schema{resp, req, patch} {
 		p, ok := parent.Properties[col.Name]
@@ -107,18 +116,27 @@ func (c *contract) checkNested(s *model.Spec, col model.Collection, resp, req, p
 			return
 		}
 		prop, err := c.doc.Unwrap(p)
-		if err != nil || prop.Type != "array" || prop.Items == nil {
-			c.fail(where, "NetBox's API doesn't carry the collection as a list (%v)", err)
+		switch {
+		case err != nil:
+			c.fail(where, "%v", err)
 			return
+		case prop.Type != "array" || prop.Items == nil:
+			c.fail(where, "NetBox's API carries the collection as a %s, not a list", prop.Type)
+			return
+		case prop.Nullable || prop.ReadOnly && i > 0:
+			// A nested collection is left alone when its field is left out,
+			// which it can't be if the field is null or read-only.
+			c.fail(where, "NetBox's API carries the collection in a field that is nullable or read-only")
 		}
 		if items[i], _, err = c.doc.Resolve(prop.Items); err != nil {
 			c.fail(where, "%v", err)
 			return
 		}
 	}
-	if child != nil {
-		c.checkObject(child, items[0], items[1], items[2])
+	if slices.Contains(req.Required, col.Name) {
+		c.fail(where, "NetBox's API requires the collection when creating one, though the spec says it is left alone when left out")
 	}
+	c.checkObject(child, items[0], items[1], items[2])
 }
 
 // checkGeneric checks a generic reference, which NetBox's API carries in two
@@ -126,7 +144,10 @@ func (c *contract) checkNested(s *model.Spec, col model.Collection, resp, req, p
 func (c *contract) checkGeneric(where string, f *model.Field, resp, req, patch *openapi.Schema, covered map[string]bool) {
 	covered[f.Name], covered[f.Ref.TypeField], covered[f.Ref.IDField] = true, true, true
 	if p, ok := resp.Properties[f.Name]; ok {
-		if prop, err := c.doc.Unwrap(p); err != nil || !prop.ReadOnly {
+		switch prop, err := c.doc.Unwrap(p); {
+		case err != nil:
+			c.fail(where, "%v", err)
+		case !prop.ReadOnly:
 			c.fail(where, "NetBox's API gives it as a field it writes too, not as %s and %s", f.Ref.TypeField, f.Ref.IDField)
 		}
 	}
@@ -139,9 +160,13 @@ func (c *contract) checkGeneric(where string, f *model.Field, resp, req, patch *
 		if part.typ == "integer" {
 			as.Kind = model.KindInteger
 		}
-		c.checkAccess(where+" ("+part.name+")", &as, resp, req, patch)
-		if p, err := c.unwrap(resp, part.name); err == nil && p.Type != part.typ {
-			c.fail(where, "NetBox's API gives %s as a %s, not a %s", part.name, p.Type, part.typ)
+		r, w, ok := c.checkAccess(where+" ("+part.name+")", &as, resp, req, patch)
+		switch {
+		case !ok:
+		case r.Type != part.typ:
+			c.fail(where, "NetBox's API gives %s as %s, not %s", part.name, r.Type, part.typ)
+		case w.Schema != nil && w.Type != part.typ:
+			c.fail(where, "NetBox's API takes %s as %s, not %s", part.name, w.Type, part.typ)
 		}
 	}
 }
@@ -218,8 +243,8 @@ func (c *contract) checkKind(where string, f *model.Field, r, w openapi.Prop) {
 			return
 		}
 		takes()
-		c.checkBound(where, "minimum", f.Min, r.Minimum, false, r.ExclusiveMinimum)
-		c.checkBound(where, "maximum", f.Max, r.Maximum, false, r.ExclusiveMaximum)
+		c.checkBound(where, "minimum", f, f.Min, false, r.Minimum, r.ExclusiveMinimum)
+		c.checkBound(where, "maximum", f, f.Max, false, r.Maximum, r.ExclusiveMaximum)
 	case model.KindDecimal:
 		if r.Type != "number" {
 			mismatch(r.Type)
@@ -244,12 +269,38 @@ func (c *contract) checkKind(where string, f *model.Field, r, w openapi.Prop) {
 	case model.KindReference:
 		c.checkRef(where, f, r, w)
 	case model.KindSet:
-		if r.Type != "array" {
-			mismatch(r.Type)
-		}
+		c.checkSet(where, f, r, w)
 	case model.KindChildren, model.KindNull:
 		// model.Check refuses these for a field.
 	}
+}
+
+// checkSet checks a set's elements against the items of the arrays NetBox's
+// API gives and takes.
+func (c *contract) checkSet(where string, f *model.Field, r, w openapi.Prop) {
+	if r.Type != "array" || r.Items == nil || w.Schema != nil && (w.Type != "array" || w.Items == nil) {
+		c.fail(where, "its spec says it is a set, but NetBox's API gives %s and takes %s", r.Type, w.Type)
+		return
+	}
+	if f.Elem == nil {
+		return // model.Check reports it
+	}
+	ri, err := c.doc.Unwrap(r.Items)
+	if err != nil {
+		c.fail(where, "%v", err)
+		return
+	}
+	var wi openapi.Prop
+	if w.Schema != nil {
+		if wi, err = c.doc.Unwrap(w.Items); err != nil {
+			c.fail(where, "%v", err)
+			return
+		}
+	}
+	if ri.Nullable != f.Elem.Nullable {
+		c.fail(where, "its spec says its elements' nullable is %t, NetBox's API %t", f.Elem.Nullable, ri.Nullable)
+	}
+	c.checkKind(where+"[]", f.Elem, ri, wi)
 }
 
 // stringShape reads a string property: its most characters, its pattern,
@@ -288,10 +339,17 @@ func (c *contract) checkString(where string, f *model.Field, r, w openapi.Prop) 
 	if want := anchored(f.Pattern); pattern != want {
 		c.fail(where, "its spec's pattern is %q, NetBox's API's %q", want, pattern)
 	}
-	if w.Schema != nil {
-		if _, _, blank, _ := stringShape(w.Schema); blank != f.Blank {
-			c.fail(where, "its spec says blank is %t, NetBox's API %t", f.Blank, blank)
-		}
+	if w.Schema == nil {
+		return
+	}
+	wMaxLength, wPattern, blank, ok := stringShape(w.Schema)
+	switch {
+	case !ok:
+		c.fail(where, "NetBox's API gives it as a string but takes it as %s %s", w.Type, w.Format)
+	case wMaxLength != maxLength || wPattern != pattern:
+		c.fail(where, "NetBox's API takes it with at most %d characters and the pattern %q, but gives it with %d and %q", wMaxLength, wPattern, maxLength, pattern)
+	case blank != f.Blank:
+		c.fail(where, "its spec says blank is %t, NetBox's API %t", f.Blank, blank)
 	}
 }
 
@@ -313,22 +371,30 @@ func (c *contract) checkDecimalBounds(where string, f *model.Field, r openapi.Pr
 		whole *= 10
 	}
 	if f.Max == nil {
-		c.checkBound(where, "maximum", model.NewDecimal(whole, 0), r.Maximum, true, r.ExclusiveMaximum)
+		c.checkBound(where, "maximum", f, model.NewDecimal(whole, 0), true, r.Maximum, r.ExclusiveMaximum)
 	} else {
-		c.checkBound(where, "maximum", f.Max, r.Maximum, false, r.ExclusiveMaximum)
+		c.checkBound(where, "maximum", f, f.Max, false, r.Maximum, r.ExclusiveMaximum)
 	}
 	if f.Min == nil {
-		c.checkBound(where, "minimum", model.NewDecimal(-whole, 0), r.Minimum, true, r.ExclusiveMinimum)
+		c.checkBound(where, "minimum", f, model.NewDecimal(-whole, 0), true, r.Minimum, r.ExclusiveMinimum)
 	} else {
-		c.checkBound(where, "minimum", f.Min, r.Minimum, false, r.ExclusiveMinimum)
+		c.checkBound(where, "minimum", f, f.Min, false, r.Minimum, r.ExclusiveMinimum)
 	}
 }
 
-// checkBound checks one bound: want, or none if nil, against the schema's.
-func (c *contract) checkBound(where, which string, want model.Value, got *json.Number, wantExclusive, exclusive bool) {
+// checkBound checks one of a field's bounds, want, which its digits imply
+// when implied is set, against the schema's, got. The spec's bound must be
+// the schema's, or tighter where NetBox's model enforces more than its API
+// states, as it refuses a negative weight when it saves one: the field must
+// then cite where, in its Source, and integration tests check it against
+// NetBox. A bound the spec states is inclusive.
+func (c *contract) checkBound(where, which string, f *model.Field, want model.Value, implied bool, got *json.Number, exclusive bool) {
+	cited := f.Source != (model.Source{})
 	switch {
 	case want == nil && got == nil:
 		return
+	case got == nil && !implied && cited:
+		return // tighter than no bound at all
 	case want == nil || got == nil:
 		c.fail(where, "its spec's %s is %s, NetBox's API's %s", which, describe(want), numberString(got))
 		return
@@ -345,8 +411,22 @@ func (c *contract) checkBound(where, which string, want model.Value, got *json.N
 	case model.Integer:
 		w = model.NewDecimal(int64(want), 0)
 	}
-	if n.Cmp(w) != 0 || exclusive != wantExclusive {
-		c.fail(where, "its spec's %s is %s (exclusive %t), NetBox's API's %s (exclusive %t)", which, w, wantExclusive, got, exclusive)
+	// tighter is positive when the spec's bound lets fewer values through.
+	tighter := w.Cmp(n)
+	if which == "maximum" {
+		tighter = -tighter
+	}
+	switch {
+	case tighter == 0 && exclusive == implied:
+		// The same bound.
+	case !implied && tighter > 0:
+		if !cited {
+			c.fail(where, "its spec's %s %s is tighter than NetBox's API's %s, so it needs a Source saying where NetBox enforces it", which, w, got)
+		}
+	default:
+		// Looser than the API's, an inclusive bound the API states as
+		// exclusive included, or not the bound the digits imply.
+		c.fail(where, "its spec's %s is %s (exclusive %t), NetBox's API's %s (exclusive %t)", which, w, implied, got, exclusive)
 	}
 }
 
@@ -401,7 +481,7 @@ func (c *contract) checkRef(where string, f *model.Field, r, w openapi.Prop) {
 			c.fail(where, "its spec says it refers to a %s, which NetBox's API gives as %s, but it gives %s",
 				f.Ref.Types[0], "Brief"+target, gives)
 		}
-		if w.Schema != nil && !c.takesIDOrBrief(w.Schema, target) {
+		if w.Schema != nil && !c.takesIDOrBrief(where, w.Schema, target) {
 			c.fail(where, "NetBox's API doesn't take it as an ID or a brief %s", target)
 		}
 	case model.ShapeTypeAndID:
@@ -411,12 +491,13 @@ func (c *contract) checkRef(where string, f *model.Field, r, w openapi.Prop) {
 
 // takesIDOrBrief reports whether a request property takes an ID or a brief
 // object of the target component, as NetBox's nested serializers do.
-func (c *contract) takesIDOrBrief(p *openapi.Schema, target string) bool {
+func (c *contract) takesIDOrBrief(where string, p *openapi.Schema, target string) bool {
 	var id, brief bool
 	for _, alt := range p.OneOf {
 		prop, err := c.doc.Unwrap(alt)
 		switch {
 		case err != nil:
+			c.fail(where, "%v", err)
 			return false
 		case prop.Type == "integer":
 			id = true
@@ -462,6 +543,9 @@ func numberString(n *json.Number) string {
 
 // parseDefault reads a default from the schema as a value of the kind.
 func parseDefault(kind model.Kind, raw json.RawMessage) (model.Value, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return model.Null{}, nil
+	}
 	var err error
 	switch kind {
 	case model.KindDecimal:

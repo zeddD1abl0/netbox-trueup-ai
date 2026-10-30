@@ -125,37 +125,48 @@ func observe(t *testing.T, f *model.Field, raw json.RawMessage) model.Value {
 	return v
 }
 
-// TestDefaults creates objects with only their required fields and checks
-// that NetBox gives every other field the default its spec says, which
-// NetBox's schema shows for few fields.
+// factories create an object of each type with only its required fields,
+// for TestDefaults.
+var factories = map[string]func(t *testing.T) map[string]any{
+	"dcim.manufacturer": func(*testing.T) map[string]any {
+		name := unique("defaults")
+		return map[string]any{"name": name, "slug": name}
+	},
+	"dcim.devicetype": func(t *testing.T) map[string]any {
+		name := unique("defaults")
+		return map[string]any{"manufacturer": newManufacturer(t), "model": name, "slug": name}
+	},
+}
+
+// TestDefaults creates an object of each type the package has a spec of,
+// with only its required fields, and checks that NetBox gives every other
+// field the default its spec says, which NetBox's schema shows for few
+// fields. It compares what NetBox gives without normalizing it, so a blank
+// choice where the spec says null is a difference.
 func TestDefaults(t *testing.T) {
 	t.Parallel()
-	maker := newManufacturer(t)
-	name := unique("defaults")
-	mfr, err := create(t, "/api/dcim/manufacturers/", map[string]any{"name": name, "slug": name})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dt, err := create(t, "/api/dcim/device-types/", map[string]any{"manufacturer": maker, "model": name, "slug": name})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []struct {
-		spec *model.Spec
-		obj  map[string]json.RawMessage
-	}{{manufacturer, mfr}, {deviceType, dt}} {
-		for i := range c.spec.Fields {
-			f := &c.spec.Fields[i]
-			if f.Required {
+	for _, spec := range Specs() {
+		factory, ok := factories[spec.Type]
+		if !ok {
+			t.Errorf("%s: TestDefaults has no way to create one; add it to factories", spec.Type)
+			continue
+		}
+		obj, err := create(t, spec.Endpoint, factory(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range spec.Fields {
+			f := &spec.Fields[i]
+			if f.Required || f.ReadOnly {
 				continue
 			}
-			raw, ok := c.obj[f.Name]
+			raw, ok := obj[f.Name]
 			if !ok {
-				t.Errorf("%s.%s: NetBox's answer hasn't got it", c.spec.Type, f.Name)
+				t.Errorf("%s.%s: NetBox's answer hasn't got it", spec.Type, f.Name)
 				continue
 			}
-			if got := f.Normalize(observe(t, f, raw)); !model.Equal(got, f.Default) {
-				t.Errorf("%s.%s: NetBox's default is %s, the spec's %s", c.spec.Type, f.Name, got, f.Default)
+			if got := observe(t, f, raw); !model.Equal(got, f.Default) {
+				t.Errorf("%s.%s: NetBox's default is %s, the spec's %s", spec.Type, f.Name, got, f.Default)
 			}
 		}
 	}
@@ -174,12 +185,14 @@ func TestNormalizationAgainstNetBox(t *testing.T) {
 	written := map[string]model.Value{
 		// Python's str.strip removes U+001C to U+001F, which Go's
 		// unicode.IsSpace doesn't count as white space.
-		"model":       model.String("\x1c\u00a0 " + name + " \t\x1f"),
-		"description": model.String("  padded \u3000"),
-		"part_number": model.String("\u2029"),
-		"airflow":     model.Choice(""),
-		"weight_unit": model.Choice(""),
-		"u_height":    twoAndAHalf,
+		"model":          model.String("\x1c\u00a0 " + name + " \t\x1f"),
+		"description":    model.String("  padded \u3000"),
+		"part_number":    model.String("\u2029"),
+		"airflow":        model.Choice(""),
+		"weight_unit":    model.Choice(""),
+		"subdevice_role": model.Choice(""),
+		"cooling_method": model.Choice(""),
+		"u_height":       twoAndAHalf,
 	}
 	body := map[string]any{"manufacturer": maker, "slug": name}
 	for field, v := range written {
@@ -225,6 +238,8 @@ func TestValidationAgainstNetBox(t *testing.T) {
 		{"weight", 999999.99, model.NewDecimal(99999999, 2)},
 		{"weight", 1000000, model.NewDecimal(1000000, 0)},
 		{"weight", 12.345, model.NewDecimal(12345, 3)},
+		{"weight", 0, model.NewDecimal(0, 0)},
+		{"weight", -5, model.NewDecimal(-5, 0)},
 		{"part_number", strings.Repeat("p", 50), model.String(strings.Repeat("p", 50))},
 		{"part_number", strings.Repeat("p", 51), model.String(strings.Repeat("p", 51))},
 		{"part_number", strings.Repeat("ä", 50), model.String(strings.Repeat("ä", 50))},

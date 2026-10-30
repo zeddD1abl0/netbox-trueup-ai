@@ -1,6 +1,7 @@
 package dcim
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -100,7 +101,10 @@ func TestContractFinds(t *testing.T) {
 		{"a decimal as an integer", func(s specs) { field(s, "devicetype", "weight").Kind = model.KindInteger }, "its spec says it is integer, but NetBox's API gives number"},
 		{"a date as a string", func(s specs) { field(s, "devicetype", "end_of_life").Kind = model.KindString }, "its spec says it is a string, but NetBox's API gives string date"},
 		{"more digits", func(s specs) { field(s, "devicetype", "u_height").Digits = 5 }, "dcim.devicetype.u_height: its spec's maximum is 10000 (exclusive true), NetBox's API's 1000"},
-		{"another minimum", func(s specs) { field(s, "devicetype", "u_height").Min = model.NewDecimal(5, 1) }, "its spec's minimum is 0.5 (exclusive false), NetBox's API's 0.0"},
+		{"a looser minimum", func(s specs) { field(s, "devicetype", "u_height").Min = model.NewDecimal(-1, 0) }, "its spec's minimum is -1 (exclusive false), NetBox's API's 0.0 (exclusive false)"},
+		{"a tighter minimum without a source", func(s specs) { field(s, "rearporttemplate", "positions").Min = model.Integer(2) }, "dcim.rearporttemplate.positions: its spec's minimum 2 is tighter than NetBox's API's 1, so it needs a Source"},
+		{"a tighter minimum whose source is gone", func(s specs) { field(s, "devicetype", "weight").Source = model.Source{} }, "dcim.devicetype.weight: its spec's minimum 0 is tighter than NetBox's API's -1000000"},
+		{"an exclusive bound made inclusive", func(s specs) { field(s, "devicetype", "weight").Max = model.NewDecimal(1000000, 0) }, "dcim.devicetype.weight: its spec's maximum is 1000000 (exclusive false), NetBox's API's 1000000 (exclusive true)"},
 		{"no minimum", func(s specs) { field(s, "devicetype", "u_height").Min = nil }, "its spec's minimum is -1000 (exclusive true), NetBox's API's 0.0 (exclusive false)"},
 		{"fewer places", func(s specs) { field(s, "devicetype", "weight").Places = 1 }, "dcim.devicetype.weight: its spec's maximum is 10000000"},
 		{"a missing choice", func(s specs) {
@@ -133,6 +137,18 @@ func TestContractFinds(t *testing.T) {
 		}, "dcim.inventoryitemtemplate.manufacturer: NetBox's API gives it as a field it writes too"},
 		{"a nested collection NetBox hasn't got", func(s specs) { s["dcim.frontporttemplate"].Children[0].Name = "mappings" }, "dcim.frontporttemplate.mappings: NetBox's API doesn't carry the collection in mappings"},
 		{"a nested child's field", func(s specs) { field(s, "porttemplatemapping", "position").Name = "front_port_position" }, "dcim.porttemplatemapping.front_port_position: NetBox's API doesn't give it"},
+		{"a set of the wrong references", func(s specs) {
+			d := s["dcim.devicetype"]
+			d.Ignored = slices.DeleteFunc(d.Ignored, func(ig model.Ignored) bool { return ig.Name == "tags" })
+			d.Fields = append(d.Fields, model.Field{
+				Name: "tags", Kind: model.KindSet, Default: model.Set{},
+				Elem: &model.Field{Kind: model.KindReference, Ref: &model.Ref{Types: []string{"dcim.manufacturer"}}},
+			})
+		}, "dcim.devicetype.tags[]: its spec says it refers to a dcim.manufacturer, which NetBox's API gives as BriefManufacturer, but it gives NestedTag"},
+		{"a set that isn't", func(s specs) {
+			f := field(s, "devicetype", "comments")
+			f.Kind, f.Trim, f.Blank, f.MaxLength, f.Default, f.Elem = model.KindSet, false, false, 0, model.Set{}, &model.Field{Kind: model.KindString}
+		}, "dcim.devicetype.comments: its spec says it is a set, but NetBox's API gives string and takes string"},
 		{"an endpoint NetBox hasn't got", func(s specs) { s["dcim.manufacturer"].Endpoint = "/api/dcim/makers/" }, "dcim.manufacturer: the schema has no GET /api/dcim/makers/"},
 	}
 	for _, tt := range tests {
@@ -152,27 +168,57 @@ func TestContractFinds(t *testing.T) {
 // is reported.
 func TestSourcesFinds(t *testing.T) {
 	t.Parallel()
-	root := "../../../.cache/reference/netbox-4.7.2/netbox"
-	if _, err := os.Stat(root); err != nil {
-		t.Skip("NetBox's source isn't there; run make reference")
+	root, err := spectest.ReferenceSource(spectest.Release(loadSnapshot(t)))
+	switch {
+	case errors.Is(err, spectest.ErrNoReference):
+		t.Skip(err)
+	case err != nil:
+		t.Fatal(err)
+	}
+	type specs = map[string]*model.Spec
+	cite := func(src model.Source) func(s specs) {
+		return func(s specs) { s["dcim.devicetype"].Sources = append(s["dcim.devicetype"].Sources, src) }
 	}
 	tests := []struct {
-		name string
-		src  model.Source
-		want string
+		name   string
+		breaks func(s specs)
+		want   string
 	}{
-		{"a class it hasn't got", model.Source{File: "dcim/models/devices.py", Symbol: "DeviceKind"}, "which doesn't define DeviceKind"},
-		{"a method it hasn't got", model.Source{File: "dcim/models/devices.py", Symbol: "DeviceType.validate"}, "which doesn't define validate"},
-		{"a file it hasn't got", model.Source{File: "dcim/models/racks2.py", Symbol: "Rack"}, "cites dcim/models/racks2.py"},
-		{"a file outside it", model.Source{File: "../../../go.mod", Symbol: "module"}, "cites ../../../go.mod"},
+		{"a class it hasn't got", cite(model.Source{File: "dcim/models/devices.py", Symbol: "DeviceKind"}), "doesn't define DeviceKind"},
+		{"a method it hasn't got", cite(model.Source{File: "dcim/models/devices.py", Symbol: "DeviceType.validate"}), "doesn't define validate"},
+		// Manufacturer has no clean method, though DeviceType and Device,
+		// in the same file, have.
+		{"a method of another class", cite(model.Source{File: "dcim/models/devices.py", Symbol: "Manufacturer.clean"}), "dcim/models/devices.py doesn't define clean where the citation says"},
+		{"a file it hasn't got", cite(model.Source{File: "dcim/models/racks2.py", Symbol: "Rack"}), "cites Rack in dcim/models/racks2.py"},
+		{"a file outside it", cite(model.Source{File: "../../../go.mod", Symbol: "module"}), "cites module in ../../../go.mod"},
+		{
+			"a configurable choice that isn't marked", func(s specs) { s["dcim.devicetype"].Field("airflow").Choices.Configurable = "" },
+			`dcim.devicetype.airflow: its FIELD_CHOICES key is "", but DeviceAirflowChoices's is "dcim.Device.airflow"`,
+		},
+		{
+			"a choice marked configurable that isn't", func(s specs) {
+				s["dcim.devicetype"].Field("cooling_method").Choices.Configurable = "dcim.Device.cooling_method"
+			},
+			`dcim.devicetype.cooling_method: its FIELD_CHOICES key is "dcim.Device.cooling_method", but CoolingMethodChoices's is ""`,
+		},
+		{
+			"another FIELD_CHOICES key", func(s specs) { s["dcim.devicetype"].Field("airflow").Choices.Configurable = "dcim.DeviceType.airflow" },
+			`its FIELD_CHOICES key is "dcim.DeviceType.airflow", but DeviceAirflowChoices's is "dcim.Device.airflow"`,
+		},
+		{"a choice field citing something else", func(s specs) {
+			s["dcim.devicetype"].Field("subdevice_role").Source = model.Source{File: "dcim/models/devices.py", Symbol: "DeviceType"}
+		}, "dcim.devicetype.subdevice_role: it cites DeviceType, which isn't a choice set"},
 	}
 	for _, tt := range tests {
 		s := cloneSpecs(withPrototypes())
-		s["dcim.devicetype"].Sources = append(s["dcim.devicetype"].Sources, tt.src)
+		tt.breaks(s)
 		err := spectest.Sources(root, listOf(s))
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: Sources = %v, want a problem with %q", tt.name, err, tt.want)
 		}
+	}
+	if err := spectest.Sources(root, withPrototypes()); err != nil {
+		t.Errorf("Sources of the specs: %v", err)
 	}
 }
 
@@ -239,9 +285,46 @@ func TestContractFindsNetBoxChanges(t *testing.T) {
 		{"a nested collection gone", func(d doc) {
 			delete(d.Components.Schemas["WritableFrontPortTemplateRequest"].Properties, "rear_ports")
 		}, "dcim.frontporttemplate.rear_ports: NetBox's API doesn't carry the collection in rear_ports"},
+		{"an ignored field now required", func(d doc) {
+			r := d.Components.Schemas["WritableDeviceTypeRequest"]
+			r.Required = append(r.Required, "default_platform")
+		}, "dcim.devicetype: it ignores default_platform, which NetBox's API requires when creating one"},
+		{"a nested collection now required", func(d doc) {
+			r := d.Components.Schemas["WritableFrontPortTemplateRequest"]
+			r.Required = append(r.Required, "rear_ports")
+		}, "dcim.frontporttemplate.rear_ports: NetBox's API requires the collection when creating one"},
+		{
+			"a nested collection now nullable", func(d doc) { prop(d, "WritableFrontPortTemplateRequest", "rear_ports").Nullable = true },
+			"dcim.frontporttemplate.rear_ports: NetBox's API carries the collection in a field that is nullable or read-only",
+		},
+		{
+			"a nested collection no longer a list", func(d doc) { prop(d, "FrontPortTemplate", "rear_ports").Type = "object" },
+			"dcim.frontporttemplate.rear_ports: NetBox's API carries the collection as a object, not a list",
+		},
+		{
+			"a string taken as a number", func(d doc) { prop(d, "WritableDeviceTypeRequest", "model").Type = "integer" },
+			"dcim.devicetype.model: NetBox's API gives it as a string but takes it as integer",
+		},
+		{"a string taken longer", func(d doc) {
+			n := 99
+			prop(d, "WritableDeviceTypeRequest", "model").MaxLength = &n
+		}, "dcim.devicetype.model: NetBox's API takes it with at most 99 characters"},
+		{
+			"a generic reference's type taken as a number", func(d doc) { prop(d, "InventoryItemTemplateRequest", "component_type").Type = "integer" },
+			"dcim.inventoryitemtemplate.component: NetBox's API takes component_type as integer, not string",
+		},
+		{"a field only patching takes", func(d doc) {
+			d.Components.Schemas["PatchedWritableDeviceTypeRequest"].Properties["colour"] = &openapi.Schema{Type: "string"}
+		}, "dcim.devicetype: NetBox's API has colour, which the spec neither describes nor ignores"},
 		{"a nested child's new field", func(d doc) {
 			d.Components.Schemas["FrontPortTemplateMapping"].Properties["cable"] = &openapi.Schema{Type: "integer"}
 		}, "dcim.porttemplatemapping: NetBox's API has cable, which the spec neither describes nor ignores"},
+	}
+	// A null default, where the spec's is null too, agrees.
+	d := loadSnapshot(t)
+	prop(d, "DeviceType", "end_of_life").Default = []byte("null")
+	if err := spectest.Contract(d, withPrototypes()); err != nil {
+		t.Errorf("Contract with a null default for end_of_life: %v", err)
 	}
 	for _, tt := range tests {
 		d := loadSnapshot(t)

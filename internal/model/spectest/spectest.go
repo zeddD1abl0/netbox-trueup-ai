@@ -5,9 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -29,6 +27,14 @@ func Endpoints(specs []*model.Spec) []string {
 	}
 	slices.Sort(endpoints)
 	return endpoints
+}
+
+// Release returns the NetBox release a schema is from, such as 4.7.2 for
+// the version "4.7.2-Docker-5.1.1 (4.7)".
+func Release(doc *openapi.Document) string {
+	release, _, _ := strings.Cut(doc.Info.Version, "-")
+	release, _, _ = strings.Cut(release, " ")
+	return release
 }
 
 // Run runs the tests every spec package runs on its specs, which must be
@@ -66,9 +72,12 @@ func Run(t *testing.T, specs []*model.Spec, snapshot string) {
 		}
 	})
 	t.Run("Sources", func(t *testing.T) {
-		root, err := referenceSource(doc.Info.Version)
-		if err != nil {
-			t.Skipf("can't check the specs' citations: %v; run make reference to fetch NetBox's source", err)
+		root, err := ReferenceSource(Release(doc))
+		switch {
+		case errors.Is(err, ErrNoReference):
+			t.Skipf("can't check the specs' citations: %v", err)
+		case err != nil:
+			t.Fatal(err)
 		}
 		if err := Sources(root, specs); err != nil {
 			t.Errorf("NetBox's source in %s doesn't bear out the specs' citations:\n%v", root, err)
@@ -78,16 +87,15 @@ func Run(t *testing.T, specs []*model.Spec, snapshot string) {
 
 // Live checks specs against schema, the live schema of the disposable NetBox
 // (internal/netboxtest), and that the file snapshot is that schema trimmed to
-// the specs' endpoints. With -update, it rewrites the snapshot instead of
-// comparing it.
+// the specs' endpoints. With -update, it only rewrites the snapshot: the
+// specs' choices, generated from the old snapshot, may not agree with the new
+// one until `make generate` has run, which `make schema` does next, before
+// it tests the specs.
 func Live(t *testing.T, schema []byte, specs []*model.Spec, snapshot string) {
 	t.Helper()
 	doc, err := openapi.Load(schema)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if err := Contract(doc, specs); err != nil {
-		t.Errorf("the specs don't agree with the schema of NetBox %s:\n%v", doc.Info.Version, err)
 	}
 	trimmed, err := openapi.Trim(schema, Endpoints(specs))
 	if err != nil {
@@ -97,8 +105,11 @@ func Live(t *testing.T, schema []byte, specs []*model.Spec, snapshot string) {
 		if err := os.WriteFile(snapshot, trimmed, 0o644); err != nil { //nolint:gosec // G306: a committed file.
 			t.Fatal(err)
 		}
-		t.Logf("wrote %s from NetBox %s's schema; run make generate next", snapshot, doc.Info.Version)
+		t.Logf("wrote %s from NetBox %s's schema", snapshot, doc.Info.Version)
 		return
+	}
+	if err := Contract(doc, specs); err != nil {
+		t.Errorf("the specs don't agree with the schema of NetBox %s:\n%v", doc.Info.Version, err)
 	}
 	committed, err := os.ReadFile(snapshot) //nolint:gosec // G304: the test names its own snapshot.
 	if err != nil {
@@ -108,33 +119,6 @@ func Live(t *testing.T, schema []byte, specs []*model.Spec, snapshot string) {
 		t.Errorf("schema snapshot %s isn't NetBox %s's schema:\n%s\nrun make schema to refresh it, and review the difference",
 			snapshot, doc.Info.Version, firstDifference(committed, trimmed))
 	}
-}
-
-// referenceSource returns the netbox directory of NetBox's source at the
-// release a schema came from, as `make reference` fetches it into
-// .cache/reference at the top of the repository.
-func referenceSource(version string) (string, error) {
-	release, _, _ := strings.Cut(version, "-")
-	release, _, _ = strings.Cut(release, " ")
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", errors.New("the repository's go.mod isn't above this directory")
-		}
-		dir = parent
-	}
-	root := filepath.Join(dir, ".cache", "reference", "netbox-"+release, "netbox")
-	if info, err := os.Stat(root); err != nil || !info.IsDir() { //nolint:gosec // G703: the repository's own .cache, found from the working directory.
-		return "", fmt.Errorf("%s isn't there: %w", root, errors.Join(err, fs.ErrNotExist))
-	}
-	return root, nil
 }
 
 // firstDifference shows where two versions of a file first differ, a few

@@ -26,9 +26,10 @@ var (
 // nil when it finds nothing.
 func Check(specs []*Spec) error {
 	c := checker{
-		specs:  map[string]*Spec{},
-		child:  map[string]bool{},
-		nested: map[string]bool{},
+		specs:   map[string]*Spec{},
+		child:   map[string]bool{},
+		nested:  map[string]bool{},
+		parents: map[string][]string{},
 	}
 	endpoints := map[string]string{}
 	for _, s := range specs {
@@ -50,6 +51,7 @@ func Check(specs []*Spec) error {
 			if col.Nested {
 				c.nested[col.Type] = true
 			}
+			c.parents[col.Type] = append(c.parents[col.Type], s.Type)
 		}
 	}
 	for _, s := range specs {
@@ -61,9 +63,31 @@ func Check(specs []*Spec) error {
 
 type checker struct {
 	specs    map[string]*Spec
-	child    map[string]bool // types some collection holds
-	nested   map[string]bool // types some nested collection holds
+	child    map[string]bool     // types some collection holds
+	nested   map[string]bool     // types some nested collection holds
+	parents  map[string][]string // the types whose collections hold a type
 	problems []error
+}
+
+// isAncestor reports whether objects of type typ are held, directly or
+// further down, in a collection of an object of type ancestor.
+func (c *checker) isAncestor(ancestor, typ string) bool {
+	seen := map[string]bool{}
+	pending := []string{typ}
+	for len(pending) > 0 {
+		t := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, p := range c.parents[t] {
+			if p == ancestor {
+				return true
+			}
+			if !seen[p] {
+				seen[p] = true
+				pending = append(pending, p)
+			}
+		}
+	}
+	return false
 }
 
 func (c *checker) fail(s *Spec, format string, args ...any) {
@@ -140,8 +164,10 @@ func (c *checker) checkIdentity(s *Spec) {
 		if !c.child[s.Type] {
 			c.fail(s, "it has no identity, and isn't a child type")
 		}
-	} else if !slices.ContainsFunc(s.Unique, func(u Unique) bool { return sameNames(u.Fields, s.Identity) }) {
+	} else if i := slices.IndexFunc(s.Unique, func(u Unique) bool { return sameNames(u.Fields, s.Identity) }); i < 0 {
 		c.fail(s, "its identity %v isn't one of its uniqueness rules", s.Identity)
+	} else if s.Unique[i].Gap != "" {
+		c.fail(s, "its identity %v is a uniqueness rule with a gap, which can't tell objects apart", s.Identity)
 	}
 	for _, name := range s.Identity {
 		if s.Field(name) == nil {
@@ -153,8 +179,11 @@ func (c *checker) checkIdentity(s *Spec) {
 			c.fail(s, "a uniqueness rule has no fields")
 		}
 		for _, name := range u.Fields {
-			if s.Field(name) == nil {
+			switch f := s.Field(name); {
+			case f == nil:
 				c.fail(s, "a uniqueness rule names %s, which %v", name, errNoSuchField)
+			case f.Nullable && u.Gap == "":
+				c.fail(s, "the uniqueness rule %v has no gap, though %s can be null, which PostgreSQL treats as distinct", u.Fields, name)
 			}
 		}
 		if slices.ContainsFunc(s.Unique[:i], func(v Unique) bool { return sameNames(u.Fields, v.Fields) }) {
@@ -181,10 +210,14 @@ func (c *checker) checkDependencies(s *Spec) {
 		}
 	}
 	for _, f := range s.Fields {
-		if f.Kind != KindReference || f.Ref == nil || f.Ref.Within != "" {
+		ref := f.Ref
+		if f.Kind == KindSet && f.Elem != nil {
+			ref = f.Elem.Ref // a set of references, such as tags
+		}
+		if ref == nil || ref.Within != "" {
 			continue
 		}
-		for _, t := range f.Ref.Types {
+		for _, t := range ref.Types {
 			if t != s.Type && !slices.Contains(s.DependsOn, t) {
 				c.fail(s, "%s refers to a %s, which it doesn't depend on", f.Name, t)
 			}
@@ -302,7 +335,7 @@ func (c *checker) checkField(s *Spec, f *Field, name string) {
 	case KindChoice:
 		c.checkChoices(fail, f)
 	case KindReference:
-		c.checkRef(fail, f)
+		c.checkRef(s, fail, f)
 	case KindBoolean, KindDate, KindChildren, KindNull:
 		// Nothing more to check. A field can't hold children or only nulls,
 		// which the start of checkField reports.
@@ -333,6 +366,9 @@ func (c *checker) checkChoices(fail func(string, ...any), f *Field) {
 	if f.Choices == nil {
 		return
 	}
+	if f.Source == (Source{}) {
+		fail("is a choice field, so it needs a Source citing its choice set")
+	}
 	if len(f.Choices.Values) == 0 {
 		fail("has no choices: is it missing from the generated choices?")
 	}
@@ -349,7 +385,7 @@ func (c *checker) checkChoices(fail func(string, ...any), f *Field) {
 	}
 }
 
-func (c *checker) checkRef(fail func(string, ...any), f *Field) {
+func (c *checker) checkRef(s *Spec, fail func(string, ...any), f *Field) {
 	r := f.Ref
 	if r == nil {
 		return
@@ -377,6 +413,9 @@ func (c *checker) checkRef(fail func(string, ...any), f *Field) {
 		if r.TypeField == "" || r.IDField == "" {
 			fail("is a generic reference without its type and ID fields")
 		}
+		if f.Source == (Source{}) {
+			fail("is a generic reference, whose types NetBox's schema doesn't list, so it needs a Source that does")
+		}
 	default:
 		fail("has an unknown shape %d", r.Shape)
 	}
@@ -387,6 +426,9 @@ func (c *checker) checkRef(fail func(string, ...any), f *Field) {
 	if parent == nil {
 		fail("refers within %s, which has no spec", r.Within)
 		return
+	}
+	if !c.isAncestor(r.Within, s.Type) {
+		fail("refers within a %s, which doesn't hold a %s", r.Within, s.Type)
 	}
 	for _, t := range r.Types {
 		if !slices.ContainsFunc(parent.Children, func(col Collection) bool { return col.Type == t }) {
@@ -424,6 +466,23 @@ func (c *checker) checkCollection(s *Spec, col *Collection) {
 	if len(col.Key) == 0 {
 		fail("has no key")
 	}
+	// A key without a gap claims that NetBox keeps it unique among one
+	// parent's children: a uniqueness rule of the children's, over the
+	// parent, shared and key fields, must say so, or for a nested collection
+	// a Source.
+	switch {
+	case col.Gap != "":
+	case col.Nested:
+		if col.Source == (Source{}) {
+			fail("is nested and has no gap, so it needs a Source saying where NetBox keeps its key unique")
+		}
+	default:
+		scope := append([]string{col.Parent}, col.Shared...)
+		scope = append(scope, col.Key...)
+		if !slices.ContainsFunc(child.Unique, func(u Unique) bool { return isSubset(u.Fields, scope) }) {
+			fail("has no gap, but no uniqueness rule of %s's makes its key %v unique among one parent's children", col.Type, col.Key)
+		}
+	}
 	for _, name := range col.Key {
 		switch {
 		case child.Field(name) == nil:
@@ -440,6 +499,11 @@ func (c *checker) checkCollection(s *Spec, col *Collection) {
 			fail("shares its parent field %s", name)
 		}
 	}
+}
+
+// isSubset reports whether every name in a is in b.
+func isSubset(a, b []string) bool {
+	return !slices.ContainsFunc(a, func(n string) bool { return !slices.Contains(b, n) })
 }
 
 // sameNames reports whether a and b hold the same names in any order.

@@ -166,12 +166,13 @@ func dialLoopbackOnly(_, address string, _ syscall.RawConn) error {
 
 // do sends req and returns the status and up to maxResponse bytes of body.
 func do(req *http.Request) (int, []byte, error) {
-	return doUpTo(req, maxResponse)
+	return doUpTo(client, req, maxResponse)
 }
 
-// doUpTo sends req and returns the status and up to limit bytes of body.
-func doUpTo(req *http.Request, limit int) (int, []byte, error) {
-	resp, err := client.Do(req)
+// doUpTo sends req with c, one of this package's clients, and returns the
+// status and up to limit bytes of body.
+func doUpTo(c *http.Client, req *http.Request, limit int) (int, []byte, error) {
+	resp, err := c.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}

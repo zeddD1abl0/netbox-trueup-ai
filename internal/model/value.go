@@ -230,21 +230,57 @@ func equalFields(a, b map[string]Value) bool {
 }
 
 // sameElements reports whether a and b hold equal elements, as many times
-// each, in any order.
+// each, in any order: whether every element of a can be paired with its own
+// equal element of b. Equality between references isn't transitive, since
+// two resolved references compare by ID and others by key, so a greedy
+// pairing can miss one that exists; sameElements finds a pairing by
+// augmenting paths when the greedy one fails.
 func sameElements[T any](a, b []T, equal func(T, T) bool) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	used := make([]bool, len(b))
-	for _, x := range a {
+	pairedWith := make([]int, len(b)) // index in a + 1, or 0
+	greedy := true
+	for i, x := range a {
 		found := false
 		for j, y := range b {
-			if !used[j] && equal(x, y) {
-				used[j], found = true, true
+			if pairedWith[j] == 0 && equal(x, y) {
+				pairedWith[j], found = i+1, true
 				break
 			}
 		}
 		if !found {
+			greedy = false
+			break
+		}
+	}
+	if greedy {
+		return true
+	}
+	// Kuhn's algorithm over the equality graph.
+	eq := make([][]bool, len(a))
+	for i, x := range a {
+		eq[i] = make([]bool, len(b))
+		for j, y := range b {
+			eq[i][j] = equal(x, y)
+		}
+	}
+	clear(pairedWith)
+	var augment func(i int, seen []bool) bool
+	augment = func(i int, seen []bool) bool {
+		for j := range b {
+			if eq[i][j] && !seen[j] {
+				seen[j] = true
+				if pairedWith[j] == 0 || augment(pairedWith[j]-1, seen) {
+					pairedWith[j] = i + 1
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for i := range a {
+		if !augment(i, make([]bool, len(b))) {
 			return false
 		}
 	}

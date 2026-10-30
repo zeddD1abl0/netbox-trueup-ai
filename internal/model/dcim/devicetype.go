@@ -1,6 +1,10 @@
 package dcim
 
-import "github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+import (
+	"slices"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+)
 
 // deviceType is dcim.devicetype: a make and model of device. Its
 // manufacturer and model identify it, and its manufacturer and slug are
@@ -67,9 +71,12 @@ var deviceType = &model.Spec{
 			Source:  model.Source{File: "dcim/choices.py", Symbol: "CoolingMethodChoices"},
 		},
 		{
-			Name: "weight", Kind: model.KindDecimal, Digits: 8, Places: 2,
+			// NetBox's API takes a negative weight, but WeightMixin.save
+			// converts it to grams, which refuses one, and without a unit
+			// WeightMixin.clean refuses a weight anyway.
+			Name: "weight", Kind: model.KindDecimal, Digits: 8, Places: 2, Min: model.NewDecimal(0, 0),
 			Nullable: true, Default: model.Null{},
-			Source: model.Source{File: "netbox/models/mixins.py", Symbol: "WeightMixin"},
+			Source: model.Source{File: "utilities/conversion.py", Symbol: "_normalized_measurement"},
 		},
 		{
 			Name: "weight_unit", Kind: model.KindChoice,
@@ -81,7 +88,7 @@ var deviceType = &model.Spec{
 		{Name: "description", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 200, Trim: true},
 		{Name: "comments", Kind: model.KindString, Blank: true, Default: model.String(""), Trim: true},
 	},
-	Ignored: ignored(ignoredBookkeeping, ignoredNetBoxModel, []model.Ignored{
+	Ignored: slices.Concat(ignoredBookkeeping, ignoredNetBoxModel, []model.Ignored{
 		{Name: "default_platform", Reason: "a reference to a dcim.platform, which has no spec yet; devicetype-library doesn't set it, and TrueUp leaves it as it is"},
 		{Name: "front_image", Reason: "an image file, which needs an upload; devicetype-library's front_image is a boolean saying it has one, kept as metadata"},
 		{Name: "rear_image", Reason: "an image file, which needs an upload; devicetype-library's rear_image is a boolean saying it has one, kept as metadata"},
@@ -102,6 +109,7 @@ var deviceType = &model.Spec{
 	Sources: []model.Source{
 		{File: "dcim/models/devices.py", Symbol: "DeviceType"},
 		{File: "netbox/models/__init__.py", Symbol: "PrimaryModel"},
+		{File: "netbox/models/mixins.py", Symbol: "WeightMixin.save"},
 		{File: "dcim/api/serializers_/devicetypes.py", Symbol: "DeviceTypeSerializer"},
 		{File: "netbox/api/serializers/models.py", Symbol: "PrimaryModelSerializer"},
 		{File: "netbox/api/fields.py", Symbol: "ChoiceField.to_representation"},

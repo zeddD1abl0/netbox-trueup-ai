@@ -80,13 +80,13 @@ What they decide, as of NetBox 4.7.2 (Django 6.1, DRF 3.18, Python 3.14):
    Behaviour you rely on belongs in an integration test too (step 6), not only in your notes.
 
 4. **Write the spec**, in field order as the API gives them:
-   - `Kind`, `MaxLength`, `Pattern` (no anchors), `Digits` and `Places`, `Min`, `Max` and `Step` from the model and serializer.
+   - `Kind`, `MaxLength`, `Pattern` (no anchors), `Digits` and `Places`, `Min`, `Max` and `Step` from the model and serializer. A bound tighter than the schema's, which NetBox's model enforces beyond its API (a weight can't be negative: `_normalized_measurement` in `utilities/conversion.py`), needs the field's `Source` to say where.
    - `Required` as the create component's `required` says; `Nullable` from `null=True` or `allow_null`; `Blank` from `blank=True` or `allow_blank`.
    - `Default` for every writable field that isn't required: the model's default, or the serializer's, or blank or null. `ImportDefault` and `ImportRequired` where the import differs.
-   - `Trim` on every string field; `BlankIsNull` on choice fields that read blank as null.
-   - References: `Ref.Types`, `Shape` (`ShapeNested` for a brief object, `ShapeID` for a bare ID, `ShapeTypeAndID` for a generic reference in two fields), and `Within` for a reference to another child of the same parent. Depend (`DependsOn`) on every type a reference outside the parent refers to.
-   - `Identity`, which must be one of the `Unique` rules, and every `Unique` rule with its `Gap`.
-   - Children: a `Collection` with its `Key` and `Gap`; `Nested` when the children have no endpoint and the parent carries them; `Shared` for fields a nested tree's children copy from their parent.
+   - `Trim` on every string field; `BlankIsNull` on choice fields that read blank as null. A choice field's `Source` is its choice set, and its `Choices.Configurable` is `<app>.<key>` if the set has a `key`, empty if not: the `Sources` test checks both.
+   - References: `Ref.Types`, `Shape` (`ShapeNested` for a brief object, `ShapeID` for a bare ID, `ShapeTypeAndID` for a generic reference in two fields, which must cite where NetBox lists its types), and `Within` for a reference to another child of an ancestor, such as the device type. Depend (`DependsOn`) on every type a reference outside the parent refers to, in sets too.
+   - `Identity`, which must be one of the `Unique` rules and have no gap, and every `Unique` rule with its `Gap`: a rule over a nullable field always has one.
+   - Children: a `Collection` with its `Key`, which one of the children's `Unique` rules must make unique within the parent, or a `Gap` saying where it isn't; `Nested` when the children have no endpoint and the parent carries them, with a `Source` for its key; `Shared` for fields a nested tree's children copy from their parent.
    - `Ignored`, with a reason, for every field of the API you leave out: read-only bookkeeping, and references to types without a spec.
    - Choice values come from `choices("<Component>", "<field>")`, generated, never typed in.
    - `Sources` and per-field `Source`: a path under `netbox/` and a class, function or `Class.method`.
@@ -95,7 +95,7 @@ What they decide, as of NetBox 4.7.2 (Django 6.1, DRF 3.18, Python 3.14):
 
 6. **Test.**
    - `make test` runs `spectest.Run` in each spec package: `Consistent` (`model.Check`), `Snapshot` (the snapshot holds exactly the specs' endpoints), `Contract` (the specs agree with it), and `Sources` (every citation is in NetBox's source; skipped until `make reference`).
-   - In the spec package's integration test, extend `TestDefaults`, `TestNormalizationAgainstNetBox` and `TestValidationAgainstNetBox` for the new fields. They write to the disposable NetBox through `netboxtest` and check NetBox's answers against `Default`, `Normalize` and `Validate`.
+   - In the spec package's integration test, extend `TestNormalizationAgainstNetBox` and `TestValidationAgainstNetBox` for the new fields, and give `TestDefaults` a factory for each new object type: it fails for a spec it can't create. They write to the disposable NetBox through `netboxtest` and check NetBox's answers against `Default`, `Normalize` and `Validate`.
    - When a check passes on the first try, break the spec in a test, as `TestContractFinds` does, to see it fail.
 
 7. **Cite** the NetBox source you followed in the PR description, and record anything the schema and the source disagreed on.

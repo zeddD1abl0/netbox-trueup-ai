@@ -23,8 +23,12 @@ import (
 // Decimals need nothing, since a Decimal is always in its lowest terms: 1
 // and 1.0 are the same Decimal. References compare by ID once resolved, and
 // sets and children in any order, which Equal does. Normalize doesn't check
-// v against NetBox's rules; Validate does.
+// v against NetBox's rules; Validate does. It leaves a value of another kind
+// than f's as it is, for Validate to refuse.
 func (f *Field) Normalize(v Value) Value {
+	if v == nil || v.Kind() != f.Kind {
+		return v
+	}
 	switch v := v.(type) {
 	case String:
 		if f.Trim {
@@ -101,8 +105,15 @@ func (f *Field) validate(v Value) error {
 	case Integer:
 		return f.validateBounds(v)
 	case Reference:
-		if f.Ref == nil || !slices.Contains(f.Ref.Types, v.Type) {
-			return fmt.Errorf("refers to a %s, which it can't", v.Type)
+		switch {
+		case f.Ref == nil || !slices.Contains(f.Ref.Types, v.Type):
+			return fmt.Errorf("refers to a %s, which it can't", quoteShort(v.Type))
+		case v.ID == 0 && len(v.Key) == 0:
+			return errors.New("refers to nothing: it has neither an ID nor a key")
+		}
+	case Date:
+		if v == (Date{}) {
+			return errors.New("isn't a date")
 		}
 	case Set:
 		if f.Elem == nil {
@@ -117,7 +128,17 @@ func (f *Field) validate(v Value) error {
 	return nil
 }
 
+// validateString checks s as Django REST Framework's CharField does, which
+// refuses NUL characters (ProhibitNullCharactersValidator), and as
+// encoding/json needs: a string that isn't UTF-8 would reach NetBox with
+// U+FFFD in place of its bad bytes, and never compare equal again.
 func (f *Field) validateString(s string) error {
+	switch {
+	case !utf8.ValidString(s):
+		return fmt.Errorf("%s isn't UTF-8", quoteShort(s))
+	case strings.ContainsRune(s, 0):
+		return fmt.Errorf("%s holds a NUL character, which NetBox refuses", quoteShort(s))
+	}
 	if s == "" {
 		if !f.Blank {
 			return errors.New("can't be blank")

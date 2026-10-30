@@ -107,13 +107,14 @@ generate-check: ## Check that the generated code matches its sources
 	done
 
 # Rewrites each spec package's schema snapshot from the schema of a fresh
-# disposable NetBox, which takes about 4 minutes to start, then regenerates
-# the choice values from it. Review the difference before committing it: it
-# is how NetBox's API changed.
+# disposable NetBox, which takes about 4 minutes to start, regenerates the
+# choice values from it, and then checks the specs against it. Review the
+# difference before committing it: it is how NetBox's API changed.
 .PHONY: schema
-schema: ## Refresh the OpenAPI schema snapshots from a disposable NetBox, and regenerate (needs Docker)
+schema: ## Refresh the OpenAPI schema snapshots from a disposable NetBox, regenerate, and check the specs (needs Docker)
 	go test -tags integration -run '^TestLiveSchema$$' -count=1 -timeout 30m $(addprefix ./,$(SPEC_PKGS)) -args -update
 	$(MAKE) generate
+	go test -count=1 $(addprefix ./,$(SPEC_PKGS))
 
 .PHONY: fmt
 fmt: ## Format Go code

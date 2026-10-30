@@ -29,6 +29,9 @@ func TestNormalize(t *testing.T) {
 		{"decimal", Field{Kind: KindDecimal}, NewDecimal(10, 1), NewDecimal(1, 0)},
 		{"set elements", Field{Kind: KindSet, Elem: &trimmed}, Set{String(" a "), String("b ")}, Set{String("a"), String("b")}},
 		{"unset", trimmed, nil, nil},
+		// A value of the wrong kind is left for Validate to refuse.
+		{"a blank string in a choice field", choice, String(""), String("")},
+		{"a padded choice in a string field", trimmed, Choice(" a "), Choice(" a ")},
 	}
 	for _, tt := range tests {
 		got := tt.field.Normalize(tt.in)
@@ -99,7 +102,13 @@ func TestValidate(t *testing.T) {
 		{positions, Integer(1025), "is more than 1024"},
 
 		{manufacturer, Reference{Type: "dcim.manufacturer", ID: 3}, ""},
-		{manufacturer, Reference{Type: "dcim.platform", ID: 3}, "refers to a dcim.platform, which it can't"},
+		{manufacturer, Reference{Type: "dcim.platform", ID: 3}, `refers to a "dcim.platform", which it can't`},
+		{manufacturer, Reference{Type: "dcim.manufacturer"}, "refers to nothing: it has neither an ID nor a key"},
+		{manufacturer, Reference{Type: "dcim.manufacturer", Key: map[string]Value{"name": String("Dell")}}, ""},
+		{Field{Name: "end_of_life", Kind: KindDate}, Date{}, "isn't a date"},
+		{slug, String("r6\x0070"), "holds a NUL character"},
+		{slug, String("r6\xff70"), "isn't UTF-8"},
+		{Field{Name: "d", Kind: KindString, Blank: true}, String("\x00"), "holds a NUL character"},
 		{tags, Set{Reference{Type: "extras.tag", ID: 1}}, ""},
 		{tags, Set{Reference{Type: "extras.tag", ID: 1}, String("x")}, `element "x" is a string, not a reference`},
 	}
@@ -165,6 +174,11 @@ func TestEqual(t *testing.T) {
 		{Children{child("eth0"), child("eth1")}, Children{child("eth1"), child("eth0")}, true},
 		{Children{child("eth0")}, Children{child("eth1")}, false},
 		{Children{child("eth0")}, Children{{Type: "dcim.interfacetemplate", Fields: map[string]Value{"name": String("eth0"), "label": String("")}}}, false},
+		// Reference equality isn't transitive: an unresolved reference equals
+		// both resolved ones, which differ from each other. A pairing exists,
+		// though taking the first match for each element misses it.
+		{Set{mfr(0, "Dell"), mfr(1, "Dell")}, Set{mfr(1, "Dell"), mfr(2, "Dell")}, true},
+		{Set{mfr(1, "Dell"), mfr(1, "Dell")}, Set{mfr(1, "Dell"), mfr(2, "Dell")}, false},
 	}
 	for _, tt := range tests {
 		if got := Equal(tt.a, tt.b); got != tt.want {

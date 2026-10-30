@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -88,6 +89,20 @@ func TestResolve(t *testing.T) {
 	}
 	if s, name, err := d.Resolve(&Schema{Type: "string"}); err != nil || name != "" || s.Type != "string" {
 		t.Errorf("Resolve of an inline schema = %v, %q, %v", s, name, err)
+	}
+	// A chain of exactly maxRefs $refs resolves; one more doesn't.
+	chain := func(n int) *Schema {
+		d.Components.Schemas[fmt.Sprintf("C%d", n)] = &Schema{Type: "string"}
+		for i := n - 1; i >= 1; i-- {
+			d.Components.Schemas[fmt.Sprintf("C%d", i)] = &Schema{Ref: fmt.Sprintf("#/components/schemas/C%d", i+1)}
+		}
+		return &Schema{Ref: "#/components/schemas/C1"}
+	}
+	if s, name, err := d.Resolve(chain(maxRefs)); err != nil || s.Type != "string" || name != fmt.Sprintf("C%d", maxRefs) {
+		t.Errorf("Resolve of a chain of %d $refs = %v, %q, %v", maxRefs, s, name, err)
+	}
+	if _, _, err := d.Resolve(chain(maxRefs + 1)); err == nil {
+		t.Errorf("Resolve of a chain of %d $refs gave no error", maxRefs+1)
 	}
 	d.Components.Schemas["A"] = &Schema{Ref: "#/components/schemas/B"}
 	d.Components.Schemas["B"] = &Schema{Ref: "#/components/schemas/A"}

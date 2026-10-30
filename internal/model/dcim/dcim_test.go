@@ -80,6 +80,8 @@ func TestValidation(t *testing.T) {
 		{"u_height", model.NewDecimal(11, 1), false},
 		{"u_height", model.NewDecimal(-1, 0), false},
 		{"weight", model.NewDecimal(123456, 2), true},
+		{"weight", model.NewDecimal(0, 0), true},
+		{"weight", model.NewDecimal(-5, 1), false},
 		{"weight", model.Null{}, true},
 		{"slug", model.String("poweredge-r670"), true},
 		{"slug", model.String("PowerEdge R670"), false},

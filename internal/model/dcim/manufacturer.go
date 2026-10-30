@@ -1,6 +1,10 @@
 package dcim
 
-import "github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+import (
+	"slices"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+)
 
 // manufacturer is dcim.manufacturer: an OrganizationalModel, so its name and
 // slug are each unique on their own, and the name identifies it, as NetBox's
@@ -19,7 +23,7 @@ var manufacturer = &model.Spec{
 		{Name: "description", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 200, Trim: true},
 		{Name: "comments", Kind: model.KindString, Blank: true, Default: model.String(""), Trim: true},
 	},
-	Ignored: ignored(ignoredBookkeeping, ignoredNetBoxModel, []model.Ignored{
+	Ignored: slices.Concat(ignoredBookkeeping, ignoredNetBoxModel, []model.Ignored{
 		{Name: "devicetype_count", Reason: "read-only: how many device types NetBox has from the manufacturer"},
 		{Name: "moduletype_count", Reason: "read-only: how many module types NetBox has from the manufacturer"},
 		{Name: "inventoryitem_count", Reason: "read-only: how many inventory items NetBox has from the manufacturer"},
