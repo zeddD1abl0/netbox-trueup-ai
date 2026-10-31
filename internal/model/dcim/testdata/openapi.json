@@ -1,0 +1,3543 @@
+{
+  "components": {
+    "schemas": {
+      "BriefDeviceType": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "manufacturer": {
+            "$ref": "#/components/schemas/BriefManufacturer"
+          },
+          "model": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_count",
+          "display",
+          "id",
+          "manufacturer",
+          "model",
+          "slug",
+          "url"
+        ],
+        "type": "object"
+      },
+      "BriefDeviceTypeRequest": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "manufacturer": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/BriefManufacturerRequest"
+              }
+            ]
+          },
+          "model": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manufacturer",
+          "model",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "BriefInventoryItemRole": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "id",
+          "name",
+          "slug",
+          "url"
+        ],
+        "type": "object"
+      },
+      "BriefInventoryItemRoleRequest": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "BriefManufacturer": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "id",
+          "name",
+          "slug",
+          "url"
+        ],
+        "type": "object"
+      },
+      "BriefManufacturerRequest": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "BriefModuleType": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "manufacturer": {
+            "$ref": "#/components/schemas/BriefManufacturer"
+          },
+          "model": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "module_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefModuleTypeProfile"
+              }
+            ],
+            "nullable": true
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "id",
+          "manufacturer",
+          "model",
+          "module_count",
+          "url"
+        ],
+        "type": "object"
+      },
+      "BriefModuleTypeProfile": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "id",
+          "name",
+          "url"
+        ],
+        "type": "object"
+      },
+      "BriefModuleTypeProfileRequest": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "BriefModuleTypeRequest": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "manufacturer": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/BriefManufacturerRequest"
+              }
+            ]
+          },
+          "model": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "profile": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefModuleTypeProfileRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "manufacturer",
+          "model"
+        ],
+        "type": "object"
+      },
+      "BriefOwner": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "id",
+          "name",
+          "url"
+        ],
+        "type": "object"
+      },
+      "BriefOwnerRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "BriefPlatform": {
+        "description": "Base serializer class for models inheriting from NestedGroupModel.",
+        "properties": {
+          "_depth": {
+            "readOnly": true,
+            "title": " depth",
+            "type": "integer"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_count": {
+            "default": 0,
+            "readOnly": true,
+            "type": "integer"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "virtualmachine_count": {
+            "default": 0,
+            "readOnly": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "_depth",
+          "device_count",
+          "display",
+          "id",
+          "name",
+          "slug",
+          "url",
+          "virtualmachine_count"
+        ],
+        "type": "object"
+      },
+      "BriefPlatformRequest": {
+        "description": "Base serializer class for models inheriting from NestedGroupModel.",
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "DeviceType": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "airflow": {
+            "nullable": true,
+            "properties": {
+              "label": {
+                "enum": [
+                  "Front to rear",
+                  "Rear to front",
+                  "Left to right",
+                  "Right to left",
+                  "Side to rear",
+                  "Rear to side",
+                  "Bottom to top",
+                  "Top to bottom",
+                  "Passive",
+                  "Mixed"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "* `front-to-rear` - Front to rear\n* `rear-to-front` - Rear to front\n* `left-to-right` - Left to right\n* `right-to-left` - Right to left\n* `side-to-rear` - Side to rear\n* `rear-to-side` - Rear to side\n* `bottom-to-top` - Bottom to top\n* `top-to-bottom` - Top to bottom\n* `passive` - Passive\n* `mixed` - Mixed",
+                "enum": [
+                  "front-to-rear",
+                  "rear-to-front",
+                  "left-to-right",
+                  "right-to-left",
+                  "side-to-rear",
+                  "rear-to-side",
+                  "bottom-to-top",
+                  "top-to-bottom",
+                  "passive",
+                  "mixed",
+                  "",
+                  null
+                ],
+                "type": "string",
+                "x-spec-enum-id": "11cb3d363b41ba9e"
+              }
+            },
+            "type": "object"
+          },
+          "comments": {
+            "type": "string"
+          },
+          "console_port_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "console_server_port_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "cooling_intake_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "cooling_method": {
+            "nullable": true,
+            "properties": {
+              "label": {
+                "enum": [
+                  "Air",
+                  "Liquid",
+                  "Hybrid",
+                  "Immersion"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "* `air` - Air\n* `liquid` - Liquid\n* `hybrid` - Hybrid\n* `immersion` - Immersion",
+                "enum": [
+                  "air",
+                  "liquid",
+                  "hybrid",
+                  "immersion",
+                  "",
+                  null
+                ],
+                "type": "string",
+                "x-spec-enum-id": "fff5375d415a4fdc"
+              }
+            },
+            "type": "object"
+          },
+          "cooling_outflow_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "created": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "custom_fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "default_platform": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefPlatform"
+              }
+            ],
+            "nullable": true
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_bay_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "device_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "display_url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "end_of_life": {
+            "description": "The date after which this device type is no longer supported by the manufacturer",
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
+          "exclude_from_utilization": {
+            "description": "Devices of this type are excluded when calculating rack utilization.",
+            "type": "boolean"
+          },
+          "front_image": {
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "front_port_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "interface_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "inventory_item_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "is_full_depth": {
+            "description": "Device consumes both front and rear rack faces.",
+            "type": "boolean"
+          },
+          "last_updated": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "manufacturer": {
+            "$ref": "#/components/schemas/BriefManufacturer"
+          },
+          "model": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "module_bay_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "owner": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefOwner"
+              }
+            ],
+            "nullable": true
+          },
+          "part_number": {
+            "description": "Discrete part number (optional)",
+            "maxLength": 50,
+            "type": "string"
+          },
+          "power_outlet_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "power_port_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "rear_image": {
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "rear_port_template_count": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "subdevice_role": {
+            "nullable": true,
+            "properties": {
+              "label": {
+                "enum": [
+                  "Parent",
+                  "Child"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "* `parent` - Parent\n* `child` - Child",
+                "enum": [
+                  "parent",
+                  "child",
+                  "",
+                  null
+                ],
+                "type": "string",
+                "x-spec-enum-id": "65a61d5e1deb4a24"
+              }
+            },
+            "type": "object"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/NestedTag"
+            },
+            "type": "array"
+          },
+          "u_height": {
+            "default": 1.0,
+            "exclusiveMaximum": true,
+            "format": "double",
+            "maximum": 1000,
+            "minimum": 0.0,
+            "title": "Position (U)",
+            "type": "number"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "weight": {
+            "exclusiveMaximum": true,
+            "exclusiveMinimum": true,
+            "format": "double",
+            "maximum": 1000000,
+            "minimum": -1000000,
+            "nullable": true,
+            "type": "number"
+          },
+          "weight_unit": {
+            "nullable": true,
+            "properties": {
+              "label": {
+                "enum": [
+                  "Kilograms",
+                  "Grams",
+                  "Pounds",
+                  "Ounces"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "* `kg` - Kilograms\n* `g` - Grams\n* `lb` - Pounds\n* `oz` - Ounces",
+                "enum": [
+                  "kg",
+                  "g",
+                  "lb",
+                  "oz",
+                  "",
+                  null
+                ],
+                "type": "string",
+                "x-spec-enum-id": "2235ce3f404afbc0"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "console_port_template_count",
+          "console_server_port_template_count",
+          "cooling_intake_template_count",
+          "cooling_outflow_template_count",
+          "created",
+          "device_bay_template_count",
+          "device_count",
+          "display",
+          "display_url",
+          "front_port_template_count",
+          "id",
+          "interface_template_count",
+          "inventory_item_template_count",
+          "last_updated",
+          "manufacturer",
+          "model",
+          "module_bay_template_count",
+          "power_outlet_template_count",
+          "power_port_template_count",
+          "rear_port_template_count",
+          "slug",
+          "url"
+        ],
+        "type": "object"
+      },
+      "FrontPortTemplate": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "maxLength": 6,
+                "pattern": "^[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "maxLength": 0,
+                "type": "string"
+              }
+            ]
+          },
+          "created": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefDeviceType"
+              }
+            ],
+            "nullable": true
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "last_updated": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "module_type": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefModuleType"
+              }
+            ],
+            "nullable": true
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "positions": {
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rear_ports": {
+            "items": {
+              "$ref": "#/components/schemas/FrontPortTemplateMapping"
+            },
+            "type": "array"
+          },
+          "type": {
+            "properties": {
+              "label": {
+                "enum": [
+                  "8P8C",
+                  "8P6C",
+                  "8P4C",
+                  "8P2C",
+                  "6P6C",
+                  "6P4C",
+                  "6P2C",
+                  "4P4C",
+                  "4P2C",
+                  "GG45",
+                  "TERA 4P",
+                  "TERA 2P",
+                  "TERA 1P",
+                  "110 Punch",
+                  "BNC",
+                  "F Connector",
+                  "N Connector",
+                  "MRJ21",
+                  "FC",
+                  "FC/PC",
+                  "FC/UPC",
+                  "FC/APC",
+                  "LC",
+                  "LC/PC",
+                  "LC/UPC",
+                  "LC/APC",
+                  "MU",
+                  "MU/PC",
+                  "MU/UPC",
+                  "MU/APC",
+                  "LSH",
+                  "LSH/PC",
+                  "LSH/UPC",
+                  "LSH/APC",
+                  "LX.5",
+                  "LX.5/PC",
+                  "LX.5/UPC",
+                  "LX.5/APC",
+                  "MPO",
+                  "MTRJ",
+                  "SC",
+                  "SC/PC",
+                  "SC/UPC",
+                  "SC/APC",
+                  "ST",
+                  "CS",
+                  "SN",
+                  "MDC",
+                  "SMA 905",
+                  "SMA 906",
+                  "URM-P2",
+                  "URM-P4",
+                  "URM-P8",
+                  "Splice",
+                  "USB Type A",
+                  "USB Type B",
+                  "USB Type C",
+                  "USB Mini A",
+                  "USB Mini B",
+                  "USB Micro A",
+                  "USB Micro B",
+                  "USB Micro AB",
+                  "Other"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "* `8p8c` - 8P8C\n* `8p6c` - 8P6C\n* `8p4c` - 8P4C\n* `8p2c` - 8P2C\n* `6p6c` - 6P6C\n* `6p4c` - 6P4C\n* `6p2c` - 6P2C\n* `4p4c` - 4P4C\n* `4p2c` - 4P2C\n* `gg45` - GG45\n* `tera-4p` - TERA 4P\n* `tera-2p` - TERA 2P\n* `tera-1p` - TERA 1P\n* `110-punch` - 110 Punch\n* `bnc` - BNC\n* `f` - F Connector\n* `n` - N Connector\n* `mrj21` - MRJ21\n* `fc` - FC\n* `fc-pc` - FC/PC\n* `fc-upc` - FC/UPC\n* `fc-apc` - FC/APC\n* `lc` - LC\n* `lc-pc` - LC/PC\n* `lc-upc` - LC/UPC\n* `lc-apc` - LC/APC\n* `mu` - MU\n* `mu-pc` - MU/PC\n* `mu-upc` - MU/UPC\n* `mu-apc` - MU/APC\n* `lsh` - LSH\n* `lsh-pc` - LSH/PC\n* `lsh-upc` - LSH/UPC\n* `lsh-apc` - LSH/APC\n* `lx5` - LX.5\n* `lx5-pc` - LX.5/PC\n* `lx5-upc` - LX.5/UPC\n* `lx5-apc` - LX.5/APC\n* `mpo` - MPO\n* `mtrj` - MTRJ\n* `sc` - SC\n* `sc-pc` - SC/PC\n* `sc-upc` - SC/UPC\n* `sc-apc` - SC/APC\n* `st` - ST\n* `cs` - CS\n* `sn` - SN\n* `mdc` - MDC\n* `sma-905` - SMA 905\n* `sma-906` - SMA 906\n* `urm-p2` - URM-P2\n* `urm-p4` - URM-P4\n* `urm-p8` - URM-P8\n* `splice` - Splice\n* `usb-a` - USB Type A\n* `usb-b` - USB Type B\n* `usb-c` - USB Type C\n* `usb-mini-a` - USB Mini A\n* `usb-mini-b` - USB Mini B\n* `usb-micro-a` - USB Micro A\n* `usb-micro-b` - USB Micro B\n* `usb-micro-ab` - USB Micro AB\n* `other` - Other",
+                "enum": [
+                  "8p8c",
+                  "8p6c",
+                  "8p4c",
+                  "8p2c",
+                  "6p6c",
+                  "6p4c",
+                  "6p2c",
+                  "4p4c",
+                  "4p2c",
+                  "gg45",
+                  "tera-4p",
+                  "tera-2p",
+                  "tera-1p",
+                  "110-punch",
+                  "bnc",
+                  "f",
+                  "n",
+                  "mrj21",
+                  "fc",
+                  "fc-pc",
+                  "fc-upc",
+                  "fc-apc",
+                  "lc",
+                  "lc-pc",
+                  "lc-upc",
+                  "lc-apc",
+                  "mu",
+                  "mu-pc",
+                  "mu-upc",
+                  "mu-apc",
+                  "lsh",
+                  "lsh-pc",
+                  "lsh-upc",
+                  "lsh-apc",
+                  "lx5",
+                  "lx5-pc",
+                  "lx5-upc",
+                  "lx5-apc",
+                  "mpo",
+                  "mtrj",
+                  "sc",
+                  "sc-pc",
+                  "sc-upc",
+                  "sc-apc",
+                  "st",
+                  "cs",
+                  "sn",
+                  "mdc",
+                  "sma-905",
+                  "sma-906",
+                  "urm-p2",
+                  "urm-p4",
+                  "urm-p8",
+                  "splice",
+                  "usb-a",
+                  "usb-b",
+                  "usb-c",
+                  "usb-mini-a",
+                  "usb-mini-b",
+                  "usb-micro-a",
+                  "usb-micro-b",
+                  "usb-micro-ab",
+                  "other"
+                ],
+                "type": "string",
+                "x-spec-enum-id": "1fac83e525c651be"
+              }
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "created",
+          "display",
+          "id",
+          "last_updated",
+          "name",
+          "type",
+          "url"
+        ],
+        "type": "object"
+      },
+      "FrontPortTemplateMapping": {
+        "properties": {
+          "position": {
+            "type": "integer"
+          },
+          "rear_port": {
+            "type": "integer"
+          },
+          "rear_port_position": {
+            "default": 1,
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "position",
+          "rear_port"
+        ],
+        "type": "object"
+      },
+      "FrontPortTemplateMappingRequest": {
+        "properties": {
+          "position": {
+            "type": "integer"
+          },
+          "rear_port": {
+            "type": "integer"
+          },
+          "rear_port_position": {
+            "default": 1,
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "position",
+          "rear_port"
+        ],
+        "type": "object"
+      },
+      "InventoryItemTemplate": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "_depth": {
+            "readOnly": true,
+            "title": " depth",
+            "type": "integer"
+          },
+          "component": {
+            "nullable": true,
+            "readOnly": true
+          },
+          "component_id": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "component_type": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "$ref": "#/components/schemas/BriefDeviceType"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "last_updated": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "manufacturer": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefManufacturer"
+              }
+            ],
+            "nullable": true
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "parent": {
+            "nullable": true,
+            "type": "integer"
+          },
+          "part_id": {
+            "description": "Manufacturer-assigned part identifier",
+            "maxLength": 50,
+            "type": "string"
+          },
+          "role": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefInventoryItemRole"
+              }
+            ],
+            "nullable": true
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "_depth",
+          "component",
+          "created",
+          "device_type",
+          "display",
+          "id",
+          "last_updated",
+          "name",
+          "url"
+        ],
+        "type": "object"
+      },
+      "InventoryItemTemplateRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "component_id": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "component_type": {
+            "nullable": true,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/BriefDeviceTypeRequest"
+              }
+            ]
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "manufacturer": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefManufacturerRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "parent": {
+            "nullable": true,
+            "type": "integer"
+          },
+          "part_id": {
+            "description": "Manufacturer-assigned part identifier",
+            "maxLength": 50,
+            "type": "string"
+          },
+          "role": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefInventoryItemRoleRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "device_type",
+          "name"
+        ],
+        "type": "object"
+      },
+      "Manufacturer": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "comments": {
+            "type": "string"
+          },
+          "created": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "custom_fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "devicetype_count": {
+            "format": "int64",
+            "readOnly": true,
+            "type": "integer"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "display_url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "inventoryitem_count": {
+            "format": "int64",
+            "readOnly": true,
+            "type": "integer"
+          },
+          "last_updated": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "moduletype_count": {
+            "format": "int64",
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "owner": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefOwner"
+              }
+            ],
+            "nullable": true
+          },
+          "platform_count": {
+            "format": "int64",
+            "readOnly": true,
+            "type": "integer"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/NestedTag"
+            },
+            "type": "array"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "created",
+          "devicetype_count",
+          "display",
+          "display_url",
+          "id",
+          "inventoryitem_count",
+          "last_updated",
+          "moduletype_count",
+          "name",
+          "platform_count",
+          "slug",
+          "url"
+        ],
+        "type": "object"
+      },
+      "ManufacturerRequest": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "comments": {
+            "type": "string"
+          },
+          "custom_fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "owner": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefOwnerRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/NestedTagRequest"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "NestedTag": {
+        "description": "Represents an object related through a ForeignKey field. On write, it accepts a primary key (PK) value or a\ndictionary of attributes which can be used to uniquely identify the related object. This class should be\nsubclassed to return a full representation of the related object on read.",
+        "properties": {
+          "color": {
+            "maxLength": 6,
+            "pattern": "^[0-9a-f]{6}$",
+            "type": "string"
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "display_url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "pattern": "^[-\\w]+$",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "display_url",
+          "id",
+          "name",
+          "slug",
+          "url"
+        ],
+        "type": "object"
+      },
+      "NestedTagRequest": {
+        "description": "Represents an object related through a ForeignKey field. On write, it accepts a primary key (PK) value or a\ndictionary of attributes which can be used to uniquely identify the related object. This class should be\nsubclassed to return a full representation of the related object on read.",
+        "properties": {
+          "color": {
+            "maxLength": 6,
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{6}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-\\w]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "PaginatedDeviceTypeList": {
+        "properties": {
+          "count": {
+            "example": 123,
+            "type": "integer"
+          },
+          "next": {
+            "example": "http://api.example.org/accounts/?offset=400&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "previous": {
+            "example": "http://api.example.org/accounts/?offset=200&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceType"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "PaginatedFrontPortTemplateList": {
+        "properties": {
+          "count": {
+            "example": 123,
+            "type": "integer"
+          },
+          "next": {
+            "example": "http://api.example.org/accounts/?offset=400&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "previous": {
+            "example": "http://api.example.org/accounts/?offset=200&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/FrontPortTemplate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "PaginatedInventoryItemTemplateList": {
+        "properties": {
+          "count": {
+            "example": 123,
+            "type": "integer"
+          },
+          "next": {
+            "example": "http://api.example.org/accounts/?offset=400&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "previous": {
+            "example": "http://api.example.org/accounts/?offset=200&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryItemTemplate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "PaginatedManufacturerList": {
+        "properties": {
+          "count": {
+            "example": 123,
+            "type": "integer"
+          },
+          "next": {
+            "example": "http://api.example.org/accounts/?offset=400&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "previous": {
+            "example": "http://api.example.org/accounts/?offset=200&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/Manufacturer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "PaginatedRearPortTemplateList": {
+        "properties": {
+          "count": {
+            "example": 123,
+            "type": "integer"
+          },
+          "next": {
+            "example": "http://api.example.org/accounts/?offset=400&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "previous": {
+            "example": "http://api.example.org/accounts/?offset=200&limit=100",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/RearPortTemplate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "PatchedInventoryItemTemplateRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "component_id": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "component_type": {
+            "nullable": true,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/BriefDeviceTypeRequest"
+              }
+            ]
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "manufacturer": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefManufacturerRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "parent": {
+            "nullable": true,
+            "type": "integer"
+          },
+          "part_id": {
+            "description": "Manufacturer-assigned part identifier",
+            "maxLength": 50,
+            "type": "string"
+          },
+          "role": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefInventoryItemRoleRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PatchedManufacturerRequest": {
+        "description": "Base serializer class for models inheriting from OrganizationalModel.",
+        "properties": {
+          "comments": {
+            "type": "string"
+          },
+          "custom_fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "owner": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefOwnerRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/NestedTagRequest"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PatchedWritableDeviceTypeRequest": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "airflow": {
+            "description": "* `front-to-rear` - Front to rear\n* `rear-to-front` - Rear to front\n* `left-to-right` - Left to right\n* `right-to-left` - Right to left\n* `side-to-rear` - Side to rear\n* `rear-to-side` - Rear to side\n* `bottom-to-top` - Bottom to top\n* `top-to-bottom` - Top to bottom\n* `passive` - Passive\n* `mixed` - Mixed",
+            "enum": [
+              "front-to-rear",
+              "rear-to-front",
+              "left-to-right",
+              "right-to-left",
+              "side-to-rear",
+              "rear-to-side",
+              "bottom-to-top",
+              "top-to-bottom",
+              "passive",
+              "mixed",
+              "",
+              null
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-spec-enum-id": "11cb3d363b41ba9e"
+          },
+          "comments": {
+            "type": "string"
+          },
+          "cooling_method": {
+            "description": "* `air` - Air\n* `liquid` - Liquid\n* `hybrid` - Hybrid\n* `immersion` - Immersion",
+            "enum": [
+              "air",
+              "liquid",
+              "hybrid",
+              "immersion",
+              "",
+              null
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-spec-enum-id": "fff5375d415a4fdc"
+          },
+          "custom_fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "default_platform": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefPlatformRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "end_of_life": {
+            "description": "The date after which this device type is no longer supported by the manufacturer",
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
+          "exclude_from_utilization": {
+            "description": "Devices of this type are excluded when calculating rack utilization.",
+            "type": "boolean"
+          },
+          "front_image": {
+            "format": "binary",
+            "nullable": true,
+            "type": "string"
+          },
+          "is_full_depth": {
+            "description": "Device consumes both front and rear rack faces.",
+            "type": "boolean"
+          },
+          "manufacturer": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/BriefManufacturerRequest"
+              }
+            ]
+          },
+          "model": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "owner": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefOwnerRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "part_number": {
+            "description": "Discrete part number (optional)",
+            "maxLength": 50,
+            "type": "string"
+          },
+          "rear_image": {
+            "format": "binary",
+            "nullable": true,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "subdevice_role": {
+            "description": "Parent devices house child devices in device bays. Leave blank if this device type is neither a parent nor a child.\n\n* `parent` - Parent\n* `child` - Child",
+            "enum": [
+              "parent",
+              "child",
+              "",
+              null
+            ],
+            "nullable": true,
+            "title": "Parent/child status",
+            "type": "string",
+            "x-spec-enum-id": "65a61d5e1deb4a24"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/NestedTagRequest"
+            },
+            "type": "array"
+          },
+          "u_height": {
+            "default": 1.0,
+            "exclusiveMaximum": true,
+            "format": "double",
+            "maximum": 1000,
+            "minimum": 0.0,
+            "title": "Position (U)",
+            "type": "number"
+          },
+          "weight": {
+            "exclusiveMaximum": true,
+            "exclusiveMinimum": true,
+            "format": "double",
+            "maximum": 1000000,
+            "minimum": -1000000,
+            "nullable": true,
+            "type": "number"
+          },
+          "weight_unit": {
+            "description": "* `kg` - Kilograms\n* `g` - Grams\n* `lb` - Pounds\n* `oz` - Ounces",
+            "enum": [
+              "kg",
+              "g",
+              "lb",
+              "oz",
+              "",
+              null
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-spec-enum-id": "2235ce3f404afbc0"
+          }
+        },
+        "type": "object"
+      },
+      "PatchedWritableFrontPortTemplateRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "maxLength": 6,
+                "pattern": "^[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "maxLength": 0,
+                "type": "string"
+              }
+            ]
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefDeviceTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "module_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefModuleTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "positions": {
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rear_ports": {
+            "items": {
+              "$ref": "#/components/schemas/FrontPortTemplateMappingRequest"
+            },
+            "type": "array"
+          },
+          "type": {
+            "description": "* `8p8c` - 8P8C\n* `8p6c` - 8P6C\n* `8p4c` - 8P4C\n* `8p2c` - 8P2C\n* `6p6c` - 6P6C\n* `6p4c` - 6P4C\n* `6p2c` - 6P2C\n* `4p4c` - 4P4C\n* `4p2c` - 4P2C\n* `gg45` - GG45\n* `tera-4p` - TERA 4P\n* `tera-2p` - TERA 2P\n* `tera-1p` - TERA 1P\n* `110-punch` - 110 Punch\n* `bnc` - BNC\n* `f` - F Connector\n* `n` - N Connector\n* `mrj21` - MRJ21\n* `fc` - FC\n* `fc-pc` - FC/PC\n* `fc-upc` - FC/UPC\n* `fc-apc` - FC/APC\n* `lc` - LC\n* `lc-pc` - LC/PC\n* `lc-upc` - LC/UPC\n* `lc-apc` - LC/APC\n* `mu` - MU\n* `mu-pc` - MU/PC\n* `mu-upc` - MU/UPC\n* `mu-apc` - MU/APC\n* `lsh` - LSH\n* `lsh-pc` - LSH/PC\n* `lsh-upc` - LSH/UPC\n* `lsh-apc` - LSH/APC\n* `lx5` - LX.5\n* `lx5-pc` - LX.5/PC\n* `lx5-upc` - LX.5/UPC\n* `lx5-apc` - LX.5/APC\n* `mpo` - MPO\n* `mtrj` - MTRJ\n* `sc` - SC\n* `sc-pc` - SC/PC\n* `sc-upc` - SC/UPC\n* `sc-apc` - SC/APC\n* `st` - ST\n* `cs` - CS\n* `sn` - SN\n* `mdc` - MDC\n* `sma-905` - SMA 905\n* `sma-906` - SMA 906\n* `urm-p2` - URM-P2\n* `urm-p4` - URM-P4\n* `urm-p8` - URM-P8\n* `splice` - Splice\n* `usb-a` - USB Type A\n* `usb-b` - USB Type B\n* `usb-c` - USB Type C\n* `usb-mini-a` - USB Mini A\n* `usb-mini-b` - USB Mini B\n* `usb-micro-a` - USB Micro A\n* `usb-micro-b` - USB Micro B\n* `usb-micro-ab` - USB Micro AB\n* `other` - Other",
+            "enum": [
+              "8p8c",
+              "8p6c",
+              "8p4c",
+              "8p2c",
+              "6p6c",
+              "6p4c",
+              "6p2c",
+              "4p4c",
+              "4p2c",
+              "gg45",
+              "tera-4p",
+              "tera-2p",
+              "tera-1p",
+              "110-punch",
+              "bnc",
+              "f",
+              "n",
+              "mrj21",
+              "fc",
+              "fc-pc",
+              "fc-upc",
+              "fc-apc",
+              "lc",
+              "lc-pc",
+              "lc-upc",
+              "lc-apc",
+              "mu",
+              "mu-pc",
+              "mu-upc",
+              "mu-apc",
+              "lsh",
+              "lsh-pc",
+              "lsh-upc",
+              "lsh-apc",
+              "lx5",
+              "lx5-pc",
+              "lx5-upc",
+              "lx5-apc",
+              "mpo",
+              "mtrj",
+              "sc",
+              "sc-pc",
+              "sc-upc",
+              "sc-apc",
+              "st",
+              "cs",
+              "sn",
+              "mdc",
+              "sma-905",
+              "sma-906",
+              "urm-p2",
+              "urm-p4",
+              "urm-p8",
+              "splice",
+              "usb-a",
+              "usb-b",
+              "usb-c",
+              "usb-mini-a",
+              "usb-mini-b",
+              "usb-micro-a",
+              "usb-micro-b",
+              "usb-micro-ab",
+              "other"
+            ],
+            "type": "string",
+            "x-spec-enum-id": "1fac83e525c651be"
+          }
+        },
+        "type": "object"
+      },
+      "PatchedWritableRearPortTemplateRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "maxLength": 6,
+                "pattern": "^[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "maxLength": 0,
+                "type": "string"
+              }
+            ]
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefDeviceTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "front_ports": {
+            "items": {
+              "$ref": "#/components/schemas/RearPortTemplateMappingRequest"
+            },
+            "type": "array"
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "module_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefModuleTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "positions": {
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": {
+            "description": "* `8p8c` - 8P8C\n* `8p6c` - 8P6C\n* `8p4c` - 8P4C\n* `8p2c` - 8P2C\n* `6p6c` - 6P6C\n* `6p4c` - 6P4C\n* `6p2c` - 6P2C\n* `4p4c` - 4P4C\n* `4p2c` - 4P2C\n* `gg45` - GG45\n* `tera-4p` - TERA 4P\n* `tera-2p` - TERA 2P\n* `tera-1p` - TERA 1P\n* `110-punch` - 110 Punch\n* `bnc` - BNC\n* `f` - F Connector\n* `n` - N Connector\n* `mrj21` - MRJ21\n* `fc` - FC\n* `fc-pc` - FC/PC\n* `fc-upc` - FC/UPC\n* `fc-apc` - FC/APC\n* `lc` - LC\n* `lc-pc` - LC/PC\n* `lc-upc` - LC/UPC\n* `lc-apc` - LC/APC\n* `mu` - MU\n* `mu-pc` - MU/PC\n* `mu-upc` - MU/UPC\n* `mu-apc` - MU/APC\n* `lsh` - LSH\n* `lsh-pc` - LSH/PC\n* `lsh-upc` - LSH/UPC\n* `lsh-apc` - LSH/APC\n* `lx5` - LX.5\n* `lx5-pc` - LX.5/PC\n* `lx5-upc` - LX.5/UPC\n* `lx5-apc` - LX.5/APC\n* `mpo` - MPO\n* `mtrj` - MTRJ\n* `sc` - SC\n* `sc-pc` - SC/PC\n* `sc-upc` - SC/UPC\n* `sc-apc` - SC/APC\n* `st` - ST\n* `cs` - CS\n* `sn` - SN\n* `mdc` - MDC\n* `sma-905` - SMA 905\n* `sma-906` - SMA 906\n* `urm-p2` - URM-P2\n* `urm-p4` - URM-P4\n* `urm-p8` - URM-P8\n* `splice` - Splice\n* `usb-a` - USB Type A\n* `usb-b` - USB Type B\n* `usb-c` - USB Type C\n* `usb-mini-a` - USB Mini A\n* `usb-mini-b` - USB Mini B\n* `usb-micro-a` - USB Micro A\n* `usb-micro-b` - USB Micro B\n* `usb-micro-ab` - USB Micro AB\n* `other` - Other",
+            "enum": [
+              "8p8c",
+              "8p6c",
+              "8p4c",
+              "8p2c",
+              "6p6c",
+              "6p4c",
+              "6p2c",
+              "4p4c",
+              "4p2c",
+              "gg45",
+              "tera-4p",
+              "tera-2p",
+              "tera-1p",
+              "110-punch",
+              "bnc",
+              "f",
+              "n",
+              "mrj21",
+              "fc",
+              "fc-pc",
+              "fc-upc",
+              "fc-apc",
+              "lc",
+              "lc-pc",
+              "lc-upc",
+              "lc-apc",
+              "mu",
+              "mu-pc",
+              "mu-upc",
+              "mu-apc",
+              "lsh",
+              "lsh-pc",
+              "lsh-upc",
+              "lsh-apc",
+              "lx5",
+              "lx5-pc",
+              "lx5-upc",
+              "lx5-apc",
+              "mpo",
+              "mtrj",
+              "sc",
+              "sc-pc",
+              "sc-upc",
+              "sc-apc",
+              "st",
+              "cs",
+              "sn",
+              "mdc",
+              "sma-905",
+              "sma-906",
+              "urm-p2",
+              "urm-p4",
+              "urm-p8",
+              "splice",
+              "usb-a",
+              "usb-b",
+              "usb-c",
+              "usb-mini-a",
+              "usb-mini-b",
+              "usb-micro-a",
+              "usb-micro-b",
+              "usb-micro-ab",
+              "other"
+            ],
+            "type": "string",
+            "x-spec-enum-id": "1fac83e525c651be"
+          }
+        },
+        "type": "object"
+      },
+      "RearPortTemplate": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "maxLength": 6,
+                "pattern": "^[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "maxLength": 0,
+                "type": "string"
+              }
+            ]
+          },
+          "created": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefDeviceType"
+              }
+            ],
+            "nullable": true
+          },
+          "display": {
+            "readOnly": true,
+            "type": "string"
+          },
+          "front_ports": {
+            "items": {
+              "$ref": "#/components/schemas/RearPortTemplateMapping"
+            },
+            "type": "array"
+          },
+          "id": {
+            "readOnly": true,
+            "type": "integer"
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "last_updated": {
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true,
+            "type": "string"
+          },
+          "module_type": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BriefModuleType"
+              }
+            ],
+            "nullable": true
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "positions": {
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": {
+            "properties": {
+              "label": {
+                "enum": [
+                  "8P8C",
+                  "8P6C",
+                  "8P4C",
+                  "8P2C",
+                  "6P6C",
+                  "6P4C",
+                  "6P2C",
+                  "4P4C",
+                  "4P2C",
+                  "GG45",
+                  "TERA 4P",
+                  "TERA 2P",
+                  "TERA 1P",
+                  "110 Punch",
+                  "BNC",
+                  "F Connector",
+                  "N Connector",
+                  "MRJ21",
+                  "FC",
+                  "FC/PC",
+                  "FC/UPC",
+                  "FC/APC",
+                  "LC",
+                  "LC/PC",
+                  "LC/UPC",
+                  "LC/APC",
+                  "MU",
+                  "MU/PC",
+                  "MU/UPC",
+                  "MU/APC",
+                  "LSH",
+                  "LSH/PC",
+                  "LSH/UPC",
+                  "LSH/APC",
+                  "LX.5",
+                  "LX.5/PC",
+                  "LX.5/UPC",
+                  "LX.5/APC",
+                  "MPO",
+                  "MTRJ",
+                  "SC",
+                  "SC/PC",
+                  "SC/UPC",
+                  "SC/APC",
+                  "ST",
+                  "CS",
+                  "SN",
+                  "MDC",
+                  "SMA 905",
+                  "SMA 906",
+                  "URM-P2",
+                  "URM-P4",
+                  "URM-P8",
+                  "Splice",
+                  "USB Type A",
+                  "USB Type B",
+                  "USB Type C",
+                  "USB Mini A",
+                  "USB Mini B",
+                  "USB Micro A",
+                  "USB Micro B",
+                  "USB Micro AB",
+                  "Other"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "* `8p8c` - 8P8C\n* `8p6c` - 8P6C\n* `8p4c` - 8P4C\n* `8p2c` - 8P2C\n* `6p6c` - 6P6C\n* `6p4c` - 6P4C\n* `6p2c` - 6P2C\n* `4p4c` - 4P4C\n* `4p2c` - 4P2C\n* `gg45` - GG45\n* `tera-4p` - TERA 4P\n* `tera-2p` - TERA 2P\n* `tera-1p` - TERA 1P\n* `110-punch` - 110 Punch\n* `bnc` - BNC\n* `f` - F Connector\n* `n` - N Connector\n* `mrj21` - MRJ21\n* `fc` - FC\n* `fc-pc` - FC/PC\n* `fc-upc` - FC/UPC\n* `fc-apc` - FC/APC\n* `lc` - LC\n* `lc-pc` - LC/PC\n* `lc-upc` - LC/UPC\n* `lc-apc` - LC/APC\n* `mu` - MU\n* `mu-pc` - MU/PC\n* `mu-upc` - MU/UPC\n* `mu-apc` - MU/APC\n* `lsh` - LSH\n* `lsh-pc` - LSH/PC\n* `lsh-upc` - LSH/UPC\n* `lsh-apc` - LSH/APC\n* `lx5` - LX.5\n* `lx5-pc` - LX.5/PC\n* `lx5-upc` - LX.5/UPC\n* `lx5-apc` - LX.5/APC\n* `mpo` - MPO\n* `mtrj` - MTRJ\n* `sc` - SC\n* `sc-pc` - SC/PC\n* `sc-upc` - SC/UPC\n* `sc-apc` - SC/APC\n* `st` - ST\n* `cs` - CS\n* `sn` - SN\n* `mdc` - MDC\n* `sma-905` - SMA 905\n* `sma-906` - SMA 906\n* `urm-p2` - URM-P2\n* `urm-p4` - URM-P4\n* `urm-p8` - URM-P8\n* `splice` - Splice\n* `usb-a` - USB Type A\n* `usb-b` - USB Type B\n* `usb-c` - USB Type C\n* `usb-mini-a` - USB Mini A\n* `usb-mini-b` - USB Mini B\n* `usb-micro-a` - USB Micro A\n* `usb-micro-b` - USB Micro B\n* `usb-micro-ab` - USB Micro AB\n* `other` - Other",
+                "enum": [
+                  "8p8c",
+                  "8p6c",
+                  "8p4c",
+                  "8p2c",
+                  "6p6c",
+                  "6p4c",
+                  "6p2c",
+                  "4p4c",
+                  "4p2c",
+                  "gg45",
+                  "tera-4p",
+                  "tera-2p",
+                  "tera-1p",
+                  "110-punch",
+                  "bnc",
+                  "f",
+                  "n",
+                  "mrj21",
+                  "fc",
+                  "fc-pc",
+                  "fc-upc",
+                  "fc-apc",
+                  "lc",
+                  "lc-pc",
+                  "lc-upc",
+                  "lc-apc",
+                  "mu",
+                  "mu-pc",
+                  "mu-upc",
+                  "mu-apc",
+                  "lsh",
+                  "lsh-pc",
+                  "lsh-upc",
+                  "lsh-apc",
+                  "lx5",
+                  "lx5-pc",
+                  "lx5-upc",
+                  "lx5-apc",
+                  "mpo",
+                  "mtrj",
+                  "sc",
+                  "sc-pc",
+                  "sc-upc",
+                  "sc-apc",
+                  "st",
+                  "cs",
+                  "sn",
+                  "mdc",
+                  "sma-905",
+                  "sma-906",
+                  "urm-p2",
+                  "urm-p4",
+                  "urm-p8",
+                  "splice",
+                  "usb-a",
+                  "usb-b",
+                  "usb-c",
+                  "usb-mini-a",
+                  "usb-mini-b",
+                  "usb-micro-a",
+                  "usb-micro-b",
+                  "usb-micro-ab",
+                  "other"
+                ],
+                "type": "string",
+                "x-spec-enum-id": "1fac83e525c651be"
+              }
+            },
+            "type": "object"
+          },
+          "url": {
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "created",
+          "display",
+          "id",
+          "last_updated",
+          "name",
+          "type",
+          "url"
+        ],
+        "type": "object"
+      },
+      "RearPortTemplateMapping": {
+        "properties": {
+          "front_port": {
+            "type": "integer"
+          },
+          "front_port_position": {
+            "default": 1,
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "position": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "front_port",
+          "position"
+        ],
+        "type": "object"
+      },
+      "RearPortTemplateMappingRequest": {
+        "properties": {
+          "front_port": {
+            "type": "integer"
+          },
+          "front_port_position": {
+            "default": 1,
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "position": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "front_port",
+          "position"
+        ],
+        "type": "object"
+      },
+      "WritableDeviceTypeRequest": {
+        "description": "Base serializer class for models inheriting from PrimaryModel.",
+        "properties": {
+          "airflow": {
+            "description": "* `front-to-rear` - Front to rear\n* `rear-to-front` - Rear to front\n* `left-to-right` - Left to right\n* `right-to-left` - Right to left\n* `side-to-rear` - Side to rear\n* `rear-to-side` - Rear to side\n* `bottom-to-top` - Bottom to top\n* `top-to-bottom` - Top to bottom\n* `passive` - Passive\n* `mixed` - Mixed",
+            "enum": [
+              "front-to-rear",
+              "rear-to-front",
+              "left-to-right",
+              "right-to-left",
+              "side-to-rear",
+              "rear-to-side",
+              "bottom-to-top",
+              "top-to-bottom",
+              "passive",
+              "mixed",
+              "",
+              null
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-spec-enum-id": "11cb3d363b41ba9e"
+          },
+          "comments": {
+            "type": "string"
+          },
+          "cooling_method": {
+            "description": "* `air` - Air\n* `liquid` - Liquid\n* `hybrid` - Hybrid\n* `immersion` - Immersion",
+            "enum": [
+              "air",
+              "liquid",
+              "hybrid",
+              "immersion",
+              "",
+              null
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-spec-enum-id": "fff5375d415a4fdc"
+          },
+          "custom_fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "default_platform": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefPlatformRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "end_of_life": {
+            "description": "The date after which this device type is no longer supported by the manufacturer",
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
+          "exclude_from_utilization": {
+            "description": "Devices of this type are excluded when calculating rack utilization.",
+            "type": "boolean"
+          },
+          "front_image": {
+            "format": "binary",
+            "nullable": true,
+            "type": "string"
+          },
+          "is_full_depth": {
+            "description": "Device consumes both front and rear rack faces.",
+            "type": "boolean"
+          },
+          "manufacturer": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/BriefManufacturerRequest"
+              }
+            ]
+          },
+          "model": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "owner": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefOwnerRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "part_number": {
+            "description": "Discrete part number (optional)",
+            "maxLength": 50,
+            "type": "string"
+          },
+          "rear_image": {
+            "format": "binary",
+            "nullable": true,
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[-a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "subdevice_role": {
+            "description": "Parent devices house child devices in device bays. Leave blank if this device type is neither a parent nor a child.\n\n* `parent` - Parent\n* `child` - Child",
+            "enum": [
+              "parent",
+              "child",
+              "",
+              null
+            ],
+            "nullable": true,
+            "title": "Parent/child status",
+            "type": "string",
+            "x-spec-enum-id": "65a61d5e1deb4a24"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/NestedTagRequest"
+            },
+            "type": "array"
+          },
+          "u_height": {
+            "default": 1.0,
+            "exclusiveMaximum": true,
+            "format": "double",
+            "maximum": 1000,
+            "minimum": 0.0,
+            "title": "Position (U)",
+            "type": "number"
+          },
+          "weight": {
+            "exclusiveMaximum": true,
+            "exclusiveMinimum": true,
+            "format": "double",
+            "maximum": 1000000,
+            "minimum": -1000000,
+            "nullable": true,
+            "type": "number"
+          },
+          "weight_unit": {
+            "description": "* `kg` - Kilograms\n* `g` - Grams\n* `lb` - Pounds\n* `oz` - Ounces",
+            "enum": [
+              "kg",
+              "g",
+              "lb",
+              "oz",
+              "",
+              null
+            ],
+            "nullable": true,
+            "type": "string",
+            "x-spec-enum-id": "2235ce3f404afbc0"
+          }
+        },
+        "required": [
+          "manufacturer",
+          "model",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "WritableFrontPortTemplateRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "maxLength": 6,
+                "pattern": "^[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "maxLength": 0,
+                "type": "string"
+              }
+            ]
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefDeviceTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "module_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefModuleTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "positions": {
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rear_ports": {
+            "items": {
+              "$ref": "#/components/schemas/FrontPortTemplateMappingRequest"
+            },
+            "type": "array"
+          },
+          "type": {
+            "description": "* `8p8c` - 8P8C\n* `8p6c` - 8P6C\n* `8p4c` - 8P4C\n* `8p2c` - 8P2C\n* `6p6c` - 6P6C\n* `6p4c` - 6P4C\n* `6p2c` - 6P2C\n* `4p4c` - 4P4C\n* `4p2c` - 4P2C\n* `gg45` - GG45\n* `tera-4p` - TERA 4P\n* `tera-2p` - TERA 2P\n* `tera-1p` - TERA 1P\n* `110-punch` - 110 Punch\n* `bnc` - BNC\n* `f` - F Connector\n* `n` - N Connector\n* `mrj21` - MRJ21\n* `fc` - FC\n* `fc-pc` - FC/PC\n* `fc-upc` - FC/UPC\n* `fc-apc` - FC/APC\n* `lc` - LC\n* `lc-pc` - LC/PC\n* `lc-upc` - LC/UPC\n* `lc-apc` - LC/APC\n* `mu` - MU\n* `mu-pc` - MU/PC\n* `mu-upc` - MU/UPC\n* `mu-apc` - MU/APC\n* `lsh` - LSH\n* `lsh-pc` - LSH/PC\n* `lsh-upc` - LSH/UPC\n* `lsh-apc` - LSH/APC\n* `lx5` - LX.5\n* `lx5-pc` - LX.5/PC\n* `lx5-upc` - LX.5/UPC\n* `lx5-apc` - LX.5/APC\n* `mpo` - MPO\n* `mtrj` - MTRJ\n* `sc` - SC\n* `sc-pc` - SC/PC\n* `sc-upc` - SC/UPC\n* `sc-apc` - SC/APC\n* `st` - ST\n* `cs` - CS\n* `sn` - SN\n* `mdc` - MDC\n* `sma-905` - SMA 905\n* `sma-906` - SMA 906\n* `urm-p2` - URM-P2\n* `urm-p4` - URM-P4\n* `urm-p8` - URM-P8\n* `splice` - Splice\n* `usb-a` - USB Type A\n* `usb-b` - USB Type B\n* `usb-c` - USB Type C\n* `usb-mini-a` - USB Mini A\n* `usb-mini-b` - USB Mini B\n* `usb-micro-a` - USB Micro A\n* `usb-micro-b` - USB Micro B\n* `usb-micro-ab` - USB Micro AB\n* `other` - Other",
+            "enum": [
+              "8p8c",
+              "8p6c",
+              "8p4c",
+              "8p2c",
+              "6p6c",
+              "6p4c",
+              "6p2c",
+              "4p4c",
+              "4p2c",
+              "gg45",
+              "tera-4p",
+              "tera-2p",
+              "tera-1p",
+              "110-punch",
+              "bnc",
+              "f",
+              "n",
+              "mrj21",
+              "fc",
+              "fc-pc",
+              "fc-upc",
+              "fc-apc",
+              "lc",
+              "lc-pc",
+              "lc-upc",
+              "lc-apc",
+              "mu",
+              "mu-pc",
+              "mu-upc",
+              "mu-apc",
+              "lsh",
+              "lsh-pc",
+              "lsh-upc",
+              "lsh-apc",
+              "lx5",
+              "lx5-pc",
+              "lx5-upc",
+              "lx5-apc",
+              "mpo",
+              "mtrj",
+              "sc",
+              "sc-pc",
+              "sc-upc",
+              "sc-apc",
+              "st",
+              "cs",
+              "sn",
+              "mdc",
+              "sma-905",
+              "sma-906",
+              "urm-p2",
+              "urm-p4",
+              "urm-p8",
+              "splice",
+              "usb-a",
+              "usb-b",
+              "usb-c",
+              "usb-mini-a",
+              "usb-mini-b",
+              "usb-micro-a",
+              "usb-micro-b",
+              "usb-micro-ab",
+              "other"
+            ],
+            "type": "string",
+            "x-spec-enum-id": "1fac83e525c651be"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "WritableRearPortTemplateRequest": {
+        "description": "Extends the built-in ModelSerializer to enforce calling full_clean() on a copy of the associated instance during\nvalidation. (DRF does not do this by default; see https://github.com/encode/django-rest-framework/issues/3144)\n\nSerializers may declare `model_clean_fields` in Meta, naming scalar model fields whose clean()-normalized values\nmust reach the database. DRF builds a fresh instance from the validated data on create, discarding what clean()\nwrote.",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "maxLength": 6,
+                "pattern": "^[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "maxLength": 0,
+                "type": "string"
+              }
+            ]
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "device_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefDeviceTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "front_ports": {
+            "items": {
+              "$ref": "#/components/schemas/RearPortTemplateMappingRequest"
+            },
+            "type": "array"
+          },
+          "label": {
+            "description": "Physical label",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "module_type": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/BriefModuleTypeRequest"
+                  }
+                ],
+                "nullable": true
+              }
+            ]
+          },
+          "name": {
+            "description": "{module} is accepted as a substitution for the module bay position when attached to a module type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "positions": {
+            "maximum": 1024,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": {
+            "description": "* `8p8c` - 8P8C\n* `8p6c` - 8P6C\n* `8p4c` - 8P4C\n* `8p2c` - 8P2C\n* `6p6c` - 6P6C\n* `6p4c` - 6P4C\n* `6p2c` - 6P2C\n* `4p4c` - 4P4C\n* `4p2c` - 4P2C\n* `gg45` - GG45\n* `tera-4p` - TERA 4P\n* `tera-2p` - TERA 2P\n* `tera-1p` - TERA 1P\n* `110-punch` - 110 Punch\n* `bnc` - BNC\n* `f` - F Connector\n* `n` - N Connector\n* `mrj21` - MRJ21\n* `fc` - FC\n* `fc-pc` - FC/PC\n* `fc-upc` - FC/UPC\n* `fc-apc` - FC/APC\n* `lc` - LC\n* `lc-pc` - LC/PC\n* `lc-upc` - LC/UPC\n* `lc-apc` - LC/APC\n* `mu` - MU\n* `mu-pc` - MU/PC\n* `mu-upc` - MU/UPC\n* `mu-apc` - MU/APC\n* `lsh` - LSH\n* `lsh-pc` - LSH/PC\n* `lsh-upc` - LSH/UPC\n* `lsh-apc` - LSH/APC\n* `lx5` - LX.5\n* `lx5-pc` - LX.5/PC\n* `lx5-upc` - LX.5/UPC\n* `lx5-apc` - LX.5/APC\n* `mpo` - MPO\n* `mtrj` - MTRJ\n* `sc` - SC\n* `sc-pc` - SC/PC\n* `sc-upc` - SC/UPC\n* `sc-apc` - SC/APC\n* `st` - ST\n* `cs` - CS\n* `sn` - SN\n* `mdc` - MDC\n* `sma-905` - SMA 905\n* `sma-906` - SMA 906\n* `urm-p2` - URM-P2\n* `urm-p4` - URM-P4\n* `urm-p8` - URM-P8\n* `splice` - Splice\n* `usb-a` - USB Type A\n* `usb-b` - USB Type B\n* `usb-c` - USB Type C\n* `usb-mini-a` - USB Mini A\n* `usb-mini-b` - USB Mini B\n* `usb-micro-a` - USB Micro A\n* `usb-micro-b` - USB Micro B\n* `usb-micro-ab` - USB Micro AB\n* `other` - Other",
+            "enum": [
+              "8p8c",
+              "8p6c",
+              "8p4c",
+              "8p2c",
+              "6p6c",
+              "6p4c",
+              "6p2c",
+              "4p4c",
+              "4p2c",
+              "gg45",
+              "tera-4p",
+              "tera-2p",
+              "tera-1p",
+              "110-punch",
+              "bnc",
+              "f",
+              "n",
+              "mrj21",
+              "fc",
+              "fc-pc",
+              "fc-upc",
+              "fc-apc",
+              "lc",
+              "lc-pc",
+              "lc-upc",
+              "lc-apc",
+              "mu",
+              "mu-pc",
+              "mu-upc",
+              "mu-apc",
+              "lsh",
+              "lsh-pc",
+              "lsh-upc",
+              "lsh-apc",
+              "lx5",
+              "lx5-pc",
+              "lx5-upc",
+              "lx5-apc",
+              "mpo",
+              "mtrj",
+              "sc",
+              "sc-pc",
+              "sc-upc",
+              "sc-apc",
+              "st",
+              "cs",
+              "sn",
+              "mdc",
+              "sma-905",
+              "sma-906",
+              "urm-p2",
+              "urm-p4",
+              "urm-p8",
+              "splice",
+              "usb-a",
+              "usb-b",
+              "usb-c",
+              "usb-mini-a",
+              "usb-mini-b",
+              "usb-micro-a",
+              "usb-micro-b",
+              "usb-micro-ab",
+              "other"
+            ],
+            "type": "string",
+            "x-spec-enum-id": "1fac83e525c651be"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "license": {
+      "name": "Apache v2 License"
+    },
+    "title": "NetBox REST API",
+    "version": "4.7.2-Docker-5.1.1 (4.7)"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/api/dcim/device-types/": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedDeviceTypeList"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WritableDeviceTypeRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/WritableDeviceTypeRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WritableDeviceTypeRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/WritableDeviceTypeRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceType"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/device-types/{id}/": {
+      "patch": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWritableDeviceTypeRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWritableDeviceTypeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceType"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/front-port-templates/": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedFrontPortTemplateList"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WritableFrontPortTemplateRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/WritableFrontPortTemplateRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WritableFrontPortTemplateRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/WritableFrontPortTemplateRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontPortTemplate"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/front-port-templates/{id}/": {
+      "patch": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWritableFrontPortTemplateRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWritableFrontPortTemplateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontPortTemplate"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/inventory-item-templates/": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedInventoryItemTemplateList"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/InventoryItemTemplateRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/InventoryItemTemplateRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/InventoryItemTemplateRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/InventoryItemTemplateRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryItemTemplate"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/inventory-item-templates/{id}/": {
+      "patch": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedInventoryItemTemplateRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedInventoryItemTemplateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryItemTemplate"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/manufacturers/": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedManufacturerList"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ManufacturerRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/ManufacturerRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ManufacturerRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/ManufacturerRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Manufacturer"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/manufacturers/{id}/": {
+      "patch": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedManufacturerRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedManufacturerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Manufacturer"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/rear-port-templates/": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedRearPortTemplateList"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WritableRearPortTemplateRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/WritableRearPortTemplateRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WritableRearPortTemplateRequest"
+                  },
+                  {
+                    "items": {
+                      "$ref": "#/components/schemas/WritableRearPortTemplateRequest"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RearPortTemplate"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/dcim/rear-port-templates/{id}/": {
+      "patch": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWritableRearPortTemplateRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWritableRearPortTemplateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RearPortTemplate"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    }
+  }
+}

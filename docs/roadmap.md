@@ -95,11 +95,13 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - [ADR 0022](adr/0022-postgresql-schema-and-advisory-locks.md): a schema of its own, advisory locks, and libpq's connection parameters.
    - New dependency: pgx v5.11.0.
 
-8. **`feat(model): add the object model and device type specs`.**
-   - Generic objects, values and specs ([ADR 0008](adr/0008-describe-object-types-with-specs.md)), with specs for manufacturers and device type fields, citing NetBox's source.
-   - A contract test against the OpenAPI schema of the NetBox from step 3.
-   - ADR: how specs are checked against the schema, closing the kin-openapi spike.
+8. **`feat(model): add the object model and device type specs`.** Done in #14.
+   - `internal/model`: generic objects, values and specs ([ADR 0008](adr/0008-describe-object-types-with-specs.md)). A decimal is exact, in fixed point, so `1` equals `1.0`; a date has no time zone; and null differs from blank and from a field that isn't set. Specs declare each field's semantics, which `Normalize` and `Validate` apply as NetBox does, trimming with Python's white space and refusing rather than rounding a decimal, and `Check` holds specs to consistency.
+   - `internal/model/dcim`: specs for manufacturers and every writable device type field, citing NetBox 4.7.2's source, with both sets of defaults where NetBox's import differs from its REST API (`is_full_depth`, `u_height`), and choice sets an administrator can change through `FIELD_CHOICES` marked. Test-only prototypes of port and inventory item templates show what steps 11 and 12 need: children, port mappings nested in their front port and keyed by position, inventory items as a tree with the gap in their top-level uniqueness, and a generic component reference.
+   - A contract test against the OpenAPI schema of the NetBox from step 3: each spec package commits a trimmed snapshot of the schema, which `make test` checks specs against, and the integration tests check it against the live schema byte for byte, along with NetBox's defaults, trimming and validation. `make schema` refreshes snapshots, and choice values are generated from them by `make generate`. Citations are checked against NetBox's source when `make reference` has fetched it.
+   - [ADR 0023](adr/0023-check-specs-against-the-schema-with-plain-json.md): the schema is read with plain JSON decoding, closing the kin-openapi spike.
    - The `netbox-parity` project skill.
+   - No new dependency.
 
 9. **`feat(format): read device types from devicetype-library`.**
    - YAML parsing with limits and duplicate-key rejection, validation against the library's schemas from the same snapshot, and mapping to definitions: device type fields, the manufacturer reference, and a manufacturer definition for each manufacturer the library names, with its slug made the way NetBox's UI makes one. Library-only keys are kept as metadata.

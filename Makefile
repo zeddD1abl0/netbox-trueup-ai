@@ -28,6 +28,11 @@ NETBOX_TOKEN_FILE := .cache/netbox/token
 # hold nothing but generated files.
 SQLC_OUT := $(shell sed -n 's/^[[:space:]]*out:[[:space:]]*//p' sqlc.yaml)
 
+# The spec packages (docs/adr/0023). Each keeps a snapshot of NetBox's OpenAPI
+# schema in testdata/openapi.json, from which its choice values are generated
+# into choices_gen.go.
+SPEC_PKGS := internal/model/dcim
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -74,22 +79,42 @@ SQLC_FRESH = mkdir -p "$$tmp/internal" && cp sqlc.yaml "$$tmp/" && cp -R interna
 	for d in $(SQLC_OUT); do rm -f "$$tmp/$$d"/*.go; done && \
 	sqlc generate --no-remote --file "$$tmp/sqlc.yaml"
 
+# CHOICES_FRESH generates each spec package's choice values afresh into
+# "$tmp", from its schema snapshot, leaving the tree alone.
+CHOICES_FRESH = for d in $(SPEC_PKGS); do mkdir -p "$$tmp/$$d" && \
+	go run ./internal/model/openapi/cmd/netbox-choices -schema "$$d/testdata/openapi.json" \
+		-package "$$(basename "$$d")" -out "$$tmp/$$d/choices_gen.go" || exit 1; done
+
 # The packages are replaced whole, so that a deleted query file leaves no
-# file behind, and only once sqlc has succeeded, so that a mistake in the
-# SQL leaves the old code in place.
+# file behind, and only once sqlc and netbox-choices have succeeded, so that
+# a mistake in the SQL or a snapshot leaves the old code in place.
 .PHONY: generate
-generate: ## Regenerate the Go code generated from SQL (sqlc)
-	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && $(SQLC_FRESH) && \
-	for d in $(SQLC_OUT); do mkdir -p "$$d" && rm -f "$$d"/*.go && cp "$$tmp/$$d"/*.go "$$d"/; done
+generate: ## Regenerate the Go code generated from SQL (sqlc) and from schema snapshots (choices)
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && $(SQLC_FRESH) && $(CHOICES_FRESH) && \
+	for d in $(SQLC_OUT); do mkdir -p "$$d" && rm -f "$$d"/*.go && cp "$$tmp/$$d"/*.go "$$d"/; done && \
+	for d in $(SPEC_PKGS); do cp "$$tmp/$$d/choices_gen.go" "$$d/"; done
 
 # Compares fresh output with the tree, so that a changed, missing or extra
 # file fails.
 .PHONY: generate-check
 generate-check: ## Check that the generated code matches its sources
-	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && $(SQLC_FRESH) && \
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && $(SQLC_FRESH) && $(CHOICES_FRESH) && \
 	for d in $(SQLC_OUT); do \
 		diff -r "$$d" "$$tmp/$$d" || { echo "$$d doesn't match the SQL it is generated from: run make generate and commit the result"; exit 1; }; \
+	done && \
+	for d in $(SPEC_PKGS); do \
+		diff "$$d/choices_gen.go" "$$tmp/$$d/choices_gen.go" || { echo "$$d/choices_gen.go doesn't match the schema snapshot it is generated from: run make generate and commit the result"; exit 1; }; \
 	done
+
+# Rewrites each spec package's schema snapshot from the schema of a fresh
+# disposable NetBox, which takes about 4 minutes to start, regenerates the
+# choice values from it, and then checks the specs against it. Review the
+# difference before committing it: it is how NetBox's API changed.
+.PHONY: schema
+schema: ## Refresh the OpenAPI schema snapshots from a disposable NetBox, regenerate, and check the specs (needs Docker)
+	go test -tags integration -run '^TestLiveSchema$$' -count=1 -timeout 30m $(addprefix ./,$(SPEC_PKGS)) -args -update
+	$(MAKE) generate
+	go test -count=1 $(addprefix ./,$(SPEC_PKGS))
 
 .PHONY: fmt
 fmt: ## Format Go code
