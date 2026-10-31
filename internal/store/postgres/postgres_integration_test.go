@@ -1118,7 +1118,14 @@ func TestOneWaitForAMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.AfterFunc(600*time.Millisecond, func() { _ = exclusive(gateKey).release(context.Background(), gate) })
+	// The release uses gate, so wait for it before connect's cleanup closes
+	// gate. Cleanups run in reverse order, so this one runs first.
+	released := make(chan struct{})
+	time.AfterFunc(600*time.Millisecond, func() {
+		defer close(released)
+		_ = exclusive(gateKey).release(context.Background(), gate)
+	})
+	t.Cleanup(func() { <-released })
 	start := time.Now()
 	_, _, err = open(t.Context(), Options{URL: config.NewSecret(url)}, files, time.Second)
 	if !errors.Is(err, errTimeout) {

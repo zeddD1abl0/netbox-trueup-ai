@@ -36,8 +36,9 @@ var readTypes = []ObjectType{
 }
 
 // ReadTypes returns the object types TrueUp reads in milestone 1, in the
-// order a sync would read them. The object model's specs (roadmap step 8)
-// will take this list over.
+// order a sync would read them. The object model's specs (internal/model)
+// will take this list over once they cover the component templates, in
+// roadmap steps 11 and 12.
 func ReadTypes() []ObjectType {
 	return slices.Clone(readTypes)
 }

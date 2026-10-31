@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources and the store on SQLite and PostgreSQL, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, and the object model with specs for manufacturers and device types, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -250,12 +250,14 @@ TrueUp handles NetBox objects generically: an object is an object type plus a ma
 - the REST endpoint, and the object types it depends on (a device type needs its manufacturer);
 - the object's identity: the one uniqueness rule that says two definitions, or a definition and a NetBox object, are the same thing. For device types that is manufacturer and model; for manufacturers, the name;
 - the uniqueness rules NetBox enforces, from the model's fields and `Meta.constraints`: `name` and `slug` each for manufacturers (`OrganizationalModel` in `netbox/models/__init__.py`), `(manufacturer, model)` and `(manufacturer, slug)` for device types (`dcim/models/devices.py`), `(device_type, name)` for most component templates, and `(device_type, parent, name)` for inventory item templates (`dcim/models/device_component_templates.py`). Specs also record where a rule has gaps. The inventory item rule doesn't cover top-level items: their `parent` is null and the constraint doesn't set `nulls_distinct=False`, so NetBox accepts two top-level items with the same name;
-- each field's type, whether it is writable, nullable or required, its default, and how NetBox normalizes it;
+- each field's type, whether it is writable, nullable, blank or required, its default, and how NetBox normalizes it. Where NetBox's own import gives a field another default than its REST API, the spec records both: a device type's `is_full_depth` is true through the API but false through the import, which fills a form and takes a missing checkbox as false, and the import requires `u_height`, which the API defaults to 1;
 - child collections, such as the component templates on a device type, and the key that identifies a child within its parent;
-- the write shape, where it differs from what the API returns, as with front port mappings above;
+- the write shape, where it differs from what the API returns: a reference read as a brief object and written as an ID, a generic reference carried in two fields (an inventory item template's `component_type` and `component_id`), or children with no endpoint of their own, which a parent carries in one of its fields, as a front port template carries its mappings in `rear_ports`;
 - citations of the NetBox files and classes the spec follows, at the pinned version.
 
-A contract test checks every spec against the OpenAPI schema (`/api/schema/`) of the target NetBox: the fields exist, writability and types agree, and choice values match. Comparison, overrides, planning, the UI's diff views and the permission-set generator all work from specs. Supporting a new object type therefore means writing its spec and tests, not new comparison code. The `add-netbox-object` project skill ([tooling.md §1.4](tooling.md#14-project-skills-we-will-write-these)) will hold the checklist.
+Specs live in `internal/model`, one package per NetBox app, starting with `internal/model/dcim`. An object's values are kinds of their own: a decimal is exact, an integer coefficient over a power of ten, so `u_height: 1` and `1.0` are the same value; a date has no time zone; a choice is its stored value; and a field that is null differs from one that is blank and from one a definition doesn't set at all. The values of choice fields are generated from NetBox's schema, and a spec marks those an administrator can change through NetBox's `FIELD_CHOICES` setting, such as a device type's `airflow`.
+
+A contract test checks every spec against the OpenAPI schema (`/api/schema/`) of the target NetBox: the fields exist, writability, types, nullability, lengths and bounds agree, and choice values match, and every field of the API is either described or ignored with a reason. Unit tests check a trimmed snapshot of the schema that each spec package commits, and integration tests check that the snapshot matches the disposable NetBox's schema, and that NetBox's defaults, normalization and validation are those the specs describe ([ADR 0023](adr/0023-check-specs-against-the-schema-with-plain-json.md)). Comparison, overrides, planning, the UI's diff views and the permission-set generator all work from specs. Supporting a new object type therefore means writing its spec and tests, not new comparison code. The `netbox-parity` project skill holds the procedure for writing a spec from NetBox's source, and the `add-netbox-object` skill ([tooling.md §1.4](tooling.md#14-project-skills-we-will-write-these)) will hold the checklist for a whole object type.
 
 Definitions refer to other objects by natural key, such as a manufacturer's name. References are resolved to NetBox IDs when planning.
 
@@ -284,8 +286,8 @@ The comparison engine is pure: it takes objects and specs and returns difference
 
 - Choice fields read back as `{value, label}`, or `null` when blank (`ChoiceField.to_representation` in `netbox/api/fields.py`). TrueUp compares the value, and treats blank and null alike.
 - Decimals are compared as decimals at the field's precision, so `u_height: 1` equals `1.0`. `u_height` is a `DecimalField` with one decimal place, and the API returns decimals as JSON numbers (`COERCE_DECIMAL_TO_STRING: False` in `netbox/settings.py`).
-- Strings are compared after trimming leading and trailing whitespace, as Django REST Framework's `CharField` does to input.
-- References are compared by NetBox ID once resolved. Sets, such as port mappings, ignore order.
+- Strings are compared after trimming leading and trailing whitespace, as Django REST Framework's `CharField` does to input, with Python's `str.strip`, which counts four more characters as whitespace than Go does (U+001C to U+001F).
+- References are compared by NetBox ID once resolved. Sets, such as tags, ignore order. Port mappings are a front port's children, told apart by their position on the front port, as NetBox's own `reconcile_port_mappings` tells them apart (`dcim/utils.py`).
 - Children are matched by their key within the parent. If a key matches more than one child in NetBox, which NetBox allows for top-level inventory items, that child is reported as a conflict.
 
 **Output.** For each object: its outcome, the side-by-side table, and for planning the differences between the desired object and NetBox (field changes, children to add or change, children present only in NetBox, which are reported but never removed, and the fields left unmanaged). The CLI prints text or JSON, and the UI renders the same structure.
@@ -649,8 +651,10 @@ internal/
   source/                 source kind interface, snapshots (exists)
   source/git/             Git source kind (exists; HTTP and file kinds join in M9)
   format/devicetypelib/   devicetype-library format adapter
-  model/                  generic objects, values and specs
-  model/dcim/             specs for dcim object types
+  model/                  generic objects, values and specs (exists)
+  model/openapi/          reads NetBox's OpenAPI schema, for checking and generating specs (exists)
+  model/spectest/         the tests every spec package runs (exists)
+  model/dcim/             specs for dcim object types (manufacturers and device types exist)
   compare/                grouping, matching, normalization, side-by-side diffs
   netbox/                 REST client (reads exist)
   store/                  storage interface (exists)
@@ -694,12 +698,13 @@ ADRs that record this design:
 | [0019](adr/0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http |
 | [0020](adr/0020-git-sources-with-go-git.md) | Fetch Git sources with go-git v6, leaving out files larger than the limit |
 | [0021](adr/0021-forward-only-migrations-when-opening.md) | Migrate the database forward only, when a command opens it |
+| [0022](adr/0022-postgresql-schema-and-advisory-locks.md) | Keep TrueUp's PostgreSQL tables in a schema of their own, and order processes with advisory locks |
+| [0023](adr/0023-check-specs-against-the-schema-with-plain-json.md) | Check specs against a snapshot of NetBox's OpenAPI schema, read with plain JSON decoding |
 
 ADRs still to write, with the work that needs each one:
 
 | Decision | When |
 | --- | --- |
-| How specs are checked against the OpenAPI schema (closes the kin-openapi spike) | M1, with the object model |
 | Web UI sessions and the OpenID Connect library (closes the scs spike) | M3 |
 | The SAML library, and implementing SCIM | M4 |
 | YAML editor and diff view (closes the CodeMirror spike) | M3 |
@@ -746,6 +751,6 @@ A change reference is recorded but not checked today. TrueUp could ask the organ
 ## Open questions and risks
 
 - **Git repository size.** See [Git sources](#git-sources-m1). Resolved by [ADR 0020](adr/0020-git-sources-with-go-git.md): a partial-clone filter at each source's `max_file_size`.
-- **Two sets of defaults.** NetBox's YAML import fills a component's omitted fields from the import form's initial values (`_save_object` in `netbox/views/generic/bulk_views.py`), while the REST API applies model defaults. Where the two differ, a device type created by TrueUp could differ from one created by NetBox's import. Specs must record which applies. Milestone 2 adds a parity test that creates the same files both ways and compares the results.
+- **Two sets of defaults.** NetBox's YAML import fills a component's omitted fields from the import form's initial values (`_save_object` in `netbox/views/generic/bulk_views.py`), and a device type's from a form that takes a missing checkbox as false, while the REST API applies model defaults. Where the two differ, a device type created by TrueUp could differ from one created by NetBox's import. Specs record both (`Field.ImportDefault` and `Field.ImportRequired`): for device types, `is_full_depth` and `u_height`. Which one TrueUp applies when it creates an object is a milestone 2 decision. Milestone 2 adds a parity test that creates the same files both ways and compares the results.
 - **Manufacturer slugs.** The manufacturer definitions derived from devicetype-library need slugs that match what NetBox's UI would generate from the name. The exact rule is confirmed in milestone 1, with the library format.
 - **Library changes.** A key the library adds before TrueUp supports it is reported as a warning and ignored ([ADR 0009](adr/0009-source-kinds-and-format-adapters.md)). Such warnings are the signal to update the format adapter.
