@@ -228,9 +228,11 @@ func (w *walker) dir(ctx context.Context, id, dirPath string, depth int) error {
 		if dirPath != "" {
 			p = dirPath + "/" + e.Name
 		}
-		// A directory matters if the patterns could choose something in
-		// it; anything else only if they choose it.
-		if e.Type == EntryDir && !w.mayChooseBelow(p) || e.Type != EntryDir && !w.chosen(p) {
+		// A file matters only if the patterns choose it; anything else if
+		// they could choose something in it, as they could in a directory,
+		// so that a symbolic link or a submodule where a directory of chosen
+		// files belongs is reported.
+		if e.Type == EntryFile && !w.chosen(p) || e.Type != EntryFile && !w.mayChooseBelow(p) {
 			continue
 		}
 		reported, dup := twice[e.Name]

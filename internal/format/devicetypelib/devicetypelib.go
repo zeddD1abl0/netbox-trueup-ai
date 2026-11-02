@@ -35,9 +35,11 @@ const (
 	// manufacturer, as the library's tests find them
 	// (tests/definitions_test.py: device-types/*/*, named .yaml or .yml).
 	deviceTypesDir = "device-types"
+	// schemaDir holds the library's JSON schemas.
+	schemaDir = "schema"
 	// schemaRoot is the schema the library's tests validate device types
 	// against (tests/test_configuration.py, SCHEMAS).
-	schemaRoot = "schema/devicetype.json"
+	schemaRoot = schemaDir + "/devicetype.json"
 )
 
 // The keys of a device type file that TrueUp reads, beyond the device
@@ -70,16 +72,16 @@ type Format struct{}
 func (Format) Name() string { return config.FormatDeviceTypeLibrary }
 
 // Needs returns the library's JSON schemas, which validate its files.
-func (Format) Needs() []string { return []string{"schema/*.json"} }
+func (Format) Needs() []string { return []string{schemaDir + "/*.json"} }
 
 // Reads returns the files the format reads: the device types, and anything
 // else below their directory, which it reports, and the JSON schemas.
-func (Format) Reads() []string { return []string{deviceTypesDir + "/**", "schema/*.json"} }
+func (Format) Reads() []string { return []string{deviceTypesDir + "/**", schemaDir + "/*.json"} }
 
 // Read reads the snapshot's device types, and derives their manufacturers.
 // It fails, reading nothing, when the snapshot lacks the library's schemas
-// or they don't compile, when the source layer left out device-types
-// itself, or when a file can't be read from the snapshot.
+// or they don't compile, when the source layer left out device-types or
+// schema itself, or when a file can't be read from the snapshot.
 func (Format) Read(ctx context.Context, snap *source.Snapshot) (*format.Result, error) {
 	for _, s := range snap.Skipped {
 		if s.Path == deviceTypesDir {
@@ -210,7 +212,7 @@ func placeOf(p string) place {
 func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, error) {
 	var files []format.SchemaFile
 	for _, f := range snap.Files {
-		if dir, name := path.Split(f.Path); dir != "schema/" || path.Ext(name) != ".json" {
+		if dir, name := path.Split(f.Path); dir != schemaDir+"/" || path.Ext(name) != ".json" {
 			continue
 		}
 		data, err := snap.ReadFile(ctx, f.Path)
@@ -221,7 +223,10 @@ func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, 
 	}
 	if !slices.ContainsFunc(files, func(f format.SchemaFile) bool { return f.Path == schemaRoot }) {
 		for _, s := range snap.Skipped {
-			if s.Path == schemaRoot {
+			switch s.Path {
+			case schemaDir:
+				return nil, fmt.Errorf("%s, where devicetype-library keeps its schemas, %s", schemaDir, skipReason(s.Reason))
+			case schemaRoot:
 				return nil, fmt.Errorf("%s, devicetype-library's schema for device types, %s", schemaRoot, skipReason(s.Reason))
 			}
 		}
@@ -233,7 +238,7 @@ func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, 
 		// A schema it refers to may be one the snapshot left out.
 		var skipped []string
 		for _, s := range snap.Skipped {
-			if dir, name := path.Split(s.Path); dir == "schema/" && path.Ext(name) == ".json" {
+			if dir, name := path.Split(s.Path); dir == schemaDir+"/" && path.Ext(name) == ".json" {
 				skipped = append(skipped, s.Path+" "+skipReason(s.Reason))
 			}
 		}
@@ -466,18 +471,14 @@ func (r *reader) deriveManufacturers() []format.Definition {
 		if len(names) < 2 {
 			continue
 		}
-		quoted := make([]string, len(names))
-		for i, name := range names {
-			quoted[i] = format.Quote(name)
-		}
 		both, others := "both", "one of them"
 		if len(names) > 2 {
 			both, others = "all", "all but one of them"
 		}
 		r.add(format.Problem{
 			Severity: format.Warning,
-			Reason: fmt.Sprintf("manufacturers %s and %s would %s get the slug %s, which NetBox gives to one manufacturer only: create %s in NetBox with another slug, or spell them alike in the source",
-				strings.Join(quoted[:len(quoted)-1], ", "), quoted[len(quoted)-1], both, format.Quote(s), others),
+			Reason: fmt.Sprintf("manufacturers %s would %s get the slug %s, which NetBox gives to one manufacturer only: create %s in NetBox with another slug, or spell them alike in the source",
+				format.ListQuoted(names), both, format.Quote(s), others),
 		})
 	}
 	return out

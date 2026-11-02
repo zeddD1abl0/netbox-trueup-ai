@@ -169,6 +169,20 @@ func TestCompileSchemaRefuses(t *testing.T) {
 	}
 }
 
+// TestCompileSchemaTakesZeros checks that a zero written with an exponent,
+// however large, isn't taken for a number too small for a float64.
+func TestCompileSchemaTakesZeros(t *testing.T) {
+	t.Parallel()
+	for _, n := range []string{"0e1", "0E5", "-0.0e3", "0e-99999999", "0e99999999", "5e-324"} {
+		// draft-04 makes jsonschema hash an enum's values, which is where
+		// a number too large for it panics.
+		data := `{"$schema": "http://json-schema.org/draft-04/schema#", "minimum": ` + n + `, "enum": [` + n + `, 1]}`
+		if _, err := CompileSchema([]SchemaFile{{Path: "s.json", Data: []byte(data)}}, "s.json"); err != nil {
+			t.Errorf("CompileSchema with %s: %v", n, err)
+		}
+	}
+}
+
 // TestCompileSchemaKeepsErrors checks that jsonschema's errors are wrapped,
 // though their text is cut short.
 func TestCompileSchemaKeepsErrors(t *testing.T) {
@@ -237,4 +251,23 @@ func TestValidateSurvivesAPanic(t *testing.T) {
 	if len(problems) != 1 || problems[0].Severity != Error {
 		t.Errorf("Validate = %+v, want one error", problems)
 	}
+}
+
+// TestValidatePanicsOnItsOwnBugs checks that the guard against jsonschema's
+// panics doesn't hide one of TrueUp's, such as a node ParseYAML would never
+// make.
+func TestValidatePanicsOnItsOwnBugs(t *testing.T) {
+	t.Parallel()
+	s, err := CompileSchema([]SchemaFile{{Path: "s.json", Data: []byte(`{}`)}}, "s.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &Node{Kind: Mapping, Line: 1, Column: 1, Pairs: []Pair{{Key: &Node{Kind: Scalar, Tag: TagStr, Value: "a"}}}}
+	defer func() {
+		if recover() == nil {
+			t.Error("Validate of a pair without a value didn't panic")
+		}
+	}()
+	problems := s.Validate("x.yaml", root)
+	t.Errorf("Validate = %+v, want a panic", problems)
 }

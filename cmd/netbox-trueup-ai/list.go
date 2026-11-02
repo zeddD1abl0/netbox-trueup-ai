@@ -176,7 +176,10 @@ func (r listJSON) summary() string {
 	if len(failed) > 0 {
 		parts = append(parts, fmt.Sprintf("%d of the %d sources couldn't be read: %s", len(failed), len(r.Sources), strings.Join(failed, ", ")))
 	}
-	if invalid > 0 {
+	switch {
+	case invalid == 1:
+		parts = append(parts, "1 file is invalid")
+	case invalid > 1:
 		parts = append(parts, fmt.Sprintf("%d files are invalid", invalid))
 	}
 	return strings.Join(parts, "; ")

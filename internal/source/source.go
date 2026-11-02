@@ -145,7 +145,9 @@ type File struct {
 	Digest string
 }
 
-// Skipped is an entry that patterns choose but a snapshot leaves out.
+// Skipped is an entry that patterns choose but a snapshot leaves out: a
+// file they choose, or anything else, such as a symbolic link or a
+// submodule, in which they could choose files.
 type Skipped struct {
 	// Path is the entry's path. For an unsafe path, it is the path as far
 	// as it could be read, and may hold any characters: escape it before

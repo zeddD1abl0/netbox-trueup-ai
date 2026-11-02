@@ -113,7 +113,7 @@ func TestListJSON(t *testing.T) {
 	if r.code != exitListProblems {
 		t.Errorf("exit code = %d, want %d\nstderr: %s", r.code, exitListProblems, r.stderr)
 	}
-	if !strings.HasSuffix(r.stderr, "Error: 1 files are invalid\n") {
+	if !strings.HasSuffix(r.stderr, "Error: 1 file is invalid\n") {
 		t.Errorf("stderr = %q", r.stderr)
 	}
 	var got listResult

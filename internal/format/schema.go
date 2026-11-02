@@ -110,13 +110,15 @@ func guard(f func() error) (err error) {
 }
 
 // hugeNumber returns a number in a schema that a float64 can't hold, such as
-// 1e9999999, which would make jsonschema v6.0.3 panic, or that is written
-// with more than 100 characters, if there is one.
+// 1e9999999 or 1e-400, which would make jsonschema v6.0.3 panic, or that is
+// written with more than 100 characters, if there is one. A zero holds,
+// whatever its exponent.
 func hugeNumber(doc any) (string, bool) {
 	switch v := doc.(type) {
 	case json.Number:
 		f, err := strconv.ParseFloat(string(v), 64)
-		if err != nil || len(v) > 100 || math.IsInf(f, 0) || f == 0 && strings.ContainsAny(string(v), "123456789") {
+		mantissa, _, _ := strings.Cut(strings.ToLower(string(v)), "e")
+		if err != nil || len(v) > 100 || math.IsInf(f, 0) || f == 0 && strings.ContainsAny(mantissa, "123456789") {
 			return string(v), true
 		}
 	case map[string]any:
@@ -173,8 +175,9 @@ const MaxSchemaProblems = 20
 // The reasons are TrueUp's own, quoting values cut short, rather than
 // jsonschema's, which list every value an enum allows.
 func (s *Schema) Validate(path string, root *Node) []Problem {
+	doc := root.JSON()
 	var invalid error
-	if err := guard(func() error { invalid = s.schema.Validate(root.JSON()); return nil }); err != nil {
+	if err := guard(func() error { invalid = s.schema.Validate(doc); return nil }); err != nil {
 		return []Problem{{Severity: Error, Path: path, Reason: "can't be checked against the schema: " + err.Error()}}
 	}
 	err := invalid
@@ -238,11 +241,11 @@ func schemaProblems(path string, root *Node, e *jsonschema.ValidationError) []Pr
 		}
 		return out
 	case *kind.Required:
-		return []Problem{at(n, field, "needs "+listQuoted(k.Missing)+", which the schema requires")}
+		return []Problem{at(n, field, "needs "+ListQuoted(k.Missing)+", which the schema requires")}
 	case *kind.DependentRequired:
-		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", listQuoted(k.Missing), Quote(k.Prop)))}
+		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", ListQuoted(k.Missing), Quote(k.Prop)))}
 	case *kind.Dependency:
-		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", listQuoted(k.Missing), Quote(k.Prop)))}
+		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", ListQuoted(k.Missing), Quote(k.Prop)))}
 	}
 	return []Problem{at(n, field, describeFailure(n, e.ErrorKind))}
 }
@@ -399,8 +402,9 @@ func jsonTypeName(t string) string {
 	return Quote(t)
 }
 
-// listQuoted quotes names and lists them: "a", "a and b", or "a, b and c".
-func listQuoted(names []string) string {
+// ListQuoted quotes names, as Quote does, and lists them: "a", "a and b",
+// or "a, b and c", or nothing for none.
+func ListQuoted(names []string) string {
 	quoted := make([]string, len(names))
 	for i, name := range names {
 		quoted[i] = Quote(name)

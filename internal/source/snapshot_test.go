@@ -385,6 +385,35 @@ func TestSnapshotSkipsUnsafeAndOtherEntries(t *testing.T) {
 	}
 }
 
+// TestSnapshotReportsWhatMayHoldChosenFiles checks that a symbolic link, a
+// submodule or another entry that isn't a file is reported when the
+// patterns could choose files inside it, as they could inside a directory,
+// though they don't choose it, and isn't when they couldn't.
+func TestSnapshotReportsWhatMayHoldChosenFiles(t *testing.T) {
+	t.Parallel()
+	content := newFake(
+		link("README.md"),
+		link("device-types"),
+		link("docs"),
+		node{name: "images", typ: EntryOther},
+		node{name: "schema", typ: EntrySubmodule},
+		node{name: "vendor", typ: EntrySubmodule},
+	)
+	s := spec(t, []string{"device-types/Juniper/**", "schema/*.json", "images/*.png"}, nil)
+	snap, err := Fetch(t.Context(), fakeKind{content: content}, s)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	want := []Skipped{
+		{Path: "device-types", Reason: Symlink},
+		{Path: "images", Reason: NotAFile},
+		{Path: "schema", Reason: Submodule},
+	}
+	if diff := cmp.Diff(want, snap.Skipped); diff != "" {
+		t.Errorf("skipped (-want +got):\n%s", diff)
+	}
+}
+
 func TestSnapshotFixedLimits(t *testing.T) {
 	t.Parallel()
 

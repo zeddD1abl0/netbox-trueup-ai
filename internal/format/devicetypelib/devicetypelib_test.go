@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -435,10 +436,11 @@ func TestReadDuplicatesInListedOrder(t *testing.T) {
 func TestReadNeedsSchemas(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		change func(fstest.MapFS)
-		limits config.SourceLimits
-		want   string
+		name    string
+		change  func(fstest.MapFS)
+		limits  config.SourceLimits
+		want    string
+		include []string // the source's include patterns, if any
 	}{
 		{"no schemas", func(fsys fstest.MapFS) {
 			for p := range fsys {
@@ -446,30 +448,59 @@ func TestReadNeedsSchemas(t *testing.T) {
 					delete(fsys, p)
 				}
 			}
-		}, sourcetest.Limits, "the source has no schema/devicetype.json, devicetype-library's schema for device types"},
-		{"no device type schema", func(fsys fstest.MapFS) { delete(fsys, "schema/devicetype.json") }, sourcetest.Limits, "has no schema/devicetype.json"},
-		{"a schema that refers to one that is gone", func(fsys fstest.MapFS) { delete(fsys, "schema/components.json") }, sourcetest.Limits, "schema/devicetype.json doesn't compile"},
-		{"a schema that isn't JSON", func(fsys fstest.MapFS) { fsys["schema/racktype.json"] = &fstest.MapFile{Data: []byte("{")} }, sourcetest.Limits, "schema/racktype.json isn't JSON"},
+		}, sourcetest.Limits, "the source has no schema/devicetype.json, devicetype-library's schema for device types", nil},
+		{"no device type schema", func(fsys fstest.MapFS) { delete(fsys, "schema/devicetype.json") }, sourcetest.Limits, "has no schema/devicetype.json", nil},
+		{"a schema that refers to one that is gone", func(fsys fstest.MapFS) { delete(fsys, "schema/components.json") }, sourcetest.Limits, "schema/devicetype.json doesn't compile", nil},
+		{"a schema that isn't JSON", func(fsys fstest.MapFS) { fsys["schema/racktype.json"] = &fstest.MapFile{Data: []byte("{")} }, sourcetest.Limits, "schema/racktype.json isn't JSON", nil},
 		{"a schema that refers outside", func(fsys fstest.MapFS) {
 			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(`{"$ref": "https://example.com/devicetype.json"}`)}
-		}, sourcetest.Limits, "loads no schema from outside the source"},
-		{"a schema too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 4096, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "schema/devicetype.json, devicetype-library's schema for device types, wasn't read: it is larger than the source's max_file_size"},
-		{"a schema it refers to too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 5000, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "(schema/components.json wasn't read: it is larger than the source's max_file_size; schema/generated_schema.json wasn't read: it is larger than the source's max_file_size; schema/moduletype.json wasn't read: it is larger than the source's max_file_size)"},
+		}, sourcetest.Limits, "loads no schema from outside the source", nil},
+		{"a schema too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 4096, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "schema/devicetype.json, devicetype-library's schema for device types, wasn't read: it is larger than the source's max_file_size", nil},
+		{"a schema it refers to too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 5000, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "(schema/components.json wasn't read: it is larger than the source's max_file_size; schema/generated_schema.json wasn't read: it is larger than the source's max_file_size; schema/moduletype.json wasn't read: it is larger than the source's max_file_size)", nil},
 		{"a schema it refers to that is a link", func(fsys fstest.MapFS) {
 			fsys["schema/components.json"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("other.json")}
-		}, sourcetest.Limits, "(schema/components.json wasn't read: it is a symbolic link, which TrueUp never follows)"},
+		}, sourcetest.Limits, "(schema/components.json wasn't read: it is a symbolic link, which TrueUp never follows)", nil},
 		{"device types that are a link", func(fsys fstest.MapFS) {
 			delete(fsys, "device-types/Acme/box.yaml")
 			fsys["device-types"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("elsewhere")}
-		}, sourcetest.Limits, "device-types, where devicetype-library keeps its device types, wasn't read: it is a symbolic link"},
+		}, sourcetest.Limits, "device-types, where devicetype-library keeps its device types, wasn't read: it is a symbolic link", nil},
+		// Patterns that choose files inside a link, but not the link
+		// itself, still report it.
+		{"device types that are a link, with include patterns", func(fsys fstest.MapFS) {
+			delete(fsys, "device-types/Acme/box.yaml")
+			fsys["device-types"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("elsewhere")}
+		}, sourcetest.Limits, "device-types, where devicetype-library keeps its device types, wasn't read: it is a symbolic link", []string{"device-types/Acme/**"}},
+		{"schemas that are a link", func(fsys fstest.MapFS) {
+			for p := range fsys {
+				if strings.HasPrefix(p, "schema/") {
+					delete(fsys, p)
+				}
+			}
+			fsys["schema"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("elsewhere")}
+		}, sourcetest.Limits, "schema, where devicetype-library keeps its schemas, wasn't read: it is a symbolic link", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fsys := withFiles(t, map[string]string{"device-types/Acme/box.yaml": valid})
 			tt.change(fsys)
-			snap := sourcetest.SnapshotOf(t, sourcetest.Kind{FS: fsys, Version: "v1"}, config.Source{Name: "lib", Kind: "test", Limits: tt.limits})
-			res, err := Format{}.Read(t.Context(), snap)
+			// The patterns list gives a source.
+			f := Format{}
+			s := config.Source{Name: "lib", Kind: "test", Limits: tt.limits}
+			if tt.include != nil {
+				s.Include = slices.Concat(tt.include, f.Needs())
+			}
+			spec, err := source.NewSpec(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec.Only = sourcetest.Patterns(t, f.Reads()...)
+			snap, err := source.Open(t.Context(), sourcetest.Kind{FS: fsys, Version: "v1"}, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = snap.Close() })
+			res, err := f.Read(t.Context(), snap)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Read = %+v, %v; want an error holding %q", res, err, tt.want)
 			}
