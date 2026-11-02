@@ -135,10 +135,10 @@ func (e *heldError) Unwrap() error { return errTimeout }
 
 // acquire takes the lock on conn, for its session, waiting up to timeout for
 // other sessions to release it, and calling notice, if not nil, once it has
-// waited for noticeAfter. notice can run on another goroutine. It waits in
-// PostgreSQL's queue for the lock, so that waiters get it in turn, and
-// lock_timeout ends the wait on the server too, even if this process goes
-// away without a word while it waits.
+// waited for noticeAfter. notice can run on another goroutine, but returns
+// before acquire does. It waits in PostgreSQL's queue for the lock, so that
+// waiters get it in turn, and lock_timeout ends the wait on the server too,
+// even if this process goes away without a word while it waits.
 func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Duration, notice func()) error {
 	var ok bool
 	if err := conn.QueryRow(ctx, l.try, l.keys...).Scan(&ok); err != nil {
@@ -152,8 +152,18 @@ func (l advisory) acquire(ctx context.Context, conn *pgx.Conn, timeout time.Dura
 		return errTimeout
 	}
 	if notice != nil {
-		t := time.AfterFunc(noticeAfter, notice)
-		defer t.Stop()
+		noticed := make(chan struct{})
+		t := time.AfterFunc(noticeAfter, func() {
+			defer close(noticed)
+			notice()
+		})
+		// Stop doesn't wait for a notice that has started, so wait for it
+		// here, or it could be logged after what follows the wait.
+		defer func() {
+			if !t.Stop() {
+				<-noticed
+			}
+		}()
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		// For this transaction alone. The lock lasts beyond it, as a

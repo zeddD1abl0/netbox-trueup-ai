@@ -406,6 +406,63 @@ func TestAWaitEndsOnTheServerToo(t *testing.T) {
 	closeStore(t, s)
 }
 
+func TestAWaitEndsAfterItsNotice(t *testing.T) {
+	t.Parallel()
+	// The wait ends while its notice is still running, and waits for it.
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		// release has the notice release the lock the wait waits for.
+		release bool
+		want    error
+	}{
+		{"the wait gives up", noticeAfter + 500*time.Millisecond, false, errTimeout},
+		{"the wait gets the lock", 10 * time.Second, true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			url := srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, srv.NewDatabase(t))
+			connect := func() *pgx.Conn {
+				t.Helper()
+				c, err := pgx.Connect(t.Context(), url)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = c.Close(context.Background()) })
+				return c
+			}
+			holder := connect()
+			if err := exclusive(lockKey).acquire(t.Context(), holder, 0, nil); err != nil {
+				t.Fatal(err)
+			}
+			// started and finished have no lock, so the race detector also
+			// sees a notice that acquire doesn't wait for.
+			var started, finished bool
+			var releaseErr error
+			err := exclusive(lockKey).acquire(t.Context(), connect(), tc.timeout, func() {
+				started = true
+				if tc.release {
+					releaseErr = exclusive(lockKey).release(context.Background(), holder)
+				}
+				time.Sleep(time.Second)
+				finished = true
+			})
+			if releaseErr != nil {
+				t.Fatalf("release the holder's lock: %v", releaseErr)
+			}
+			if !errors.Is(err, tc.want) {
+				t.Errorf("acquire = %v, want %v", err, tc.want)
+			}
+			switch {
+			case !started:
+				t.Error("the wait ended before its notice was due, so the notice wasn't tested")
+			case !finished:
+				t.Error("acquire returned before its notice did")
+			}
+		})
+	}
+}
+
 func TestAStoreThatLosesItsOwnConnection(t *testing.T) {
 	t.Parallel()
 	files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
