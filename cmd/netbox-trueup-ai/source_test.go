@@ -31,16 +31,21 @@ import (
 // its URL, the certificates that trust the server, and its commit.
 func gitRepo(t *testing.T) (repoURL string, pool *x509.CertPool, commit string) {
 	t.Helper()
+	return gitRepoWith(t, map[string]string{
+		"device-types/Juniper/MX204.yaml": "model: MX204\n",
+		"device-types/Cisco/C9300.yaml":   "model: C9300\n",
+		"elevation-images/mx204.png":      strings.Repeat("x", 2048),
+	})
+}
+
+// gitRepoWith is gitRepo with the files given, by path.
+func gitRepoWith(t *testing.T, files map[string]string) (repoURL string, pool *x509.CertPool, commit string) {
+	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, "lib")
 	repo, err := gogit.PlainInit(dir, false)
 	if err != nil {
 		t.Fatal(err)
-	}
-	files := map[string]string{
-		"device-types/Juniper/MX204.yaml": "model: MX204\n",
-		"device-types/Cisco/C9300.yaml":   "model: C9300\n",
-		"elevation-images/mx204.png":      strings.Repeat("x", 2048),
 	}
 	for name, content := range files {
 		p := filepath.Join(dir, filepath.FromSlash(name))
@@ -55,8 +60,8 @@ func gitRepo(t *testing.T) (repoURL string, pool *x509.CertPool, commit string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"device-types", "elevation-images"} {
-		if _, err := wt.Add(p); err != nil {
+	for name := range files {
+		if _, err := wt.Add(name); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -42,7 +42,12 @@ type Spec struct {
 	// Include chooses the files to read; none means every file. Exclude
 	// leaves files out, even ones Include chooses.
 	Include, Exclude []glob.Pattern
-	Limits           config.SourceLimits
+	// Only, if set, narrows a snapshot to the files it matches as well, such
+	// as the files a format reads, so that a command that reads only those
+	// doesn't read and hash the rest. It isn't configured: a command sets
+	// it.
+	Only   []glob.Pattern
+	Limits config.SourceLimits
 }
 
 // NewSpec returns the Spec for a source from the configuration.

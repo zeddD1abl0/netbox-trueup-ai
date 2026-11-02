@@ -1,0 +1,324 @@
+[
+  {
+    "name": "Dell",
+    "slug": "dell"
+  },
+  {
+    "name": "Hewlett Packard Enterprise",
+    "slug": "hewlett-packard-enterprise"
+  },
+  {
+    "name": "Rohde & Schwarz",
+    "slug": "rohde-schwarz"
+  },
+  {
+    "name": "Reichle & De-Massari",
+    "slug": "reichle-de-massari"
+  },
+  {
+    "name": "GL.iNet",
+    "slug": "gl-inet"
+  },
+  {
+    "name": "GL-iNet",
+    "slug": "gl-inet"
+  },
+  {
+    "name": "NETGEAR",
+    "slug": "netgear"
+  },
+  {
+    "name": "Netgear",
+    "slug": "netgear"
+  },
+  {
+    "name": "Unipi technology",
+    "slug": "unipi-technology"
+  },
+  {
+    "name": "3Com",
+    "slug": "3com"
+  },
+  {
+    "name": "AT&T",
+    "slug": "att"
+  },
+  {
+    "name": "C++",
+    "slug": "c"
+  },
+  {
+    "name": "A/B Networks",
+    "slug": "ab-networks"
+  },
+  {
+    "name": "Foo (Bar)",
+    "slug": "foo-bar"
+  },
+  {
+    "name": "1.2.3",
+    "slug": "1-2-3"
+  },
+  {
+    "name": "Wireless-tag Technology",
+    "slug": "wireless-tag-technology"
+  },
+  {
+    "name": "Schweitzer Engineering Laboratories",
+    "slug": "schweitzer-engineering-laboratories"
+  },
+  {
+    "name": "360 Vision Technology",
+    "slug": "360-vision-technology"
+  },
+  {
+    "name": "  Padded  ",
+    "slug": "padded"
+  },
+  {
+    "name": "\tTabbed\t",
+    "slug": "tabbed"
+  },
+  {
+    "name": "Line\nBreak",
+    "slug": "line-break"
+  },
+  {
+    "name": "Foo.",
+    "slug": "foo"
+  },
+  {
+    "name": ".Foo",
+    "slug": "foo"
+  },
+  {
+    "name": "..Foo..",
+    "slug": "foo"
+  },
+  {
+    "name": "-Foo-",
+    "slug": "-foo-"
+  },
+  {
+    "name": "_Foo_",
+    "slug": "_foo_"
+  },
+  {
+    "name": "a--b",
+    "slug": "a-b"
+  },
+  {
+    "name": "a - b",
+    "slug": "a-b"
+  },
+  {
+    "name": "a . b",
+    "slug": "a-b"
+  },
+  {
+    "name": "a_b",
+    "slug": "a_b"
+  },
+  {
+    "name": "a__b",
+    "slug": "a__b"
+  },
+  {
+    "name": "a-_-b",
+    "slug": "a-_-b"
+  },
+  {
+    "name": ".",
+    "slug": ""
+  },
+  {
+    "name": "...",
+    "slug": ""
+  },
+  {
+    "name": "-",
+    "slug": "-"
+  },
+  {
+    "name": "_",
+    "slug": "_"
+  },
+  {
+    "name": "",
+    "slug": ""
+  },
+  {
+    "name": "   ",
+    "slug": ""
+  },
+  {
+    "name": "&",
+    "slug": ""
+  },
+  {
+    "name": "&&&",
+    "slug": ""
+  },
+  {
+    "name": "Foo & & Bar",
+    "slug": "foo-bar"
+  },
+  {
+    "name": "Ünïcödé",
+    "slug": "ncd"
+  },
+  {
+    "name": "Señor",
+    "slug": "seor"
+  },
+  {
+    "name": "日本電気",
+    "slug": ""
+  },
+  {
+    "name": "Straße",
+    "slug": "strae"
+  },
+  {
+    "name": "İstanbul",
+    "slug": "stanbul"
+  },
+  {
+    "name": "ǅ",
+    "slug": ""
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A　B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A﻿B",
+    "slug": "a-b"
+  },
+  {
+    "name": "A​B",
+    "slug": "ab"
+  },
+  {
+    "name": "AB",
+    "slug": "ab"
+  },
+  {
+    "name": "A᠎B",
+    "slug": "ab"
+  },
+  {
+    "name": "A\u001cB",
+    "slug": "ab"
+  },
+  {
+    "name": "A\u000bB",
+    "slug": "a-b"
+  },
+  {
+    "name": "A\fB",
+    "slug": "a-b"
+  },
+  {
+    "name": " Lead",
+    "slug": "lead"
+  },
+  {
+    "name": "Trail　",
+    "slug": "trail"
+  },
+  {
+    "name": "﻿.Dot.﻿",
+    "slug": "dot"
+  },
+  {
+    "name": "A😀B",
+    "slug": "ab"
+  },
+  {
+    "name": "A\u0000B",
+    "slug": "ab"
+  },
+  {
+    "name": "ÁB",
+    "slug": "ab"
+  },
+  {
+    "name": "é",
+    "slug": "e"
+  },
+  {
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "slug": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "slug": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "slug": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "name": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    "slug": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+    "name": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    "slug": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa b",
+    "slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+  },
+  {
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..b",
+    "slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+  },
+  {
+    "name": "AbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAb & CdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCdCd",
+    "slug": "ababababababababababababababababababababababababab"
+  },
+  {
+    "name": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+    "chars": 100,
+    "slug": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  },
+  {
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa b",
+    "chars": 100,
+    "slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+  }
+]

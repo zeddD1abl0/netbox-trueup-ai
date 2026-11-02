@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, and the object model with specs for manufacturers and device types, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, the object model with specs for manufacturers and device types, and the devicetype-library format with `list`, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -24,7 +24,7 @@ TrueUp starts narrow and grows along three independent axes. Each axis has its o
 | [Formats](#formats-and-validation) | devicetype-library | Other layouts, such as a format for any NetBox object | A format adapter: turn the files in a snapshot into definitions |
 | [Object types](#object-model-and-specs) | Manufacturers, device types and their component templates | Module types, module type profiles, module bay types, rack types, and more | A spec, plus mapping in each format that carries the type |
 
-devicetype-library itself already spans several object types: about 12,400 device type, 2,000 module type and 150 rack type files. Module types refer to a module type profile by name, so profiles join with module types.
+devicetype-library itself already spans several object types: about 13,200 device type, 2,050 module type and 150 rack type files. Module types refer to a module type profile by name, so profiles join with module types.
 
 ## Vocabulary
 
@@ -223,25 +223,25 @@ A Git source can be marked writable. Exporting a NetBox object writes its defini
 
 A format turns the files in a snapshot into definitions, without knowing which source kind produced them. Each format is an adapter in its own package. The first is devicetype-library's ([ADR 0009](adr/0009-source-kinds-and-format-adapters.md)), starting with its device types; its module and rack types follow.
 
-For each file, the adapter:
+For each file, the adapter ([ADR 0024](adr/0024-read-source-files-as-pyyaml-does.md)):
 
-1. parses the YAML with `go.yaml.in/yaml/v3` into a node tree, rejecting duplicate keys and enforcing limits on nesting depth and alias expansion;
-2. validates it against the format's JSON schema. For devicetype-library these are the library's own `schema/*.json` files from the same snapshot, compiled with remote references turned off;
+1. parses the YAML with `go.yaml.in/yaml/v3` into a node tree, and reads every unquoted value as PyYAML's `SafeLoader` does, since NetBox's own YAML import and the library's tests read files with it: `yes` is true, `010` is 8, and `02351930`, which isn't octal, is text. A file is at most 256 KiB, 16 levels deep and 50,000 nodes, and holds one document, a mapping. Anchors, aliases, merge keys, tags, keys that aren't text and keys given twice are refused, and so are values NetBox can't hold, such as dates where it wants text, and infinity;
+2. validates it against the format's JSON schema. For devicetype-library these are the library's own `schema/*.json` files from the same snapshot, each known by its `$id`, compiled with a loader that refuses every URL. The format adds `schema/*.json` to a source's include patterns, so that a source that includes some device types only still has them, and without them, or if they don't compile, the source reads nothing;
 3. maps it to definitions in the object model, converting the format's layout to NetBox's (see below);
 4. validates the definitions against their specs: types, lengths, choices and required fields as NetBox 4.7 defines them.
 
-A file that fails any step is reported with its path, line and column, and skipped. It doesn't stop the rest of the snapshot.
+A file that fails any step is reported with its path, line and column, the field, such as `interfaces[3].type`, and the reason, in TrueUp's words, quoting values cut short, and skipped. It doesn't stop the rest of the snapshot. Warnings point at what TrueUp reads but NetBox may not take as it is, such as a choice an administrator would have to add, and two definitions NetBox couldn't hold together.
 
 The mapping step is where a format and NetBox differ. For devicetype-library:
 
-- `manufacturer` is a name. It becomes a reference to a `dcim.manufacturer`, matched by name as NetBox's own import does (`DeviceTypeImportForm` in `dcim/forms/bulk_import.py`), and resolved to an ID when planning.
-- Manufacturers are objects in their own right, not just references. The library has no manufacturer files, so the adapter derives a manufacturer definition for each manufacturer the library names: the name, and a slug made the way NetBox's UI makes one. A derived value like that slug is used only when TrueUp creates the object; for an existing manufacturer it isn't managed, so importing never rewrites a slug other tools rely on. Manufacturers are then listed, compared, imported and synced like any other object, and other sources can define them more fully.
-- Component lists use hyphenated keys (`console-ports`, `front-ports`). They become child objects of the device type.
+- `manufacturer` is a name. It becomes a reference to a `dcim.manufacturer`, matched by name as NetBox's own import does (`DeviceTypeImportForm` in `dcim/forms/bulk_import.py`): exactly, case and white space included, and resolved to an ID when planning. A name with white space at an end is refused, since NetBox would trim the manufacturer's name and then not find it.
+- Manufacturers are objects in their own right, not just references. The library has no manufacturer files, so the adapter derives a manufacturer definition for each name the library's valid files give: the name, and a slug made the way NetBox's UI makes one (`slugify` in `project-static/src/buttons/reslug.ts`, cut to 50 characters, since the slug field of NetBox's organizational models sets no `maxlength`). A derived value like that slug is used only when TrueUp creates the object; for an existing manufacturer it isn't managed, so importing never rewrites a slug other tools rely on. Each spelling of a name is a manufacturer of its own, as it is to NetBox's import: the library names both `Netgear` and `NETGEAR`, which would both get the slug `netgear`, and that is reported, for a person to settle in NetBox or in the source. A derived manufacturer has no file of its own: it is identified by its source and name, lists the files that name it, and goes away with the last of them. Manufacturers are then listed, compared, imported and synced like any other object, and other sources can define them more fully.
+- Component lists use hyphenated keys (`console-ports`, `front-ports`). They become child objects of the device type, from roadmap steps 11 and 12; until then a definition only counts them.
 - `port-mappings` is a separate list, but NetBox 4.7's REST API takes a front port template's mappings as a nested `rear_ports` list (`FrontPortTemplateSerializer` in `dcim/api/serializers_/devicetype_components.py`), and replaces the whole set whenever that list is sent (`PortSerializer` in `dcim/api/serializers_/base.py`). The adapter folds each mapping into its front port.
 - `is_powered` is a hint for the library's own tests, and `front_image` and `rear_image` are booleans saying an image file exists. None of them is a NetBox field. They are kept as metadata and never sent to NetBox. NetBox's own YAML import ignores them too, because `DeviceTypeImportForm` doesn't list them.
-- The library doesn't carry some NetBox 4.7 fields, such as `end_of_life`, `cooling_method`, `exclude_from_utilization` and `default_platform`. Since TrueUp manages only the fields a definition sets, those stay under NetBox users' control unless an override or injected value sets them.
+- The library doesn't carry some NetBox 4.7 fields, such as `end_of_life`, `cooling_method`, `exclude_from_utilization` and `default_platform`. Since TrueUp manages only the fields a definition sets, those stay under NetBox users' control unless an override or injected value sets them. A key the library's schema starts to allow before the adapter reads it is a warning, and ignored.
 
-devicetype-library holds about 12,400 device type files from about 370 manufacturers. A source's include patterns limit what is read.
+devicetype-library holds 13,187 device type files that name 402 manufacturers, in 398 directories, as of November 2026; TrueUp reads them all in about 2 seconds. A source's include patterns limit what is read. `netbox-trueup-ai list` prints a source's definitions and problems, from the version last fetched.
 
 ## Object model and specs
 
@@ -624,7 +624,7 @@ flowchart LR
 
 | | Boundary | What crosses it | Main threats | Controls |
 | --- | --- | --- | --- | --- |
-| B1 | Source to TrueUp | Content and metadata from Git repositories, URLs or directories, written by people TrueUp doesn't control | Oversized files, YAML bombs and deep nesting; archive bombs, and archive entries that escape their directory; symlinks and path tricks; hostile JSON schemas; values that become XSS in the UI or junk in NetBox; credentials leaking through source URLs | For every kind: only administrators add sources; limits on size, count, depth and aliases; paths confined to the snapshot; strict YAML; JSON Schema with remote references off; spec validation; templ escaping; credentials by reference, with user info stripped from logged URLs. Git: read from Git objects, never a checkout; `https` and `ssh` URLs only, and `https` alone until credentials are supported; TLS verification and no redirects; limits on fetch time, disk written and objects fetched. HTTP: TLS verification, few redirects, limits on response size and decompression. Local files: only under directories the configuration allows |
+| B1 | Source to TrueUp | Content and metadata from Git repositories, URLs or directories, written by people TrueUp doesn't control | Oversized files, YAML bombs and deep nesting; archive bombs, and archive entries that escape their directory; symlinks and path tricks; hostile JSON schemas; values that become XSS in the UI or junk in NetBox; credentials leaking through source URLs | For every kind: only administrators add sources; limits on size, count, depth and nodes; paths confined to the snapshot; strict YAML, read as PyYAML reads it, with aliases, tags and duplicate keys refused; JSON Schema with every reference outside the source's own schemas refused, and the validator's input kept to numbers it can hold; spec validation; values quoted, cut short and escaped in errors and output; templ escaping; credentials by reference, with user info stripped from logged URLs. Git: read from Git objects, never a checkout; `https` and `ssh` URLs only, and `https` alone until credentials are supported; TLS verification and no redirects; limits on fetch time, disk written and objects fetched. HTTP: TLS verification, few redirects, limits on response size and decompression. Local files: only under directories the configuration allows |
 | B2 | NetBox to TrueUp | API responses | A compromised or impersonated NetBox sending hostile values or huge responses, or leading the token elsewhere | TLS verification, with a custom CA allowed but no way to turn it off; redirects never followed; version check, and the API version checked on every answer, so that a proxy's 403 isn't taken for NetBox's; response size limits; JSON only; listings checked for rising IDs and the parents asked for; NetBox's text quoted, cut short and stripped of the token in errors; decoding through specs; escaping in the UI |
 | B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a merge that overrides someone else's change | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them; merge conflicts never acknowledged automatically; changelog messages for audit |
 | B4 | Browser to TrueUp | Logins, form posts, override choices, live YAML edits | Credential stuffing, CSRF, XSS, privilege escalation; hostile or oversized YAML, and floods of live-edit requests | argon2id hashes and login rate limits; hardened session cookies; cross-origin protection; Content Security Policy; role checks in every handler; identity never taken from proxy-set headers; live edits parsed and validated like source files, with limits on request size and rate; audit log |
@@ -636,6 +636,8 @@ flowchart LR
 | B10 | TrueUp to event sinks (M7) | Audit events and change notifications | Sending data to the wrong place; requests to internal services through receiver URLs; lost events | Only administrators configure sinks; HTTPS and signed payloads; redirects to other hosts not followed; no secrets in events; delivery from a database outbox with retries |
 
 The CLI runs with the privileges of whoever runs it, and reads the same configuration and secrets as the server, so it sits inside the deployment boundary.
+
+Accepted for milestone 1 at B1: a hostile JSON schema in a source can make validation slow, since the JSON Schema library can't be stopped mid-check. See [Open questions and risks](#open-questions-and-risks).
 
 ## Package layout
 
@@ -650,7 +652,8 @@ internal/
   filelock/               operating system file locks (exists)
   source/                 source kind interface, snapshots (exists)
   source/git/             Git source kind (exists; HTTP and file kinds join in M9)
-  format/devicetypelib/   devicetype-library format adapter
+  format/                 definitions, problems, the YAML reader and JSON Schema validation (exists)
+  format/devicetypelib/   devicetype-library format adapter (device types exist)
   model/                  generic objects, values and specs (exists)
   model/openapi/          reads NetBox's OpenAPI schema, for checking and generating specs (exists)
   model/spectest/         the tests every spec package runs (exists)
@@ -700,6 +703,7 @@ ADRs that record this design:
 | [0021](adr/0021-forward-only-migrations-when-opening.md) | Migrate the database forward only, when a command opens it |
 | [0022](adr/0022-postgresql-schema-and-advisory-locks.md) | Keep TrueUp's PostgreSQL tables in a schema of their own, and order processes with advisory locks |
 | [0023](adr/0023-check-specs-against-the-schema-with-plain-json.md) | Check specs against a snapshot of NetBox's OpenAPI schema, read with plain JSON decoding |
+| [0024](adr/0024-read-source-files-as-pyyaml-does.md) | Read source files as PyYAML does, within fixed limits, and validate them with santhosh-tekuri/jsonschema |
 
 ADRs still to write, with the work that needs each one:
 
@@ -752,5 +756,6 @@ A change reference is recorded but not checked today. TrueUp could ask the organ
 
 - **Git repository size.** See [Git sources](#git-sources-m1). Resolved by [ADR 0020](adr/0020-git-sources-with-go-git.md): a partial-clone filter at each source's `max_file_size`.
 - **Two sets of defaults.** NetBox's YAML import fills a component's omitted fields from the import form's initial values (`_save_object` in `netbox/views/generic/bulk_views.py`), and a device type's from a form that takes a missing checkbox as false, while the REST API applies model defaults. Where the two differ, a device type created by TrueUp could differ from one created by NetBox's import. Specs record both (`Field.ImportDefault` and `Field.ImportRequired`): for device types, `is_full_depth` and `u_height`. Which one TrueUp applies when it creates an object is a milestone 2 decision. Milestone 2 adds a parity test that creates the same files both ways and compares the results.
-- **Manufacturer slugs.** The manufacturer definitions derived from devicetype-library need slugs that match what NetBox's UI would generate from the name. The exact rule is confirmed in milestone 1, with the library format.
+- **Manufacturer slugs.** Resolved in roadmap step 9: NetBox's UI rule, `slugify` in `reslug.ts`, cut to 50 characters, which `model.Slugify` follows and tests against NetBox's own function. Four pairs of the library's manufacturers would get the same slug; they are reported.
+- **Hostile JSON schemas.** A source's schemas can make validation slow, with references that fan out at every level, and the JSON Schema library takes no context to stop it. File limits bound the work but don't remove it. Accepted for milestone 1, since only administrators add sources; worth revisiting before the server runs fetches on a schedule (M6).
 - **Library changes.** A key the library adds before TrueUp supports it is reported as a warning and ignored ([ADR 0009](adr/0009-source-kinds-and-format-adapters.md)). Such warnings are the signal to update the format adapter.

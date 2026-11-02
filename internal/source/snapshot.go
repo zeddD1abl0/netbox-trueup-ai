@@ -276,7 +276,9 @@ func (w *walker) skip(p string, reason Reason) {
 
 // chosen reports whether the patterns choose a path.
 func (w *walker) chosen(p string) bool {
-	return (len(w.spec.Include) == 0 || glob.MatchAny(w.spec.Include, p)) && !glob.MatchAny(w.spec.Exclude, p)
+	return (len(w.spec.Include) == 0 || glob.MatchAny(w.spec.Include, p)) &&
+		(len(w.spec.Only) == 0 || glob.MatchAny(w.spec.Only, p)) &&
+		!glob.MatchAny(w.spec.Exclude, p)
 }
 
 // mayChooseBelow reports whether the patterns could choose a path in the
@@ -286,10 +288,10 @@ func (w *walker) mayChooseBelow(dir string) bool {
 	if glob.MatchAny(w.spec.Exclude, dir) {
 		return false
 	}
-	if len(w.spec.Include) == 0 {
-		return true
+	below := func(patterns []glob.Pattern) bool {
+		return len(patterns) == 0 || slices.ContainsFunc(patterns, func(p glob.Pattern) bool { return p.MatchBelow(dir) })
 	}
-	return slices.ContainsFunc(w.spec.Include, func(p glob.Pattern) bool { return p.MatchBelow(dir) })
+	return below(w.spec.Include) && below(w.spec.Only)
 }
 
 // safeName reports whether a name can be part of a path without misleading

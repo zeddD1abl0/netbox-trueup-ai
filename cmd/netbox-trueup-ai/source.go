@@ -16,6 +16,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format/devicetypelib"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source/git"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
@@ -37,7 +39,9 @@ func newSourceFetchCommand(a *app) *cobra.Command {
 		Short: "Fetch the latest version of the configured sources",
 		Long: `Fetch the latest version of every configured source, or of those named, into
 the data directory's cache, and report each one's version and the files it
-holds once its include and exclude patterns apply. A Git source's version is
+holds once its include and exclude patterns apply. A source with include
+patterns also holds the files its format needs: for devicetype-library, its
+JSON schemas in schema/. A Git source's version is
 the latest commit of its branch or tag. A source that hasn't changed since it
 was last fetched isn't downloaded again.
 
@@ -175,9 +179,7 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	kinds := map[string]source.Kind{
-		config.SourceKindGit: git.New(git.Options{CacheDir: root, RootCAs: a.sourceRootCAs, Logger: a.logger}),
-	}
+	kinds := a.sourceKinds(root)
 	result := fetchJSON{OK: true, Sources: []fetchSourceJSON{}}
 	for _, s := range sources {
 		row, err := a.fetchAndRecord(ctx, db, kinds, root, s)
@@ -332,7 +334,7 @@ func fetchSource(ctx context.Context, kinds map[string]source.Kind, s config.Sou
 	if !ok {
 		return store.Fetch{}, fmt.Errorf("TrueUp can't fetch sources of kind %q", s.Kind)
 	}
-	spec, err := source.NewSpec(s)
+	spec, _, err := sourceSpec(s)
 	if err != nil {
 		return store.Fetch{}, err
 	}
@@ -358,6 +360,38 @@ func fetchSource(ctx context.Context, kinds map[string]source.Kind, s config.Sou
 		rec.Skipped[i] = store.Skipped{Path: sk.Path, Reason: string(sk.Reason)}
 	}
 	return rec, nil
+}
+
+// sourceKinds returns the kinds of source TrueUp fetches, by name, with their
+// caches below root.
+func (a *app) sourceKinds(root string) map[string]source.Kind {
+	return map[string]source.Kind{
+		config.SourceKindGit: git.New(git.Options{CacheDir: root, RootCAs: a.sourceRootCAs, Logger: a.logger}),
+	}
+}
+
+// formats are the formats TrueUp reads, by name.
+var formats = map[string]format.Format{
+	config.FormatDeviceTypeLibrary: devicetypelib.Format{},
+}
+
+// sourceSpec returns the spec to fetch or read a source by, and its format.
+// The files its format needs, such as devicetype-library's JSON schemas,
+// are added to its include patterns when it has any, so that a source that
+// includes only some device types still has them.
+func sourceSpec(s config.Source) (source.Spec, format.Format, error) {
+	f, ok := formats[s.Format]
+	if !ok {
+		return source.Spec{}, nil, fmt.Errorf("TrueUp can't read sources of format %q", s.Format)
+	}
+	if len(s.Include) > 0 {
+		s.Include = slices.Concat(s.Include, f.Needs())
+	}
+	spec, err := source.NewSpec(s)
+	if err != nil {
+		return source.Spec{}, nil, err
+	}
+	return spec, f, nil
 }
 
 // skipDescriptions say what was skipped for each reason, for text output.

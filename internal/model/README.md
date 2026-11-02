@@ -4,7 +4,7 @@ TrueUp handles NetBox objects generically: an object is an object type and the v
 
 | Package | What it holds |
 | --- | --- |
-| `model` | `Object` and its values (`String`, `Integer`, `Decimal`, `Boolean`, `Date`, `Choice`, `Reference`, `Set`, `Children`, `Null`), `Spec`, `Field.Normalize` and `Field.Validate`, and `Check`, which checks that specs are consistent. |
+| `model` | `Object` and its values (`String`, `Integer`, `Decimal`, `Boolean`, `Date`, `Choice`, `Reference`, `Set`, `Children`, `Null`), which encode as JSON the way NetBox's API writes them, `Spec`, `Field.Normalize` and `Field.Validate`, `Check`, which checks that specs are consistent, and `Slugify`, which makes a slug from a name as NetBox's web UI does. |
 | `model/dcim` | The specs of dcim's object types: manufacturers and device types. Component templates follow in roadmap steps 11 and 12; `prototypes_test.go` sketches them. |
 | `model/openapi` | Reads NetBox's OpenAPI schema, trims it to a snapshot, and lists its choice values. `cmd/netbox-choices` generates a spec package's `choices_gen.go` from its snapshot. |
 | `model/spectest` | The tests every spec package runs: consistency, the contract with the schema, and citations of NetBox's source ([ADR 0023](../../docs/adr/0023-check-specs-against-the-schema-with-plain-json.md)). |
@@ -19,3 +19,13 @@ Each spec package keeps a snapshot of NetBox's schema in `testdata/openapi.json`
 - `make generate` regenerates the choice values, and `make generate-check` checks them. Never edit `choices_gen.go` by hand.
 
 To write or change a spec, follow the `netbox-parity` project skill in [`.claude/skills/netbox-parity/SKILL.md`](../../.claude/skills/netbox-parity/SKILL.md): it says where NetBox's source holds each rule, and how to check it.
+
+## Slugs as NetBox's UI makes them
+
+NetBox's server never makes a slug: its web UI does, in JavaScript, when a slug field is left empty (`slugify` in `project-static/src/buttons/reslug.ts`). `Slugify` follows it, white space as JavaScript's `\s` counts it included, and `TestSlugify` checks it against what NetBox's own function makes of the names in `testdata/slugify.json`. With NetBox's source in `.cache/reference`, `TestSlugifyFollowsNetBox` checks that the function is still the one followed. To add names, edit `testdata/slugify.mjs` and run it with node:
+
+```sh
+node internal/model/testdata/slugify.mjs \
+  .cache/reference/netbox-4.7.2/netbox/project-static/src/buttons/reslug.ts \
+  > internal/model/testdata/slugify.json
+```
