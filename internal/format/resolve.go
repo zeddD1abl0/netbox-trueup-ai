@@ -103,7 +103,7 @@ func resolvePlain(s string) (Tag, string, error) {
 	case pyNull.MatchString(s):
 		return TagNull, "", nil
 	case pyTimestamp.MatchString(s):
-		return 0, "", errors.New(quote(s) + " reads as a date or time, which the format doesn't take: quote it if it is text")
+		return 0, "", errors.New(Quote(s) + " reads as a date or time, which the format doesn't take: quote it if it is text")
 	case pyValue.MatchString(s):
 		return 0, "", errors.New("= is YAML's value indicator, which PyYAML refuses: quote it if it is text")
 	}
@@ -147,13 +147,13 @@ func pyIntValue(s string) (string, error) {
 	if !ok {
 		// Such as 0b_, whose digits are only underscores. PyYAML fails
 		// on it too.
-		return "", errors.New(quote(s) + " reads as a whole number, but isn't one")
+		return "", errors.New(Quote(s) + " reads as a whole number, but isn't one")
 	}
 	if negative {
 		n.Neg(n)
 	}
 	if !n.IsInt64() {
-		return "", errors.New(quote(s) + " is a whole number too large for TrueUp")
+		return "", errors.New(Quote(s) + " is a whole number too large for TrueUp")
 	}
 	return n.String(), nil
 }
@@ -175,14 +175,14 @@ func pyFloatValue(s string) (string, error) {
 	var f float64
 	switch {
 	case v == ".inf", v == ".nan":
-		return "", errors.New(quote(s) + " isn't a number NetBox can hold")
+		return "", errors.New(Quote(s) + " isn't a number NetBox can hold")
 	case strings.Contains(v, ":"):
 		// Base 60, as construct_yaml_float adds it up, in floats.
 		base := 1.0
 		for _, part := range slices.Backward(strings.Split(v, ":")) {
 			digit, err := strconv.ParseFloat(part, 64)
 			if err != nil {
-				return "", errors.New(quote(s) + " reads as a number, but isn't one")
+				return "", errors.New(Quote(s) + " reads as a number, but isn't one")
 			}
 			f += digit * base
 			base *= 60
@@ -193,12 +193,12 @@ func pyFloatValue(s string) (string, error) {
 		// Python reads a number too large for a float as infinity, which
 		// NetBox then refuses.
 		if err != nil && !errors.Is(err, strconv.ErrRange) {
-			return "", errors.New(quote(s) + " reads as a number, but isn't one")
+			return "", errors.New(Quote(s) + " reads as a number, but isn't one")
 		}
 	}
 	f *= sign
 	if math.IsInf(f, 0) || math.IsNaN(f) {
-		return "", errors.New(quote(s) + " is too large a number for NetBox")
+		return "", errors.New(Quote(s) + " is too large a number for NetBox")
 	}
 	return strconv.FormatFloat(f, 'g', -1, 64), nil
 }

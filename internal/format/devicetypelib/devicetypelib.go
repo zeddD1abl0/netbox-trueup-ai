@@ -102,31 +102,49 @@ func (Format) Read(ctx context.Context, snap *source.Snapshot) (*format.Result, 
 		}
 		r.file(f.Path, data)
 	}
+	// What the source layer left out below device-types: a device type
+	// that wasn't read is an invalid file, so that none goes missing
+	// unseen; anything else, a warning, as it would be if it were read.
 	for _, s := range snap.Skipped {
-		if strings.HasPrefix(s.Path, deviceTypesDir+"/") {
+		if !strings.HasPrefix(s.Path, deviceTypesDir+"/") {
+			continue
+		}
+		p := format.Problem{Severity: format.Warning, Path: s.Path, Reason: skipReason(s.Reason)}
+		if isDeviceTypePath(s.Path) {
+			p.Severity = format.Error
 			r.files++
 			r.invalid++
-			r.add(format.Problem{Severity: format.Error, Path: s.Path, Reason: skipReasons[s.Reason]})
 		}
+		r.add(p)
 	}
 	return r.result(), nil
 }
 
-// skipReasons say why the source layer left out a file, for each reason.
-var skipReasons = map[source.Reason]string{
-	source.TooLarge:   "wasn't read: it is larger than the source's max_file_size",
-	source.Symlink:    "wasn't read: it is a symbolic link, which TrueUp never follows",
-	source.Submodule:  "wasn't read: it is a Git submodule, which TrueUp never fetches",
-	source.UnsafePath: "wasn't read: its name is unsafe, or its path too deep or too long",
-	source.NotAFile:   "wasn't read: it isn't a file",
+// skipReason says why the source layer left out an entry.
+func skipReason(reason source.Reason) string {
+	switch reason {
+	case source.TooLarge:
+		return "wasn't read: it is larger than the source's max_file_size"
+	case source.Symlink:
+		return "wasn't read: it is a symbolic link, which TrueUp never follows"
+	case source.Submodule:
+		return "wasn't read: it is a Git submodule, which TrueUp never fetches"
+	case source.UnsafePath:
+		return "wasn't read: its name is unsafe, or its path too deep or too long"
+	case source.NotAFile:
+		return "wasn't read: it isn't a file"
+	default:
+		return "wasn't read: " + string(reason)
+	}
 }
 
 // isDeviceTypePath reports whether a path is where the library keeps a
-// device type: device-types/<manufacturer>/<name>.yaml or .yml, not hidden,
-// as the library's tests glob them.
+// device type: device-types/<manufacturer>/<name>.yaml or .yml, with neither
+// the directory nor the file hidden, since the library's tests glob them as
+// device-types/*/*, and a glob's * doesn't match a leading dot.
 func isDeviceTypePath(p string) bool {
 	parts := strings.Split(p, "/")
-	if len(parts) != 3 || parts[0] != deviceTypesDir || strings.HasPrefix(parts[2], ".") {
+	if len(parts) != 3 || parts[0] != deviceTypesDir || strings.HasPrefix(parts[1], ".") || strings.HasPrefix(parts[2], ".") {
 		return false
 	}
 	ext := path.Ext(parts[2])
@@ -150,7 +168,7 @@ func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, 
 	if !slices.ContainsFunc(files, func(f format.SchemaFile) bool { return f.Path == schemaRoot }) {
 		for _, s := range snap.Skipped {
 			if s.Path == schemaRoot {
-				return nil, fmt.Errorf("%s, devicetype-library's schema for device types, %s", schemaRoot, strings.TrimPrefix(skipReasons[s.Reason], "wasn't read: it "))
+				return nil, fmt.Errorf("%s, devicetype-library's schema for device types, %s", schemaRoot, skipReason(s.Reason))
 			}
 		}
 		return nil, fmt.Errorf("the source has no %s, devicetype-library's schema for device types, which TrueUp validates its files against: "+
@@ -345,12 +363,14 @@ func reason(err error) string {
 // result derives the manufacturers, reports what NetBox couldn't hold, and
 // returns the definitions and problems in order.
 func (r *reader) result() *format.Result {
+	// In the order they are listed, so that a duplicate is reported on the
+	// later of two files.
+	slices.SortFunc(r.deviceTypes, func(a, b format.Definition) int { return strings.Compare(a.Path, b.Path) })
 	manufacturers := r.deriveManufacturers()
 	r.duplicates()
 	slices.SortStableFunc(r.problems, func(a, b format.Problem) int {
 		return cmp.Or(cmp.Compare(a.Path, b.Path), cmp.Compare(a.Line, b.Line), cmp.Compare(a.Column, b.Column))
 	})
-	slices.SortFunc(r.deviceTypes, func(a, b format.Definition) int { return strings.Compare(a.Path, b.Path) })
 	return &format.Result{
 		Definitions: slices.Concat(manufacturers, r.deviceTypes),
 		Problems:    r.problems,

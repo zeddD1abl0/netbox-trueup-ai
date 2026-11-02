@@ -106,6 +106,19 @@ func TestParseYAMLRefuses(t *testing.T) {
 		{"a null key", "? \n: x\n", DefinitionLimits, ParseError{Line: 1, Column: 2, Reason: "reads as null"}},
 		{"a mapping key", "? {a: 1}\n: x\n", DefinitionLimits, ParseError{Line: 1, Column: 3, Reason: "a key is a mapping or a list"}},
 		{"a key with an odd name", "\"a b\": [1, .nan]\n", DefinitionLimits, ParseError{Line: 1, Column: 12, Field: `["a b"][1]`, Reason: "isn't a number"}},
+		// go-yaml keeps no trace of the non-specific tag !, which makes
+		// PyYAML resolve a quoted scalar as if it were plain.
+		{"the non-specific tag", "a: ! \"123\"\n", DefinitionLimits, ParseError{Line: 1, Column: 4, Field: "a", Reason: "tags, such as !, aren't"}},
+		{"the non-specific tag on a block scalar", "a: ! |\n  12\n", DefinitionLimits, ParseError{Line: 1, Column: 4, Field: "a", Reason: "tags, such as !,"}},
+		{"the non-specific tag on a mapping", "a: !\n  b: 1\n", DefinitionLimits, ParseError{Line: 1, Column: 4, Field: "a", Reason: "tags, such as !,"}},
+		{"the non-specific tag on a key", "? ! k\n: v\n", DefinitionLimits, ParseError{Line: 1, Column: 3, Reason: "tags, such as !,"}},
+		{"the non-specific tag on the document", "! {a: 1}\n", DefinitionLimits, ParseError{Line: 1, Column: 1, Reason: "tags, such as !,"}},
+		{"the non-specific tag in a list", "a: [1, ! '2']\n", DefinitionLimits, ParseError{Line: 1, Column: 8, Field: "a[1]", Reason: "tags, such as !,"}},
+		{"the non-specific tag after other characters", "\u00e9\u00e9: [1, ! '2']\n", DefinitionLimits, ParseError{Line: 1, Column: 9, Field: "[\"\u00e9\u00e9\"][1]", Reason: "tags, such as !,"}},
+		{"the non-specific tag after a byte order mark", "\ufeffa: ! '1'\n", DefinitionLimits, ParseError{Line: 1, Column: 4, Field: "a", Reason: "tags, such as !,"}},
+		{"the non-specific tag after line feeds and returns", "a: 1\r\nb: 2\rc: 3\nd: ! '1'\n", DefinitionLimits, ParseError{Line: 4, Column: 4, Field: "d", Reason: "tags, such as !,"}},
+		{"the non-specific tag after YAML 1.1's line breaks", "a: \"x\u0085y\u2028z\u2029\"\nb: ! '1'\n", DefinitionLimits, ParseError{Line: 5, Column: 4, Field: "b", Reason: "tags, such as !,"}},
+		{"text that isn't UTF-8", "a: \xff\n", DefinitionLimits, ParseError{Reason: "isn't UTF-8"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -123,6 +136,20 @@ func TestParseYAMLRefuses(t *testing.T) {
 				t.Errorf("error at %d:%d %q, want %d:%d %q (%s)", got.Line, got.Column, got.Field, tt.want.Line, tt.want.Column, tt.want.Field, perr)
 			}
 		})
+	}
+}
+
+// TestParseYAMLTakesExclamationMarks checks that only tags are refused, not
+// values that hold an exclamation mark.
+func TestParseYAMLTakesExclamationMarks(t *testing.T) {
+	t.Parallel()
+	for _, doc := range []string{
+		"a: \"!x\"\n", "a: '! x'\n", "a: hello!\n", "a: |\n  ! x\n", "a: [x!, 'y']\n", "a: x # ! comment\n",
+		"\ufeffa: '!'\n", "a: \"\u2028\"\nb: '!'\n",
+	} {
+		if _, err := ParseYAML([]byte(doc), DefinitionLimits); err != nil {
+			t.Errorf("ParseYAML(%q): %v", doc, err)
+		}
 	}
 }
 
@@ -170,7 +197,7 @@ func TestQuote(t *testing.T) {
 		strings.Repeat("é", 30):    `"` + strings.Repeat("é", 20) + `"…`,
 		"a\x1b[31mred\u202e" + "x": `"a\x1b[31mred\u202ex"`,
 	} {
-		if got := quote(in); got != want {
+		if got := Quote(in); got != want {
 			t.Errorf("quote(%q) = %s, want %s", in, got, want)
 		}
 	}

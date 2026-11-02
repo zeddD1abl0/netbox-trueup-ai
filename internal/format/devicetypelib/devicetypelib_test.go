@@ -302,8 +302,10 @@ func TestReadAcrossFiles(t *testing.T) {
 		"module-types/Acme/m.yaml":        "not read: module types come later\n",
 		"elevation-images/Acme/a.png":     "not read\n",
 		"device-types/Acme/f.yaml.yaml.x": "x",
+		"device-types/.archive/z.yaml":    file("Archive", "Z", "archive-z"),
 	})
 	fsys["device-types/Acme/link.yaml"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("a.yaml")}
+	fsys["device-types/Acme/notes.txt"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("README.md")}
 	res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
 	if err != nil {
 		t.Fatal(err)
@@ -312,6 +314,8 @@ func TestReadAcrossFiles(t *testing.T) {
 	want := []format.Problem{
 		{Severity: format.Warning, Reason: `NetBox's UI can't make a slug from the manufacturer name "日本" (can't be blank), so TrueUp can't create the manufacturer: it can only match one NetBox has`},
 		{Severity: format.Warning, Reason: `manufacturers "ACME", "Acme" and "Acme!" would all get the slug "acme", which NetBox gives to one manufacturer only: create all but one of them in NetBox with another slug, or spell them alike in the source`},
+		// A hidden directory, which the library's tests never read.
+		{Severity: format.Warning, Path: "device-types/.archive/z.yaml", Reason: notRead},
 		{Severity: format.Warning, Path: "device-types/Acme/.hidden.yaml", Reason: notRead},
 		{Severity: format.Warning, Path: "device-types/Acme/README.md", Reason: notRead},
 		{Severity: format.Warning, Path: "device-types/Acme/c.yaml", Field: "model", Reason: "device-types/Acme/a.yaml has the same manufacturer and model as this one, which NetBox keeps unique"},
@@ -319,6 +323,8 @@ func TestReadAcrossFiles(t *testing.T) {
 		{Severity: format.Warning, Path: "device-types/Acme/deep/g.yaml", Reason: notRead},
 		{Severity: format.Warning, Path: "device-types/Acme/f.yaml.yaml.x", Reason: notRead},
 		{Severity: format.Error, Path: "device-types/Acme/link.yaml", Reason: "wasn't read: it is a symbolic link, which TrueUp never follows"},
+		// Left out, but not a device type, so only a warning.
+		{Severity: format.Warning, Path: "device-types/Acme/notes.txt", Reason: "wasn't read: it is a symbolic link, which TrueUp never follows"},
 		{Severity: format.Warning, Path: "device-types/Acme/old.yaml.bak", Reason: notRead},
 		{Severity: format.Warning, Path: "device-types/top.yaml", Reason: notRead},
 	}
@@ -341,6 +347,36 @@ func TestReadAcrossFiles(t *testing.T) {
 	// Both duplicates are kept, for grouping to decide.
 	if len(res.Definitions) != 4+6 || res.Files != 7 || res.Invalid != 1 {
 		t.Errorf("%d definitions, %d files, %d invalid; want 10, 7 and 1", len(res.Definitions), res.Files, res.Invalid)
+	}
+}
+
+// TestReadDuplicatesInListedOrder checks that of two device types NetBox
+// couldn't hold together, the one listed later gets the warning: the order
+// of paths, in which - comes before /, not of the walk, directory by
+// directory.
+func TestReadDuplicatesInListedOrder(t *testing.T) {
+	t.Parallel()
+	fsys := withFiles(t, map[string]string{
+		"device-types/A/x.yaml":   valid,
+		"device-types/A-B/x.yaml": valid,
+	})
+	res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Definitions) != 3 || res.Definitions[1].Path != "device-types/A-B/x.yaml" {
+		t.Fatalf("definitions = %+v", res.Definitions)
+	}
+	var got []string
+	for _, p := range res.Problems {
+		got = append(got, p.String())
+	}
+	want := []string{
+		"device-types/A/x.yaml: model: device-types/A-B/x.yaml has the same manufacturer and model as this one, which NetBox keeps unique",
+		"device-types/A/x.yaml: slug: device-types/A-B/x.yaml has the same manufacturer and slug as this one, which NetBox keeps unique",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("problems (-want +got):\n%s", diff)
 	}
 }
 
@@ -367,7 +403,7 @@ func TestReadNeedsSchemas(t *testing.T) {
 		{"a schema that refers outside", func(fsys fstest.MapFS) {
 			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(`{"$ref": "https://example.com/devicetype.json"}`)}
 		}, sourcetest.Limits, "loads no schema from outside the source"},
-		{"a schema too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 4096, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "schema/devicetype.json, devicetype-library's schema for device types, is larger than the source's max_file_size"},
+		{"a schema too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 4096, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "schema/devicetype.json, devicetype-library's schema for device types, wasn't read: it is larger than the source's max_file_size"},
 		{"a schema it refers to too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 5000, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "(schema/components.json, schema/generated_schema.json and schema/moduletype.json weren't read: they are larger than the source's max_file_size)"},
 	}
 	for _, tt := range tests {

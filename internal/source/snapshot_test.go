@@ -246,12 +246,9 @@ func TestSnapshot(t *testing.T) {
 			t.Parallel()
 			content := library()
 			s := spec(t, tt.include, tt.exclude)
-			for _, text := range tt.only {
-				p, err := glob.Compile(text)
-				if err != nil {
-					t.Fatal(err)
-				}
-				s.Only = append(s.Only, p)
+			var err error
+			if s.Only, err = glob.CompileAll(tt.only); err != nil {
+				t.Fatal(err)
 			}
 			snap, err := Fetch(t.Context(), fakeKind{content: content}, s)
 			if err != nil {

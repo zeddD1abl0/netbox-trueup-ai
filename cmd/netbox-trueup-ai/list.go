@@ -219,12 +219,8 @@ func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s co
 	}
 	// Walk, and hash, only the files the format reads, not the library's
 	// images.
-	for _, text := range f.Reads() {
-		p, err := glob.Compile(text)
-		if err != nil {
-			return fmt.Errorf("format %s: %w", f.Name(), err)
-		}
-		spec.Only = append(spec.Only, p)
+	if spec.Only, err = glob.CompileAll(f.Reads()); err != nil {
+		return fmt.Errorf("format %s: %w", f.Name(), err)
 	}
 	snap, err := source.Open(ctx, kind, spec)
 	if errors.Is(err, source.ErrNotFetched) {

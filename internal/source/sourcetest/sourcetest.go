@@ -115,13 +115,9 @@ func SnapshotOf(t testing.TB, kind source.Kind, s config.Source) *source.Snapsho
 // Patterns compiles patterns, such as for source.Spec.Only.
 func Patterns(t testing.TB, texts ...string) []glob.Pattern {
 	t.Helper()
-	out := make([]glob.Pattern, 0, len(texts))
-	for _, text := range texts {
-		p, err := glob.Compile(text)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, p)
+	out, err := glob.CompileAll(texts)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return out
 }

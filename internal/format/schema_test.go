@@ -1,6 +1,8 @@
 package format
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -149,6 +151,11 @@ func TestCompileSchemaRefuses(t *testing.T) {
 		{"an invalid schema", []SchemaFile{{Path: "s.json", Data: []byte(`{"type": 12}`)}}, "s.json", "doesn't compile"},
 		{"too large", []SchemaFile{{Path: "s.json", Data: []byte(strings.Repeat(" ", MaxSchemaSize+1))}}, "s.json", "more than the 1048576 TrueUp reads"},
 		{"too many", make([]SchemaFile, MaxSchemaFiles+1), "s.json", "holds 33 JSON schemas"},
+		// jsonschema v6.0.3 panics hashing such a number to check that an
+		// enum's values are unique, when the meta-schema says they must be.
+		{"a number too large", []SchemaFile{{Path: "s.json", Data: []byte(`{"$schema": "http://json-schema.org/draft-04/schema#", "enum": [1e9999999` + strings.Repeat(", 0", 25) + `]}`)}}, "s.json", `holds the number "1e9999999"`},
+		{"a number too small", []SchemaFile{{Path: "s.json", Data: []byte(`{"minimum": 1e-400}`)}}, "s.json", `holds the number "1e-400"`},
+		{"a number too large deep down", []SchemaFile{{Path: "s.json", Data: []byte(`{"properties": {"a": {"enum": [{"x": [1E+999999]}]}}}`)}}, "s.json", `holds the number "1E+999999"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,6 +165,20 @@ func TestCompileSchemaRefuses(t *testing.T) {
 				t.Errorf("CompileSchema = %v, want an error holding %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestCompileSchemaKeepsErrors checks that jsonschema's errors are wrapped,
+// though their text is cut short.
+func TestCompileSchemaKeepsErrors(t *testing.T) {
+	t.Parallel()
+	_, err := CompileSchema([]SchemaFile{{Path: "s.json", Data: []byte(`{"a": ` + strings.Repeat(`"x", `, 400) + `}`)}}, "s.json")
+	var syntax *json.SyntaxError
+	if !errors.As(err, &syntax) {
+		t.Errorf("CompileSchema = %v, want a *json.SyntaxError in it", err)
+	}
+	if err != nil && len(err.Error()) > 600 {
+		t.Errorf("the error is %d bytes long", len(err.Error()))
 	}
 }
 

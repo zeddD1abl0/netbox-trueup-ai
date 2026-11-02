@@ -2,8 +2,11 @@ package format
 
 import (
 	"bytes"
+	"cmp"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net/url"
 	"slices"
@@ -44,7 +47,16 @@ type Schema struct {
 // read as draft 2020-12 unless they say otherwise, without asserting
 // formats or content, and their patterns are Go's regular expressions,
 // which run in linear time.
-func CompileSchema(files []SchemaFile, root string) (*Schema, error) {
+func CompileSchema(files []SchemaFile, root string) (_ *Schema, err error) {
+	// security: jsonschema v6.0.3 panics on a number whose exponent big.Rat
+	// can't hold, as when it checks an enum's values are unique. Numbers
+	// are checked first, so none should reach it; a panic from anything
+	// else still fails only the source.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("schema %s: the JSON Schema compiler failed: %s", root, cutText(fmt.Sprint(r), 500))
+		}
+	}()
 	if len(files) > MaxSchemaFiles {
 		return nil, fmt.Errorf("the source holds %d JSON schemas, more than the %d TrueUp reads", len(files), MaxSchemaFiles)
 	}
@@ -59,15 +71,18 @@ func CompileSchema(files []SchemaFile, root string) (*Schema, error) {
 		}
 		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(f.Data))
 		if err != nil {
-			return nil, fmt.Errorf("schema %s isn't JSON: %s", f.Path, cut(err.Error()))
+			return nil, fmt.Errorf("schema %s isn't JSON: %w", f.Path, cutError{err})
+		}
+		if n, ok := hugeNumber(doc); ok {
+			return nil, fmt.Errorf("schema %s holds the number %s, which is beyond what TrueUp reads", f.Path, Quote(n))
 		}
 		id := schemaID(doc, f.Path)
 		if other, ok := ids[id]; ok {
-			return nil, fmt.Errorf("schemas %s and %s have the same $id, %s", other, f.Path, quote(id))
+			return nil, fmt.Errorf("schemas %s and %s have the same $id, %s", other, f.Path, Quote(id))
 		}
 		ids[id] = f.Path
 		if err := c.AddResource(id, doc); err != nil {
-			return nil, fmt.Errorf("schema %s: %s", f.Path, cut(err.Error()))
+			return nil, fmt.Errorf("schema %s: %w", f.Path, cutError{err})
 		}
 		if f.Path == root {
 			rootURL = id
@@ -78,9 +93,34 @@ func CompileSchema(files []SchemaFile, root string) (*Schema, error) {
 	}
 	s, err := c.Compile(rootURL)
 	if err != nil {
-		return nil, fmt.Errorf("schema %s doesn't compile: %s", root, cut(err.Error()))
+		return nil, fmt.Errorf("schema %s doesn't compile: %w", root, cutError{err})
 	}
 	return &Schema{schema: s}, nil
+}
+
+// hugeNumber returns a number in a schema that a float64 can't hold, such as
+// 1e9999999, which would make jsonschema v6.0.3 panic, if there is one.
+func hugeNumber(doc any) (string, bool) {
+	switch v := doc.(type) {
+	case json.Number:
+		f, err := strconv.ParseFloat(string(v), 64)
+		if err != nil || math.IsInf(f, 0) || f == 0 && strings.ContainsAny(string(v), "123456789") {
+			return string(v), true
+		}
+	case map[string]any:
+		for _, e := range v {
+			if n, ok := hugeNumber(e); ok {
+				return n, true
+			}
+		}
+	case []any:
+		for _, e := range v {
+			if n, ok := hugeNumber(e); ok {
+				return n, true
+			}
+		}
+	}
+	return "", false
 }
 
 // schemaID returns the URL a schema is known by: its $id, if that is an
@@ -101,17 +141,15 @@ func schemaID(doc any, path string) string {
 type refuseLoader struct{}
 
 func (refuseLoader) Load(u string) (any, error) {
-	return nil, fmt.Errorf("TrueUp loads no schema from outside the source, such as %s", quote(u))
+	return nil, fmt.Errorf("TrueUp loads no schema from outside the source, such as %s", Quote(u))
 }
 
-// cut cuts jsonschema's error text, which can quote a schema, short.
-func cut(msg string) string {
-	const limit = 500
-	if len(msg) > limit {
-		return strings.ToValidUTF8(msg[:limit], "") + "…"
-	}
-	return msg
-}
+// cutError is an error of jsonschema's, whose text can quote a schema, with
+// its text cut short.
+type cutError struct{ err error }
+
+func (e cutError) Error() string { return cutText(e.err.Error(), 500) }
+func (e cutError) Unwrap() error { return e.err }
 
 // MaxSchemaProblems is the most problems Validate reports for one file.
 // Files that fail the schema in more ways get a last problem that counts the
@@ -129,7 +167,7 @@ func (s *Schema) Validate(path string, root *Node) (problems []Problem) {
 	// that are both hostile still fails only the file.
 	defer func() {
 		if r := recover(); r != nil {
-			problems = []Problem{{Severity: Error, Path: path, Reason: cut(fmt.Sprintf("the JSON Schema validator failed on the file: %v", r))}}
+			problems = []Problem{{Severity: Error, Path: path, Reason: "the JSON Schema validator failed on the file: " + cutText(fmt.Sprint(r), 500)}}
 		}
 	}()
 	err := s.schema.Validate(root.JSON())
@@ -138,18 +176,18 @@ func (s *Schema) Validate(path string, root *Node) (problems []Problem) {
 	}
 	var verr *jsonschema.ValidationError
 	if !errors.As(err, &verr) {
-		return []Problem{{Severity: Error, Path: path, Reason: "doesn't satisfy the schema: " + cut(err.Error())}}
+		return []Problem{{Severity: Error, Path: path, Reason: "doesn't satisfy the schema: " + cutText(err.Error(), 500)}}
 	}
 	for _, leaf := range leaves(verr, nil) {
 		problems = append(problems, schemaProblems(path, root, leaf)...)
 	}
-	slices.SortStableFunc(problems, func(a, b Problem) int {
-		if a.Line != b.Line {
-			return a.Line - b.Line
-		}
-		return a.Column - b.Column
+	// Sorted by everything, so that the same problem twice, from checks
+	// such as anyOf's that meet at one node, is next to itself.
+	slices.SortFunc(problems, func(a, b Problem) int {
+		return cmp.Or(cmp.Compare(a.Line, b.Line), cmp.Compare(a.Column, b.Column),
+			cmp.Compare(a.Field, b.Field), cmp.Compare(a.Reason, b.Reason))
 	})
-	problems = slices.CompactFunc(problems, func(a, b Problem) bool { return a == b })
+	problems = slices.Compact(problems)
 	if len(problems) > MaxSchemaProblems {
 		rest := len(problems) - MaxSchemaProblems + 1
 		problems = append(problems[:MaxSchemaProblems-1], Problem{
@@ -182,7 +220,7 @@ func schemaProblems(path string, root *Node, e *jsonschema.ValidationError) []Pr
 		// One problem for each key, at the key.
 		var out []Problem
 		for _, name := range k.Properties {
-			key, keyField := n, join(field, name)
+			key, keyField := n, JoinField(field, name)
 			for _, p := range n.Pairs {
 				if p.Key.Value == name {
 					key = p.Key
@@ -194,9 +232,9 @@ func schemaProblems(path string, root *Node, e *jsonschema.ValidationError) []Pr
 	case *kind.Required:
 		return []Problem{at(n, field, "needs "+listQuoted(k.Missing)+", which the schema requires")}
 	case *kind.DependentRequired:
-		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", listQuoted(k.Missing), quote(k.Prop)))}
+		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", listQuoted(k.Missing), Quote(k.Prop)))}
 	case *kind.Dependency:
-		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", listQuoted(k.Missing), quote(k.Prop)))}
+		return []Problem{at(n, field, fmt.Sprintf("needs %s, which the schema requires with %s", listQuoted(k.Missing), Quote(k.Prop)))}
 	}
 	return []Problem{at(n, field, describeFailure(n, e.ErrorKind))}
 }
@@ -209,7 +247,7 @@ func describeFailure(n *Node, k jsonschema.ErrorKind) string {
 		for _, w := range k.Want {
 			want = append(want, jsonTypeName(w))
 		}
-		return fmt.Sprintf("is %s, but the schema wants %s", describeNode(n), strings.Join(want, " or "))
+		return fmt.Sprintf("is %s, but the schema wants %s", Describe(n), strings.Join(want, " or "))
 	case *kind.Enum:
 		if len(k.Want) == 1 {
 			return fmt.Sprintf("%s isn't %s, the one value the schema allows", show(n), display(k.Want[0]))
@@ -222,7 +260,7 @@ func describeFailure(n *Node, k jsonschema.ErrorKind) string {
 	case *kind.MaxLength:
 		return fmt.Sprintf("has %d characters, more than the schema's %d", k.Got, k.Want)
 	case *kind.Pattern:
-		return fmt.Sprintf("%s doesn't match the schema's pattern %s", show(n), quote(k.Want))
+		return fmt.Sprintf("%s doesn't match the schema's pattern %s", show(n), Quote(k.Want))
 	case *kind.Minimum:
 		return fmt.Sprintf("%s is less than the schema's minimum, %s", show(n), rat(k.Want))
 	case *kind.Maximum:
@@ -246,10 +284,10 @@ func describeFailure(n *Node, k jsonschema.ErrorKind) string {
 	case *kind.Not:
 		return "matches what the schema forbids (not)"
 	case *kind.RefCycle:
-		return "can't be checked: the schema's references loop through " + quote(k.URL)
+		return "can't be checked: the schema's references loop through " + Quote(k.URL)
 	}
 	if path := k.KeywordPath(); len(path) > 0 {
-		return "doesn't satisfy the schema's " + quote(strings.Join(path, "/"))
+		return "doesn't satisfy the schema's " + Quote(strings.Join(path, "/"))
 	}
 	return "doesn't satisfy the schema"
 }
@@ -266,7 +304,7 @@ func locate(root *Node, location []string) (*Node, string) {
 			if v == nil {
 				return n, field
 			}
-			n, field = v, join(field, token)
+			n, field = v, JoinField(field, token)
 		case Sequence:
 			i, err := strconv.Atoi(token)
 			if err != nil || i < 0 || i >= len(n.Items) {
@@ -284,11 +322,11 @@ func locate(root *Node, location []string) (*Node, string) {
 // anything else.
 func show(n *Node) string {
 	if n.Kind != Scalar {
-		return describeNode(n)
+		return Describe(n)
 	}
 	switch n.Tag {
 	case TagStr:
-		return quote(n.Value)
+		return Quote(n.Value)
 	case TagNull:
 		return "null"
 	default:
@@ -300,7 +338,7 @@ func show(n *Node) string {
 func display(v any) string {
 	switch v := v.(type) {
 	case string:
-		return quote(v)
+		return Quote(v)
 	case nil:
 		return "null"
 	case map[string]any:
@@ -350,14 +388,14 @@ func jsonTypeName(t string) string {
 	case "null":
 		return "null"
 	}
-	return quote(t)
+	return Quote(t)
 }
 
 // listQuoted quotes names and lists them: "a", "a and b", or "a, b and c".
 func listQuoted(names []string) string {
 	quoted := make([]string, len(names))
 	for i, name := range names {
-		quoted[i] = quote(name)
+		quoted[i] = Quote(name)
 	}
 	switch len(quoted) {
 	case 0:

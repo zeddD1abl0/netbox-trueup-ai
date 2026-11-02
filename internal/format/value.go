@@ -14,7 +14,7 @@ import (
 // reference names another object, which only a format knows how to read.
 func Value(f *model.Field, n *Node) (model.Value, error) {
 	if n.Kind != Scalar {
-		return nil, fmt.Errorf("is %s, but NetBox's %s is %s", describeNode(n), f.Name, kindName(f.Kind))
+		return nil, fmt.Errorf("is %s, but NetBox's %s is %s", Describe(n), f.Name, kindName(f.Kind))
 	}
 	if n.Tag == TagNull {
 		return model.Null{}, nil
@@ -76,23 +76,4 @@ func kindName(k model.Kind) string {
 	default:
 		return k.String()
 	}
-}
-
-// Quote quotes a value from a file for a problem's reason: cut short, and
-// with anything that isn't printable escaped.
-func Quote(s string) string {
-	return quote(s)
-}
-
-// JoinField adds a key to a field path, such as interfaces[3] and name to
-// make interfaces[3].name, quoting a key that isn't plain letters, digits,
-// - and _.
-func JoinField(field, key string) string {
-	return join(field, key)
-}
-
-// Describe says what a node is, for a problem's reason: a mapping, a list,
-// text, a whole number, and so on.
-func Describe(n *Node) string {
-	return describeNode(n)
 }

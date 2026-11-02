@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -158,11 +159,18 @@ func (e *ParseError) Problem(path string) Problem {
 //
 // It refuses what devicetype-library never uses and what would make a file
 // mean something other than it seems or cost more than it looks: anchors,
-// aliases and merge keys, explicit tags, keys that aren't text or that a
-// mapping gives twice, and more than one document. Its error is a *ParseError.
+// aliases and merge keys, tags, keys that aren't text or that a mapping
+// gives twice, more than one document, and text that isn't UTF-8. Its error
+// is a *ParseError.
 func ParseYAML(data []byte, limits Limits) (*Node, error) {
 	if len(data) > limits.Size {
 		return nil, &ParseError{Reason: fmt.Sprintf("the file holds %d bytes, more than the %d a file of definitions may", len(data), limits.Size)}
+	}
+	// The byte order mark, if any, is dropped, so that go-yaml's columns
+	// count from the line's first character, as text's do.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	if !utf8.Valid(data) {
+		return nil, &ParseError{Reason: "the file isn't UTF-8 text"}
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
@@ -183,13 +191,13 @@ func ParseYAML(data []byte, limits Limits) (*Node, error) {
 	if len(doc.Content) != 1 {
 		return nil, &ParseError{Reason: "the file holds no YAML document"}
 	}
-	r := reader{limits: limits}
+	r := reader{limits: limits, lines: newLines(data)}
 	root, err := r.node(doc.Content[0], "", 1)
 	if err != nil {
 		return nil, err
 	}
 	if root.Kind != Mapping {
-		return nil, &ParseError{Line: root.Line, Column: root.Column, Reason: "the file holds " + describeNode(root) + ", not a mapping of keys to values"}
+		return nil, &ParseError{Line: root.Line, Column: root.Column, Reason: "the file holds " + Describe(root) + ", not a mapping of keys to values"}
 	}
 	return root, nil
 }
@@ -207,12 +215,7 @@ func parseError(err error) *ParseError {
 		e.Line, _ = strconv.Atoi(m[1])
 		msg = msg[len(m[0]):]
 	}
-	msg = strings.TrimPrefix(msg, "yaml: ")
-	const limit = 200
-	if len(msg) > limit {
-		msg = strings.ToValidUTF8(msg[:limit], "") + "…"
-	}
-	e.Reason = "isn't valid YAML: " + msg
+	e.Reason = "isn't valid YAML: " + cutText(strings.TrimPrefix(msg, "yaml: "), 200)
 	return e
 }
 
@@ -220,6 +223,7 @@ func parseError(err error) *ParseError {
 type reader struct {
 	limits Limits
 	nodes  int
+	lines  *lines
 }
 
 func (r *reader) node(n *yaml.Node, field string, depth int) (*Node, error) {
@@ -237,7 +241,13 @@ func (r *reader) node(n *yaml.Node, field string, depth int) (*Node, error) {
 	case n.Anchor != "":
 		return nil, fail("YAML anchors (&) aren't supported")
 	case n.Style&yaml.TaggedStyle != 0:
-		return nil, fail("YAML tags, such as %s, aren't supported: quote a value to make it text", quote(n.Tag))
+		return nil, fail("YAML tags, such as %s, aren't supported: quote a value to make it text", Quote(n.Tag))
+	case r.lines.at(n.Line, n.Column) == '!':
+		// security: go-yaml keeps no trace of the non-specific tag !, which
+		// makes PyYAML resolve a quoted scalar as if it were plain: ! "123"
+		// is text to go-yaml, and 123 to NetBox's import. A node starts at
+		// its tag, and nothing else starts with !, so this finds every tag.
+		return nil, fail("YAML tags, such as !, aren't supported: quote a value to make it text")
 	}
 	out := &Node{Line: n.Line, Column: n.Column}
 	switch n.Kind {
@@ -276,12 +286,12 @@ func (r *reader) node(n *yaml.Node, field string, depth int) (*Node, error) {
 			}
 			if first, ok := seen[key.Value]; ok {
 				return nil, &ParseError{
-					Line: key.Line, Column: key.Column, Field: join(field, key.Value),
+					Line: key.Line, Column: key.Column, Field: JoinField(field, key.Value),
 					Reason: fmt.Sprintf("the key is given twice, on lines %d and %d", first.Line, key.Line),
 				}
 			}
 			seen[key.Value] = key
-			value, err := r.node(n.Content[i+1], join(field, key.Value), depth+1)
+			value, err := r.node(n.Content[i+1], JoinField(field, key.Value), depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -305,14 +315,15 @@ func (r *reader) key(n *yaml.Node, field string, depth int) (*Node, error) {
 	if key.Tag != TagStr {
 		return nil, &ParseError{
 			Line: n.Line, Column: n.Column, Field: field,
-			Reason: fmt.Sprintf("the key %s reads as %s, not text: quote it", quote(n.Value), key.Tag),
+			Reason: fmt.Sprintf("the key %s reads as %s, not text: quote it", Quote(n.Value), key.Tag),
 		}
 	}
 	return key, nil
 }
 
-// describeNode describes what a node is, for an error.
-func describeNode(n *Node) string {
+// Describe says what a node is, for a problem's reason: a mapping, a list,
+// text, a whole number, and so on.
+func Describe(n *Node) string {
 	switch n.Kind {
 	case Mapping:
 		return "a mapping"
@@ -323,12 +334,12 @@ func describeNode(n *Node) string {
 	}
 }
 
-// join adds a key to a field path: interfaces[3] and name make
+// JoinField adds a key to a field path: interfaces[3] and name make
 // interfaces[3].name. A key that isn't plain letters, digits, - and _ is
 // quoted, cut short.
-func join(field, key string) string {
+func JoinField(field, key string) string {
 	if !plainKey(key) {
-		key = "[" + quote(key) + "]"
+		key = "[" + Quote(key) + "]"
 		return field + key
 	}
 	if field == "" {
@@ -351,4 +362,75 @@ func plainKey(key string) bool {
 
 func plainKeyByte(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_'
+}
+
+// lines finds the character at a line and column of a file, as go-yaml
+// counts them: from 1, in characters, with lines broken by line feeds,
+// carriage returns, either alone or together, and YAML 1.1's other line
+// breaks, U+0085, U+2028 and U+2029.
+type lines struct {
+	data   []byte
+	starts []int         // the offset each line starts at
+	runes  map[int][]int // for a line with characters beyond ASCII, each one's offset
+}
+
+func newLines(data []byte) *lines {
+	l := &lines{data: data, starts: []int{0}, runes: map[int][]int{}}
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		switch {
+		case r == '\r' && i+1 < len(data) && data[i+1] == '\n':
+			size = 2
+			fallthrough
+		case r == '\r', r == '\n', r == 0x85, r == 0x2028, r == 0x2029:
+			l.starts = append(l.starts, i+size)
+		}
+		i += size
+	}
+	return l
+}
+
+// at returns the character at a line and column, from 1, or 0 if there is
+// none.
+func (l *lines) at(line, column int) rune {
+	if line < 1 || line > len(l.starts) || column < 1 {
+		return 0
+	}
+	start, end := l.starts[line-1], len(l.data)
+	if line < len(l.starts) {
+		end = l.starts[line]
+	}
+	text := l.data[start:end]
+	offsets, ok := l.runes[line]
+	if !ok {
+		if isASCII(text) {
+			offsets = nil
+		} else {
+			for i := range string(text) {
+				offsets = append(offsets, i)
+			}
+		}
+		l.runes[line] = offsets
+	}
+	i := column - 1
+	if offsets != nil {
+		if i >= len(offsets) {
+			return 0
+		}
+		i = offsets[i]
+	}
+	if i >= len(text) {
+		return 0
+	}
+	r, _ := utf8.DecodeRune(text[i:])
+	return r
+}
+
+func isASCII(b []byte) bool {
+	for _, c := range b {
+		if c >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }

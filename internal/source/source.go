@@ -54,28 +54,16 @@ type Spec struct {
 func NewSpec(s config.Source) (Spec, error) {
 	spec := Spec{Name: s.Name, Kind: s.Kind, URL: s.URL, Ref: s.Ref, Limits: s.Limits}
 	var err error
-	if spec.Include, err = compile(s.Include); err != nil {
+	if spec.Include, err = glob.CompileAll(s.Include); err != nil {
 		return Spec{}, fmt.Errorf("source %s: include: %w", s.Name, err)
 	}
-	if spec.Exclude, err = compile(s.Exclude); err != nil {
+	if spec.Exclude, err = glob.CompileAll(s.Exclude); err != nil {
 		return Spec{}, fmt.Errorf("source %s: exclude: %w", s.Name, err)
 	}
 	if s.Limits.MaxFileSize <= 0 || s.Limits.MaxFiles <= 0 || s.Limits.FetchTimeout <= 0 || s.Limits.MaxFetchSize <= 0 {
 		return Spec{}, fmt.Errorf("source %s has no limits: settings must be loaded before sources are read", s.Name)
 	}
 	return spec, nil
-}
-
-func compile(patterns []string) ([]glob.Pattern, error) {
-	out := make([]glob.Pattern, 0, len(patterns))
-	for _, text := range patterns {
-		p, err := glob.Compile(text)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, nil
 }
 
 // Kind fetches one kind of source.

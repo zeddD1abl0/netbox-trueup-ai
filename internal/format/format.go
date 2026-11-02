@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
@@ -144,19 +145,30 @@ func (p Problem) String() string {
 	return b.String()
 }
 
-// quote quotes s for a problem's reason: cut to 40 bytes, without splitting
-// a character, and with anything that isn't printable escaped, since it
-// comes from a file.
-func quote(s string) string {
+// Quote quotes a value from a file for a problem's reason: cut to 40
+// bytes, and with anything that isn't printable escaped.
+func Quote(s string) string {
 	const limit = 40
 	if len(s) <= limit {
 		return strconv.Quote(s)
 	}
-	cut := limit
-	for cut > 0 && !isRuneStart(s[cut]) {
-		cut--
-	}
-	return strconv.Quote(s[:cut]) + "…"
+	return strconv.Quote(cutBytes(s, limit)) + "…"
 }
 
-func isRuneStart(b byte) bool { return b&0xc0 != 0x80 }
+// cutText cuts text, such as another library's error message, to at most
+// limit bytes and an ellipsis.
+func cutText(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return strings.ToValidUTF8(cutBytes(s, limit), "") + "…"
+}
+
+// cutBytes returns s cut to at most limit bytes, without splitting a
+// character.
+func cutBytes(s string, limit int) string {
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
+}
