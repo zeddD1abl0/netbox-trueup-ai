@@ -103,11 +103,13 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - The `netbox-parity` project skill.
    - No new dependency.
 
-9. **`feat(format): read device types from devicetype-library`.**
-   - YAML parsing with limits and duplicate-key rejection, validation against the library's schemas from the same snapshot, and mapping to definitions: device type fields, the manufacturer reference, and a manufacturer definition for each manufacturer the library names, with its slug made the way NetBox's UI makes one. Library-only keys are kept as metadata.
-   - `netbox-trueup-ai list`.
-   - Test fixtures copied from the library (CC0 licensed), and fuzz tests for parsing.
-   - New dependencies: go.yaml.in/yaml/v3, santhosh-tekuri/jsonschema.
+9. **`feat(format): read device types from devicetype-library`.** Done in #16.
+   - `internal/format`: definitions, problems, and a YAML reader that resolves every unquoted value as PyYAML's `SafeLoader` does, since NetBox's own import and the library's tests read files that way, held to PyYAML's answers for 1,954 values. A file is at most 256 KiB, 16 levels deep and 50,000 nodes, in one document; anchors, aliases, merge keys, tags, keys that aren't text and keys given twice are refused. JSON schemas from the source are compiled with every reference outside them refused.
+   - `internal/format/devicetypelib`: each device type validated against the library's schemas from the same snapshot, which the format adds to a source's include patterns, then mapped to the device type's spec and validated against it. Device type fields and the manufacturer, by exact name; `is_powered`, `front_image` and `rear_image` kept as metadata; component lists counted, for steps 11 and 12. A manufacturer derived from each name, with the slug NetBox's UI would make (`model.Slugify`, tested against NetBox's own `slugify`), and warnings where two would share a slug, as four pairs in the library do, and where two device types would collide. The whole library, 13,187 files, reads in about 2 seconds with none invalid.
+   - `netbox-trueup-ai list`, from the version last fetched or with `--fetch`, as text or JSON, exiting with 4 when a source can't be read or a file is invalid. Definitions aren't stored.
+   - 20 device types and the schemas copied from the library (CC0), a golden file of what is read from them, and fuzz tests of the reader and the adapter.
+   - [ADR 0024](adr/0024-read-source-files-as-pyyaml-does.md): read source files as PyYAML does, within fixed limits, and validate them with santhosh-tekuri/jsonschema.
+   - New dependency: santhosh-tekuri/jsonschema v6.0.3. go.yaml.in/yaml/v3 was already in use.
 
 10. **`feat(compare): compare manufacturers and device types with NetBox`.**
     - Matching by NetBox's uniqueness rules (candidate, absent, conflict), normalization, and the side-by-side comparison structure, here with two columns: the library's definition and NetBox's object.
