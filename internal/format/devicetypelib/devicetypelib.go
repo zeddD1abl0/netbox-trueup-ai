@@ -99,6 +99,12 @@ func (Format) Read(ctx context.Context, snap *source.Snapshot) (*format.Result, 
 		}
 		switch placeOf(f.Path) {
 		case deviceTypeFile:
+			// A file too large to parse isn't read at all: a source can
+			// list one file that Git stores once under many names.
+			if err := format.DefinitionLimits.CheckSize(f.Size); err != nil {
+				r.refuse(f.Path, err)
+				continue
+			}
 			data, err := snap.ReadFile(ctx, f.Path)
 			if err != nil {
 				return nil, err
@@ -210,11 +216,18 @@ func placeOf(p string) place {
 // compileSchema compiles the library's device type schema from the
 // snapshot's schema/*.json.
 func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, error) {
-	var files []format.SchemaFile
+	var listed []source.File
 	for _, f := range snap.Files {
-		if dir, name := path.Split(f.Path); dir != schemaDir+"/" || path.Ext(name) != ".json" {
-			continue
+		if dir, name := path.Split(f.Path); dir == schemaDir+"/" && path.Ext(name) == ".json" {
+			listed = append(listed, f)
 		}
+	}
+	// Too many schemas, or one too large, are refused before any is read.
+	if err := format.CheckSchemaFiles(listed); err != nil {
+		return nil, fmt.Errorf("devicetype-library's schemas: %w", err)
+	}
+	files := make([]format.SchemaFile, 0, len(listed))
+	for _, f := range listed {
 		data, err := snap.ReadFile(ctx, f.Path)
 		if err != nil {
 			return nil, err
@@ -278,6 +291,14 @@ func (r *reader) add(p ...format.Problem) {
 
 // file reads one device type file, keeping its definition if it has no
 // errors.
+// refuse counts a file that wasn't parsed, since ParseYAML would refuse it,
+// as invalid.
+func (r *reader) refuse(p string, err error) {
+	r.files++
+	r.invalid++
+	r.add(parseProblem(p, err))
+}
+
 func (r *reader) file(p string, data []byte) {
 	r.files++
 	def, problems := r.read(p, data)
@@ -294,16 +315,21 @@ func (r *reader) file(p string, data []byte) {
 func (r *reader) read(p string, data []byte) (format.Definition, []format.Problem) {
 	root, err := format.ParseYAML(data, format.DefinitionLimits)
 	if err != nil {
-		var perr *format.ParseError
-		if errors.As(err, &perr) {
-			return format.Definition{}, []format.Problem{perr.Problem(p)}
-		}
-		return format.Definition{}, []format.Problem{{Severity: format.Error, Path: p, Reason: err.Error()}}
+		return format.Definition{}, []format.Problem{parseProblem(p, err)}
 	}
 	if problems := r.schema.Validate(p, root); len(problems) > 0 {
 		return format.Definition{}, problems
 	}
 	return r.deviceTypeOf(p, root)
+}
+
+// parseProblem is the problem a file has when ParseYAML refuses it.
+func parseProblem(p string, err error) format.Problem {
+	var perr *format.ParseError
+	if errors.As(err, &perr) {
+		return perr.Problem(p)
+	}
+	return format.Problem{Severity: format.Error, Path: p, Reason: err.Error()}
 }
 
 // deviceTypeOf maps a file's root to a device type definition.

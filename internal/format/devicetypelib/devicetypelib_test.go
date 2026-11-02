@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -503,6 +504,89 @@ func TestReadNeedsSchemas(t *testing.T) {
 			res, err := f.Read(t.Context(), snap)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Read = %+v, %v; want an error holding %q", res, err, tt.want)
+			}
+		})
+	}
+}
+
+// deniedFS is a file system that refuses to open some files, so that a test
+// can check that Read doesn't read them once the snapshot is taken.
+type deniedFS struct {
+	fs.FS
+	deny map[string]bool
+}
+
+func (d deniedFS) Open(name string) (fs.File, error) {
+	if d.deny[name] {
+		return nil, fmt.Errorf("%s was opened after the snapshot was taken", name)
+	}
+	return d.FS.Open(name)
+}
+
+// TestReadRefusesBeforeReading checks that files too large to parse, or
+// schemas too many or too large to compile, are refused from the
+// snapshot's list, without being read: a source can list one file that Git
+// stores once under many names.
+func TestReadRefusesBeforeReading(t *testing.T) {
+	t.Parallel()
+	limits := config.SourceLimits{MaxFileSize: 2 << 20, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}
+	largeFile := valid + "# " + strings.Repeat("x", format.DefinitionLimits.Size) + "\n"
+	manySchemas := map[string]string{"device-types/Acme/box.yaml": valid}
+	for i := range format.MaxSchemaFiles {
+		manySchemas[fmt.Sprintf("schema/extra-%02d.json", i)] = "{}"
+	}
+	tests := []struct {
+		name    string
+		files   map[string]string
+		deny    func(string) bool
+		wantErr string
+		want    format.Problem
+	}{
+		{
+			name:  "a device type too large",
+			files: map[string]string{"device-types/Acme/box.yaml": valid, "device-types/Acme/large.yaml": largeFile},
+			deny:  func(p string) bool { return p == "device-types/Acme/large.yaml" },
+			want: format.Problem{
+				Severity: format.Error, Path: "device-types/Acme/large.yaml",
+				Reason: fmt.Sprintf("the file holds %d bytes, more than the 262144 a file of definitions may", len(largeFile)),
+			},
+		},
+		{
+			name:    "too many schemas",
+			files:   manySchemas,
+			deny:    func(p string) bool { return strings.HasPrefix(p, "schema/") },
+			wantErr: "devicetype-library's schemas: the source holds 38 JSON schemas, more than the 32 TrueUp reads",
+		},
+		{
+			name:    "a schema too large",
+			files:   map[string]string{"device-types/Acme/box.yaml": valid, "schema/large.json": strings.Repeat(" ", format.MaxSchemaSize+1)},
+			deny:    func(p string) bool { return strings.HasPrefix(p, "schema/") },
+			wantErr: "devicetype-library's schemas: schema schema/large.json holds 1048577 bytes, more than the 1048576 TrueUp reads",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fsys := withFiles(t, tt.files)
+			deny := map[string]bool{}
+			snap := sourcetest.SnapshotOf(t, sourcetest.Kind{FS: deniedFS{FS: fsys, deny: deny}, Version: "v1"}, config.Source{Name: "lib", Kind: "test", Limits: limits})
+			// Once the snapshot is taken, the files Read mustn't read can't
+			// be read.
+			for p := range fsys {
+				deny[p] = tt.deny(p)
+			}
+			res, err := Format{}.Read(t.Context(), snap)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Errorf("Read = %+v, %v; want the error %q", res, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(res.Problems, tt.want) || res.Files != 2 || res.Invalid != 1 {
+				t.Errorf("Read = %+v; want %+v among its problems, and 1 of 2 files invalid", res, tt.want)
 			}
 		})
 	}

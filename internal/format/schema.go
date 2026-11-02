@@ -15,6 +15,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
 )
 
 // SchemaFile is a JSON schema a source holds, such as devicetype-library's
@@ -48,8 +50,8 @@ type Schema struct {
 // formats or content, and their patterns are Go's regular expressions,
 // which run in linear time.
 func CompileSchema(files []SchemaFile, root string) (*Schema, error) {
-	if len(files) > MaxSchemaFiles {
-		return nil, fmt.Errorf("the source holds %d JSON schemas, more than the %d TrueUp reads", len(files), MaxSchemaFiles)
+	if err := checkSchemaCount(len(files)); err != nil {
+		return nil, err
 	}
 	c := jsonschema.NewCompiler()
 	c.UseLoader(refuseLoader{})
@@ -57,8 +59,8 @@ func CompileSchema(files []SchemaFile, root string) (*Schema, error) {
 	ids := map[string]string{} // URL -> path
 	rootURL := ""
 	for _, f := range files {
-		if len(f.Data) > MaxSchemaSize {
-			return nil, fmt.Errorf("schema %s holds %d bytes, more than the %d TrueUp reads", f.Path, len(f.Data), MaxSchemaSize)
+		if err := checkSchemaSize(f.Path, int64(len(f.Data))); err != nil {
+			return nil, err
 		}
 		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(f.Data))
 		if err != nil {
@@ -107,6 +109,37 @@ func guard(f func() error) (err error) {
 		}
 	}()
 	return f()
+}
+
+// CheckSchemaFiles returns the error CompileSchema would give for schema
+// files too many or too large, from a snapshot's list of them, so that a
+// caller can refuse them before reading them: a source can list one file
+// that Git stores once under many names, and reading them all would cost
+// far more than fetching them did.
+func CheckSchemaFiles(files []source.File) error {
+	if err := checkSchemaCount(len(files)); err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := checkSchemaSize(f.Path, f.Size); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkSchemaCount(n int) error {
+	if n > MaxSchemaFiles {
+		return fmt.Errorf("the source holds %d JSON schemas, more than the %d TrueUp reads", n, MaxSchemaFiles)
+	}
+	return nil
+}
+
+func checkSchemaSize(path string, size int64) error {
+	if size > MaxSchemaSize {
+		return fmt.Errorf("schema %s holds %d bytes, more than the %d TrueUp reads", path, size, MaxSchemaSize)
+	}
+	return nil
 }
 
 // hugeNumber returns a number in a schema that a float64 can't hold, such as

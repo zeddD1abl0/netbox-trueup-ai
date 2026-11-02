@@ -27,7 +27,7 @@ NetBox's own YAML import and devicetype-library's tests read files with PyYAML, 
 python3 -I internal/format/testdata/pyyaml.py > internal/format/testdata/pyyaml.json
 ```
 
-The limits are in `DefinitionLimits`, and a file that breaks one, or uses anchors, aliases, merge keys, tags or a key twice, fails with a `*ParseError` that says where.
+The limits are in `DefinitionLimits`, and a file that breaks one, or uses anchors, aliases, merge keys, tags or a key twice, fails with a `*ParseError` that says where. A source can list one file that Git stores once under many names, so a format checks what it can from the snapshot's list before reading anything: a file's size with `Limits.CheckSize`, and schemas' number and sizes with `CheckSchemaFiles`.
 
 ## devicetype-library
 

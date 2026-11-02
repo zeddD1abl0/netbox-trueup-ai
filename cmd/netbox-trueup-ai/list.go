@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -42,7 +43,9 @@ manufacturers that would get the same slug.
 
 The source isn't fetched, and nothing is written, unless --fetch is given:
 then each source is fetched first, as "source fetch" fetches it, and the
-fetch is recorded in TrueUp's database.
+fetch is recorded in TrueUp's database. A source whose fetch fails isn't
+listed, even if an earlier version is in the cache: list without --fetch
+lists that.
 
 Exit codes:
   0  Every source was read, and every file in it is valid.
@@ -52,8 +55,9 @@ Exit codes:
   2  A name given isn't a configured source.
   3  The configuration is invalid, no sources are configured, or, with
      --fetch, database.url names a database this release can't use.
-  4  Some sources couldn't be read, such as one never fetched or whose
-     cache can't be read, or some files are invalid. The result is printed
+  4  Some sources couldn't be read, such as one never fetched, whose
+     cache can't be read or, with --fetch, whose fetch failed, or some
+     files are invalid. The result is printed
      as usual, with each problem.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := a.loadConfig(cmd)
@@ -233,7 +237,7 @@ func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s co
 		return fmt.Errorf("%w: run 'netbox-trueup-ai source fetch', or list with --fetch", err)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("open the cached version: %w", err)
 	}
 	defer func() {
 		if err := snap.Close(); err != nil {
@@ -242,7 +246,7 @@ func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s co
 	}()
 	res, err := f.Read(ctx, snap)
 	if err != nil {
-		return err
+		return fmt.Errorf("format %s: %w", f.Name(), err)
 	}
 	row.Ref, row.Version = &snap.Ref, &snap.Version
 	row.Files, row.InvalidFiles = res.Files, res.Invalid
@@ -417,6 +421,14 @@ func definitionLines(s listSourceJSON) []string {
 	for _, m := range manufacturers {
 		name := text(m.Identity["name"])
 		row(m, name, "-")
+		for _, d := range byManufacturer[name] {
+			row(d, name, text(d.Identity["model"]))
+		}
+		delete(byManufacturer, name)
+	}
+	// Definitions whose manufacturer the source doesn't define, which
+	// devicetype-library's format never gives, are still listed.
+	for _, name := range slices.Sorted(maps.Keys(byManufacturer)) {
 		for _, d := range byManufacturer[name] {
 			row(d, name, text(d.Identity["model"]))
 		}

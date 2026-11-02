@@ -29,6 +29,16 @@ type Limits struct {
 	Nodes int
 }
 
+// CheckSize returns the error ParseYAML would give for a file of size bytes
+// that is larger than the limits allow, or nil, so that a caller that knows
+// a file's size can refuse it without reading it.
+func (l Limits) CheckSize(size int64) error {
+	if size > int64(l.Size) {
+		return &ParseError{Reason: fmt.Sprintf("the file holds %d bytes, more than the %d a file of definitions may", size, l.Size)}
+	}
+	return nil
+}
+
 // DefinitionLimits are the limits on a file of definitions: far above
 // devicetype-library's largest device type, of 18.7 KB, 4 levels and 2,229
 // nodes, and far below what would make reading it costly
@@ -163,8 +173,8 @@ func (e *ParseError) Problem(path string) Problem {
 // gives twice, more than one document, and text that isn't UTF-8. Its error
 // is a *ParseError.
 func ParseYAML(data []byte, limits Limits) (*Node, error) {
-	if len(data) > limits.Size {
-		return nil, &ParseError{Reason: fmt.Sprintf("the file holds %d bytes, more than the %d a file of definitions may", len(data), limits.Size)}
+	if err := limits.CheckSize(int64(len(data))); err != nil {
+		return nil, err
 	}
 	// The byte order mark, if any, is dropped, so that go-yaml's columns
 	// count from the line's first character, as text's do.

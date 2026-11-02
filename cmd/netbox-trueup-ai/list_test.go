@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 )
 
 // libraryFiles returns files copied from devicetype-library, with the
@@ -96,6 +98,32 @@ Warnings:
 `
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("list (-want +got):\n%s", diff)
+	}
+}
+
+// TestListTextKeepsWhatNoManufacturerHolds checks that a definition whose
+// manufacturer the source doesn't define is still listed as text, after
+// those whose manufacturer it does.
+func TestListTextKeepsWhatNoManufacturerHolds(t *testing.T) {
+	t.Parallel()
+	deviceType := func(manufacturer, name string) definitionJSON {
+		return definitionJSON{Type: "dcim.devicetype", Identity: map[string]model.Value{
+			"manufacturer": model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"name": model.String(manufacturer)}},
+			"model":        model.String(name),
+		}}
+	}
+	got := definitionLines(listSourceJSON{Name: "lib", Definitions: []definitionJSON{
+		{Type: "dcim.manufacturer", Identity: map[string]model.Value{"name": model.String("Acme")}},
+		deviceType("Acme", "Box 1"),
+		deviceType("Zeta", "Box 2"),
+	}})
+	want := []string{
+		"lib\tmanufacturer\tAcme\t-\t-\t-",
+		"lib\tdevice type\tAcme\tBox 1\t-\t-",
+		"lib\tdevice type\tZeta\tBox 2\t-\t-",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("definitionLines (-want +got):\n%s", diff)
 	}
 }
 
@@ -188,7 +216,7 @@ func TestListFailures(t *testing.T) {
 		env, _ := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library","exclude":["schema"]}]`)
 		fetched(t, pool, env)
 		r := runCLIApp(t, nil, trust(pool), env, "list")
-		if r.code != exitListProblems || !strings.Contains(r.stdout, "lib: the source has no schema/devicetype.json") {
+		if r.code != exitListProblems || !strings.Contains(r.stdout, "lib: format devicetype-library: the source has no schema/devicetype.json") {
 			t.Errorf("exit code = %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 		}
 	})
