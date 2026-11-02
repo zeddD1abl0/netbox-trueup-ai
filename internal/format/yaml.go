@@ -174,14 +174,14 @@ func ParseYAML(data []byte, limits Limits) (*Node, error) {
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
-	if err := dec.Decode(&doc); err != nil {
+	if err := decode(dec, &doc); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, &ParseError{Reason: "the file holds no YAML document"}
 		}
 		return nil, parseError(err)
 	}
 	var next yaml.Node
-	switch err := dec.Decode(&next); {
+	switch err := decode(dec, &next); {
 	case errors.Is(err, io.EOF):
 	case err != nil:
 		return nil, parseError(err)
@@ -200,6 +200,18 @@ func ParseYAML(data []byte, limits Limits) (*Node, error) {
 		return nil, &ParseError{Line: root.Line, Column: root.Column, Reason: "the file holds " + Describe(root) + ", not a mapping of keys to values"}
 	}
 	return root, nil
+}
+
+// decode decodes the next document, returning a panic in go-yaml as an
+// error, so that a bug a hostile file finds in it fails only that file.
+// go-yaml recovers its own errors, but passes any other panic on.
+func decode(dec *yaml.Decoder, doc *yaml.Node) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("yaml: the YAML parser failed: %s", cutText(fmt.Sprint(r), 200))
+		}
+	}()
+	return dec.Decode(doc)
 }
 
 // goYAMLLine finds the line in go-yaml's errors, such as "yaml: line 3: did

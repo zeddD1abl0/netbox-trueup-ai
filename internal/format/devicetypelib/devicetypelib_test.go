@@ -350,6 +350,56 @@ func TestReadAcrossFiles(t *testing.T) {
 	}
 }
 
+// TestReadReportsWhatWasLeftOut checks that a device type the source holds
+// never goes missing without a problem saying so: in a manufacturer's
+// directory the source layer left out, in a file named in capitals, or in a
+// source that holds none at all.
+func TestReadReportsWhatWasLeftOut(t *testing.T) {
+	t.Parallel()
+	fsys := withFiles(t, map[string]string{
+		"device-types/Acme/a.yaml":  valid,
+		"device-types/Acme/b.YAML":  valid,
+		"device-types/Acme/c.Yml":   valid,
+		"device-types/Zeta/notes":   "not read",
+		"device-types/README.md":    "# Device types\n",
+		"device-types/Acme/d.yaml~": "a backup",
+	})
+	fsys["device-types/Other"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("Acme")}
+	res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range res.Problems {
+		got = append(got, string(p.Severity)+" "+p.String())
+	}
+	notRead := "isn't read: devicetype-library keeps each device type in device-types/<manufacturer>/, in a file named .yaml or .yml"
+	want := []string{
+		`error device-types/Acme/b.YAML: isn't read: it is named ".YAML", but devicetype-library's tests take only .yaml and .yml, in lower case`,
+		`error device-types/Acme/c.Yml: isn't read: it is named ".Yml", but devicetype-library's tests take only .yaml and .yml, in lower case`,
+		"warning device-types/Acme/d.yaml~: " + notRead,
+		"error device-types/Other: wasn't read: it is a symbolic link, which TrueUp never follows; if it is a manufacturer's directory, none of the device types in it were read",
+		"warning device-types/README.md: " + notRead,
+		"warning device-types/Zeta/notes: " + notRead,
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("problems (-want +got):\n%s", diff)
+	}
+	if res.Files != 4 || res.Invalid != 3 || len(res.Definitions) != 2 {
+		t.Errorf("%d files, %d invalid, %d definitions; want 4, 3 and 2", res.Files, res.Invalid, len(res.Definitions))
+	}
+
+	// A source with no device types at all, such as one whose include
+	// patterns match none, says so.
+	res, err = Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", librarySchemas(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) != 1 || res.Problems[0].Severity != format.Warning || !strings.Contains(res.Problems[0].Reason, "holds no device types") {
+		t.Errorf("problems = %+v, want a warning that there are no device types", res.Problems)
+	}
+}
+
 // TestReadDuplicatesInListedOrder checks that of two device types NetBox
 // couldn't hold together, the one listed later gets the warning: the order
 // of paths, in which - comes before /, not of the walk, directory by
@@ -404,7 +454,14 @@ func TestReadNeedsSchemas(t *testing.T) {
 			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(`{"$ref": "https://example.com/devicetype.json"}`)}
 		}, sourcetest.Limits, "loads no schema from outside the source"},
 		{"a schema too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 4096, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "schema/devicetype.json, devicetype-library's schema for device types, wasn't read: it is larger than the source's max_file_size"},
-		{"a schema it refers to too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 5000, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "(schema/components.json, schema/generated_schema.json and schema/moduletype.json weren't read: they are larger than the source's max_file_size)"},
+		{"a schema it refers to too large to read", func(fstest.MapFS) {}, config.SourceLimits{MaxFileSize: 5000, MaxFiles: 100, FetchTimeout: 1, MaxFetchSize: 1}, "(schema/components.json wasn't read: it is larger than the source's max_file_size; schema/generated_schema.json wasn't read: it is larger than the source's max_file_size; schema/moduletype.json wasn't read: it is larger than the source's max_file_size)"},
+		{"a schema it refers to that is a link", func(fsys fstest.MapFS) {
+			fsys["schema/components.json"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("other.json")}
+		}, sourcetest.Limits, "(schema/components.json wasn't read: it is a symbolic link, which TrueUp never follows)"},
+		{"device types that are a link", func(fsys fstest.MapFS) {
+			delete(fsys, "device-types/Acme/box.yaml")
+			fsys["device-types"] = &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("elsewhere")}
+		}, sourcetest.Limits, "device-types, where devicetype-library keeps its device types, wasn't read: it is a symbolic link"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

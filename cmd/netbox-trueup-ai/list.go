@@ -46,13 +46,15 @@ fetch is recorded in TrueUp's database.
 
 Exit codes:
   0  Every source was read, and every file in it is valid.
-  1  The command couldn't run, such as when the data directory can't be
-     read, or, with --fetch, the database can't be opened or written.
+  1  The command couldn't run, such as when, with --fetch, the data
+     directory can't be written to, or the database can't be opened or
+     written.
   2  A name given isn't a configured source.
   3  The configuration is invalid, no sources are configured, or, with
      --fetch, database.url names a database this release can't use.
-  4  Some sources couldn't be read, such as one never fetched, or some
-     files are invalid. The result is printed as usual, with each problem.`,
+  4  Some sources couldn't be read, such as one never fetched or whose
+     cache can't be read, or some files are invalid. The result is printed
+     as usual, with each problem.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := a.loadConfig(cmd)
 			if err != nil {
@@ -224,7 +226,8 @@ func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s co
 	}
 	snap, err := source.Open(ctx, kind, spec)
 	if errors.Is(err, source.ErrNotFetched) {
-		return errors.New("the source hasn't been fetched: run 'netbox-trueup-ai source fetch', or list with --fetch")
+		// The kind says why, such as that the source's url changed since.
+		return fmt.Errorf("%w: run 'netbox-trueup-ai source fetch', or list with --fetch", err)
 	}
 	if err != nil {
 		return err

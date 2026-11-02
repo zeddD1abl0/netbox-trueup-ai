@@ -78,8 +78,14 @@ func (Format) Reads() []string { return []string{deviceTypesDir + "/**", "schema
 
 // Read reads the snapshot's device types, and derives their manufacturers.
 // It fails, reading nothing, when the snapshot lacks the library's schemas
-// or they don't compile, or a file can't be read from the snapshot.
+// or they don't compile, when the source layer left out device-types
+// itself, or when a file can't be read from the snapshot.
 func (Format) Read(ctx context.Context, snap *source.Snapshot) (*format.Result, error) {
+	for _, s := range snap.Skipped {
+		if s.Path == deviceTypesDir {
+			return nil, fmt.Errorf("%s, where devicetype-library keeps its device types, %s", deviceTypesDir, skipReason(s.Reason))
+		}
+	}
 	schema, err := compileSchema(ctx, snap)
 	if err != nil {
 		return nil, err
@@ -89,33 +95,54 @@ func (Format) Read(ctx context.Context, snap *source.Snapshot) (*format.Result, 
 		if !strings.HasPrefix(f.Path, deviceTypesDir+"/") {
 			continue
 		}
-		if !isDeviceTypePath(f.Path) {
+		switch placeOf(f.Path) {
+		case deviceTypeFile:
+			data, err := snap.ReadFile(ctx, f.Path)
+			if err != nil {
+				return nil, err
+			}
+			r.file(f.Path, data)
+		case misnamedDeviceType:
+			r.files++
+			r.invalid++
+			r.add(format.Problem{
+				Severity: format.Error, Path: f.Path,
+				Reason: "isn't read: it is named " + format.Quote(path.Ext(f.Path)) + ", but devicetype-library's tests take only .yaml and .yml, in lower case",
+			})
+		default:
 			r.add(format.Problem{
 				Severity: format.Warning, Path: f.Path,
 				Reason: "isn't read: devicetype-library keeps each device type in device-types/<manufacturer>/, in a file named .yaml or .yml",
 			})
-			continue
 		}
-		data, err := snap.ReadFile(ctx, f.Path)
-		if err != nil {
-			return nil, err
-		}
-		r.file(f.Path, data)
 	}
-	// What the source layer left out below device-types: a device type
-	// that wasn't read is an invalid file, so that none goes missing
-	// unseen; anything else, a warning, as it would be if it were read.
+	// What the source layer left out below device-types: a device type,
+	// or a manufacturer's directory, that wasn't read is an error, so that
+	// none goes missing unseen; anything else, a warning, as it would be if
+	// it were read.
 	for _, s := range snap.Skipped {
 		if !strings.HasPrefix(s.Path, deviceTypesDir+"/") {
 			continue
 		}
-		p := format.Problem{Severity: format.Warning, Path: s.Path, Reason: skipReason(s.Reason)}
-		if isDeviceTypePath(s.Path) {
-			p.Severity = format.Error
+		p := format.Problem{Severity: format.Error, Path: s.Path, Reason: skipReason(s.Reason)}
+		switch placeOf(s.Path) {
+		case deviceTypeFile, misnamedDeviceType:
+		case manufacturerDir:
+			p.Reason += "; if it is a manufacturer's directory, none of the device types in it were read"
+		default:
+			p.Severity = format.Warning
+		}
+		if p.Severity == format.Error {
 			r.files++
 			r.invalid++
 		}
 		r.add(p)
+	}
+	if r.files == 0 {
+		r.add(format.Problem{
+			Severity: format.Warning,
+			Reason:   "the source holds no device types in device-types/<manufacturer>/: check that it is devicetype-library, and its include and exclude patterns",
+		})
 	}
 	return r.result(), nil
 }
@@ -138,17 +165,44 @@ func skipReason(reason source.Reason) string {
 	}
 }
 
-// isDeviceTypePath reports whether a path is where the library keeps a
-// device type: device-types/<manufacturer>/<name>.yaml or .yml, with neither
-// the directory nor the file hidden, since the library's tests glob them as
-// device-types/*/*, and a glob's * doesn't match a leading dot.
-func isDeviceTypePath(p string) bool {
+// place is what a path below device-types is to the library.
+type place int
+
+const (
+	elsewhere place = iota
+	// deviceTypeFile is where the library keeps a device type:
+	// device-types/<manufacturer>/<name>.yaml or .yml, with neither the
+	// directory nor the file hidden, since the library's tests glob them as
+	// device-types/*/*, and a glob's * doesn't match a leading dot.
+	deviceTypeFile
+	// misnamedDeviceType is a device type's place, but named .YAML or the
+	// like, which the library's tests refuse.
+	misnamedDeviceType
+	// manufacturerDir is device-types/<manufacturer>, not hidden.
+	manufacturerDir
+)
+
+func placeOf(p string) place {
 	parts := strings.Split(p, "/")
-	if len(parts) != 3 || parts[0] != deviceTypesDir || strings.HasPrefix(parts[1], ".") || strings.HasPrefix(parts[2], ".") {
-		return false
+	switch {
+	case parts[0] != deviceTypesDir || len(parts) < 2 || strings.HasPrefix(parts[1], "."):
+		return elsewhere
+	case len(parts) == 2:
+		return manufacturerDir
+	case len(parts) != 3 || strings.HasPrefix(parts[2], "."):
+		return elsewhere
 	}
 	ext := path.Ext(parts[2])
-	return (ext == ".yaml" || ext == ".yml") && len(parts[2]) > len(ext)
+	switch {
+	case len(parts[2]) == len(ext):
+		return elsewhere
+	case ext == ".yaml" || ext == ".yml":
+		return deviceTypeFile
+	case strings.EqualFold(ext, ".yaml") || strings.EqualFold(ext, ".yml"):
+		return misnamedDeviceType
+	default:
+		return elsewhere
+	}
 }
 
 // compileSchema compiles the library's device type schema from the
@@ -179,16 +233,12 @@ func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, 
 		// A schema it refers to may be one the snapshot left out.
 		var skipped []string
 		for _, s := range snap.Skipped {
-			if dir, name := path.Split(s.Path); dir == "schema/" && path.Ext(name) == ".json" && s.Reason == source.TooLarge {
-				skipped = append(skipped, s.Path)
+			if dir, name := path.Split(s.Path); dir == "schema/" && path.Ext(name) == ".json" {
+				skipped = append(skipped, s.Path+" "+skipReason(s.Reason))
 			}
 		}
-		switch len(skipped) {
-		case 0:
-		case 1:
-			err = fmt.Errorf("%w (%s wasn't read: it is larger than the source's max_file_size)", err, skipped[0])
-		default:
-			err = fmt.Errorf("%w (%s and %s weren't read: they are larger than the source's max_file_size)", err, strings.Join(skipped[:len(skipped)-1], ", "), skipped[len(skipped)-1])
+		if len(skipped) > 0 {
+			err = fmt.Errorf("%w (%s)", err, strings.Join(skipped, "; "))
 		}
 		return nil, fmt.Errorf("devicetype-library's schemas: %w", err)
 	}

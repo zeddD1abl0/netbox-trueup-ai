@@ -257,15 +257,16 @@ func TestListEscapes(t *testing.T) {
 	t.Parallel()
 	repoURL, pool, _ := libraryRepo(t, map[string]string{
 		"device-types/Acme/a.yaml": "manufacturer: \"Ac\\e[31mme\"\nmodel: \"Box\\u202e1\"\nslug: acme-box\nu_height: 1\nis_full_depth: true\n",
+		"device-types/Acme/c.yaml": "manufacturer: Acme\nmodel: \"Box\\u20283\"\nslug: acme-box-3\nu_height: 1\nis_full_depth: true\n",
 		"device-types/Acme/b.yaml": "manufacturer: Acme\nmodel: Box 2\nslug: acme-box-2\nu_height: 1\nis_full_depth: true\n\"extra\\a\": 1\n",
 	})
 	env, _ := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
 	fetched(t, pool, env)
 	r := runCLIApp(t, nil, trust(pool), env, "list")
-	if strings.ContainsAny(r.stdout, "\x1b\u202e\a") {
+	if strings.ContainsAny(r.stdout, "\x1b\u202e\a\u2028") {
 		t.Errorf("list printed a control character:\n%q", r.stdout)
 	}
-	for _, escaped := range []string{`"Ac\x1b[31mme"`, `"Box\u202e1"`, `["extra\a"]: isn't a key the schema allows here`} {
+	for _, escaped := range []string{`"Ac\x1b[31mme"`, `"Box\u202e1"`, `"Box\u20283"`, `["extra\a"]: isn't a key the schema allows here`} {
 		if !strings.Contains(r.stdout, escaped) {
 			t.Errorf("list doesn't show %s:\n%s", escaped, r.stdout)
 		}

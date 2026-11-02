@@ -47,16 +47,7 @@ type Schema struct {
 // read as draft 2020-12 unless they say otherwise, without asserting
 // formats or content, and their patterns are Go's regular expressions,
 // which run in linear time.
-func CompileSchema(files []SchemaFile, root string) (_ *Schema, err error) {
-	// security: jsonschema v6.0.3 panics on a number whose exponent big.Rat
-	// can't hold, as when it checks an enum's values are unique. Numbers
-	// are checked first, so none should reach it; a panic from anything
-	// else still fails only the source.
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("schema %s: the JSON Schema compiler failed: %s", root, cutText(fmt.Sprint(r), 500))
-		}
-	}()
+func CompileSchema(files []SchemaFile, root string) (*Schema, error) {
 	if len(files) > MaxSchemaFiles {
 		return nil, fmt.Errorf("the source holds %d JSON schemas, more than the %d TrueUp reads", len(files), MaxSchemaFiles)
 	}
@@ -81,7 +72,7 @@ func CompileSchema(files []SchemaFile, root string) (_ *Schema, err error) {
 			return nil, fmt.Errorf("schemas %s and %s have the same $id, %s", other, f.Path, Quote(id))
 		}
 		ids[id] = f.Path
-		if err := c.AddResource(id, doc); err != nil {
+		if err := guard(func() error { return c.AddResource(id, doc) }); err != nil {
 			return nil, fmt.Errorf("schema %s: %w", f.Path, cutError{err})
 		}
 		if f.Path == root {
@@ -91,20 +82,41 @@ func CompileSchema(files []SchemaFile, root string) (_ *Schema, err error) {
 	if rootURL == "" {
 		return nil, fmt.Errorf("the source has no schema %s", root)
 	}
-	s, err := c.Compile(rootURL)
-	if err != nil {
+	var s *jsonschema.Schema
+	if err := guard(func() (err error) { s, err = c.Compile(rootURL); return err }); err != nil {
 		return nil, fmt.Errorf("schema %s doesn't compile: %w", root, cutError{err})
 	}
 	return &Schema{schema: s}, nil
 }
 
+// guard calls one of jsonschema's functions, and returns a panic in it as an
+// error.
+//
+// security: jsonschema v6.0.3 panics on a number whose exponent big.Rat
+// can't hold, such as 1e9999999, as when it checks that an enum's values are
+// unique. ParseYAML reads every number of a file into a float64, and
+// CompileSchema refuses a schema with a number a float64 can't hold, so none
+// should reach it; but a number can be hostile in other ways, such as a
+// mantissa a megabyte long, and this is the guard that holds whatever the
+// cause. It covers only jsonschema's own code, so that a bug of TrueUp's
+// still panics, where it can be seen.
+func guard(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("the JSON Schema library failed: %s", cutText(fmt.Sprint(r), 500))
+		}
+	}()
+	return f()
+}
+
 // hugeNumber returns a number in a schema that a float64 can't hold, such as
-// 1e9999999, which would make jsonschema v6.0.3 panic, if there is one.
+// 1e9999999, which would make jsonschema v6.0.3 panic, or that is written
+// with more than 100 characters, if there is one.
 func hugeNumber(doc any) (string, bool) {
 	switch v := doc.(type) {
 	case json.Number:
 		f, err := strconv.ParseFloat(string(v), 64)
-		if err != nil || math.IsInf(f, 0) || f == 0 && strings.ContainsAny(string(v), "123456789") {
+		if err != nil || len(v) > 100 || math.IsInf(f, 0) || f == 0 && strings.ContainsAny(string(v), "123456789") {
 			return string(v), true
 		}
 	case map[string]any:
@@ -160,17 +172,12 @@ const MaxSchemaProblems = 20
 // schema, and returns what it finds wrong, each at the node it concerns.
 // The reasons are TrueUp's own, quoting values cut short, rather than
 // jsonschema's, which list every value an enum allows.
-func (s *Schema) Validate(path string, root *Node) (problems []Problem) {
-	// security: jsonschema v6.0.3 panics on a number whose exponent big.Rat
-	// can't hold, such as 1e9999999. ParseYAML reads every number into a
-	// float64 first, so none reaches it; a panic from a schema and a file
-	// that are both hostile still fails only the file.
-	defer func() {
-		if r := recover(); r != nil {
-			problems = []Problem{{Severity: Error, Path: path, Reason: "the JSON Schema validator failed on the file: " + cutText(fmt.Sprint(r), 500)}}
-		}
-	}()
-	err := s.schema.Validate(root.JSON())
+func (s *Schema) Validate(path string, root *Node) []Problem {
+	var invalid error
+	if err := guard(func() error { invalid = s.schema.Validate(root.JSON()); return nil }); err != nil {
+		return []Problem{{Severity: Error, Path: path, Reason: "can't be checked against the schema: " + err.Error()}}
+	}
+	err := invalid
 	if err == nil {
 		return nil
 	}
@@ -178,6 +185,7 @@ func (s *Schema) Validate(path string, root *Node) (problems []Problem) {
 	if !errors.As(err, &verr) {
 		return []Problem{{Severity: Error, Path: path, Reason: "doesn't satisfy the schema: " + cutText(err.Error(), 500)}}
 	}
+	var problems []Problem
 	for _, leaf := range leaves(verr, nil) {
 		problems = append(problems, schemaProblems(path, root, leaf)...)
 	}

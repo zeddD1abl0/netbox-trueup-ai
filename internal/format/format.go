@@ -52,8 +52,9 @@ type Result struct {
 	// position, with problems that concern no one file, such as two derived
 	// manufacturers that would get the same slug, first.
 	Problems []Problem
-	// Files is how many files the format read as definitions, and Invalid
-	// how many of them it skipped with an error.
+	// Files is how many files the format took as definitions, counting
+	// those, or directories of them, that the source layer left out; and
+	// Invalid how many of them it skipped with an error.
 	Files, Invalid int
 }
 

@@ -155,6 +155,7 @@ func TestCompileSchemaRefuses(t *testing.T) {
 		// enum's values are unique, when the meta-schema says they must be.
 		{"a number too large", []SchemaFile{{Path: "s.json", Data: []byte(`{"$schema": "http://json-schema.org/draft-04/schema#", "enum": [1e9999999` + strings.Repeat(", 0", 25) + `]}`)}}, "s.json", `holds the number "1e9999999"`},
 		{"a number too small", []SchemaFile{{Path: "s.json", Data: []byte(`{"minimum": 1e-400}`)}}, "s.json", `holds the number "1e-400"`},
+		{"a number written too long", []SchemaFile{{Path: "s.json", Data: []byte(`{"minimum": 1.` + strings.Repeat("0", 100) + `}`)}}, "s.json", "holds the number"},
 		{"a number too large deep down", []SchemaFile{{Path: "s.json", Data: []byte(`{"properties": {"a": {"enum": [{"x": [1E+999999]}]}}}`)}}, "s.json", `holds the number "1E+999999"`},
 	}
 	for _, tt := range tests {
