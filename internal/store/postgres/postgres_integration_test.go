@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,12 @@ const helperURL = "TRUEUP_PGTEST_INTERRUPTED_OPEN"
 // apply, until its context ends, and exits at once, as the CLI does when it
 // is interrupted.
 func interruptedOpen(url string) int {
-	files, err := migrationsWith("00002_x.sql", "-- +goose Up\n")
+	m, err := shippedMigrations()
+	if err != nil {
+		fmt.Println(err)
+		return 2
+	}
+	files, err := migrationsWith(fmt.Sprintf("%05d_x.sql", m[len(m)-1].Version+1), "-- +goose Up\n")
 	if err != nil {
 		fmt.Println(err)
 		return 2
@@ -102,6 +108,55 @@ func query(t *testing.T, pool *pgxpool.Pool, q string, args ...any) []string {
 		t.Fatalf("%s: %v", q, err)
 	}
 	return out
+}
+
+// shippedMigrations returns the migrations this release ships, in order.
+func shippedMigrations() ([]store.Migration, error) {
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	var out []store.Migration
+	for _, e := range entries {
+		v, err := strconv.ParseInt(strings.SplitN(e.Name(), "_", 2)[0], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("migration %s: %w", e.Name(), err)
+		}
+		out = append(out, store.Migration{Version: v, Name: e.Name()})
+	}
+	return out, nil
+}
+
+func shipped(t *testing.T) []store.Migration {
+	t.Helper()
+	m, err := shippedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// latest returns the version of the newest migration this release ships.
+func latest(t *testing.T) int64 {
+	t.Helper()
+	m := shipped(t)
+	return m[len(m)-1].Version
+}
+
+// next returns the file name and version of a migration after those this
+// release ships.
+func next(t *testing.T, name string) (string, int64) {
+	t.Helper()
+	v := latest(t) + 1
+	return fmt.Sprintf("%05d_%s.sql", v, name), v
+}
+
+// nextName returns the file name of a migration after those this release
+// ships.
+func nextName(t *testing.T, name string) string {
+	t.Helper()
+	n, _ := next(t, name)
+	return n
 }
 
 // withMigration returns this release's migrations and one more.
@@ -167,8 +222,8 @@ func TestMigrations(t *testing.T) {
 	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
 	wantLocation := "postgres://127.0.0.1:" + srv.Port + "/" + database
 	for i, want := range []store.Migrated{
-		{Engine: Engine, Location: wantLocation, VersionBefore: 0, Version: 1, Applied: []store.Migration{{Version: 1, Name: "00001_sources.sql"}}},
-		{Engine: Engine, Location: wantLocation, VersionBefore: 1, Version: 1},
+		{Engine: Engine, Location: wantLocation, VersionBefore: 0, Version: latest(t), Applied: shipped(t)},
+		{Engine: Engine, Location: wantLocation, VersionBefore: latest(t), Version: latest(t)},
 	} {
 		s, got, err := Open(t.Context(), Options{URL: url})
 		if err != nil {
@@ -181,7 +236,7 @@ func TestMigrations(t *testing.T) {
 	}
 
 	pool := srv.Pool(t, database)
-	want := []string{"goose_db_version", "snapshot_files", "snapshot_skipped", "snapshots", "sources"}
+	want := []string{"comparisons", "goose_db_version", "snapshot_files", "snapshot_skipped", "snapshots", "sources"}
 	if got := tables(t, pool, Schema); !slices.Equal(got, want) {
 		t.Errorf("tables in %s = %v, want %v", Schema, got, want)
 	}
@@ -198,38 +253,40 @@ func TestNewerSchemaRefused(t *testing.T) {
 	database := srv.NewDatabase(t)
 	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
 	closeStore(t, openURL(t, url))
-	srv.Exec(t, database, "INSERT INTO netbox_trueup_ai.goose_db_version (version_id, is_applied) VALUES (2, true)")
+	newer := latest(t) + 1
+	srv.Exec(t, database, fmt.Sprintf("INSERT INTO netbox_trueup_ai.goose_db_version (version_id, is_applied) VALUES (%d, true)", newer))
 
 	_, migrated, err := Open(t.Context(), Options{URL: url})
 	var tooNew *store.SchemaTooNewError
-	if !errors.As(err, &tooNew) || tooNew.Version != 2 || tooNew.Known != 1 {
-		t.Fatalf("Open = %v, want a SchemaTooNewError for version 2", err)
+	if !errors.As(err, &tooNew) || tooNew.Version != newer || tooNew.Known != latest(t) {
+		t.Fatalf("Open = %v, want a SchemaTooNewError for version %d", err, newer)
 	}
-	if migrated.VersionBefore != 2 || len(migrated.Applied) != 0 {
-		t.Errorf("migrated = %+v, want version 2 found and nothing applied", migrated)
+	if migrated.VersionBefore != newer || len(migrated.Applied) != 0 {
+		t.Errorf("migrated = %+v, want version %d found and nothing applied", migrated, newer)
 	}
 }
 
 func TestFailedMigration(t *testing.T) {
 	t.Parallel()
 	database := srv.NewDatabase(t)
-	files := withMigration(t, "00002_two.sql",
+	two := nextName(t, "two")
+	files := withMigration(t, two,
 		// The second statement fails, so the first must be undone too.
 		"-- +goose Up\nCREATE TABLE two (x integer);\nINSERT INTO nowhere VALUES (1);\n")
 	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
 	_, migrated, err := open(t.Context(), Options{URL: url}, files, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "migrate the database's schema from version 0: migration 00002_two.sql failed: ") {
+	if err == nil || !strings.Contains(err.Error(), "migrate the database's schema from version 0: migration "+two+" failed: ") {
 		t.Fatalf("Open = %v, want an error from the failed migration", err)
 	}
-	if diff := cmp.Diff([]store.Migration{{Version: 1, Name: "00001_sources.sql"}}, migrated.Applied); diff != "" {
+	if diff := cmp.Diff(shipped(t), migrated.Applied); diff != "" {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	pool := srv.Pool(t, database)
 	if got := tables(t, pool, Schema); slices.Contains(got, "two") || !slices.Contains(got, "sources") {
 		t.Errorf("tables after the failed migration = %v, want only the first migration's", got)
 	}
-	if v := query(t, pool, "SELECT max(version_id) FROM netbox_trueup_ai.goose_db_version"); !slices.Equal(v, []string{"1"}) {
-		t.Errorf("schema version = %v, want 1", v)
+	if v := query(t, pool, "SELECT max(version_id) FROM netbox_trueup_ai.goose_db_version"); !slices.Equal(v, []string{strconv.FormatInt(latest(t), 10)}) {
+		t.Errorf("schema version = %v, want %d", v, latest(t))
 	}
 }
 
@@ -257,16 +314,18 @@ func TestConcurrentOpeners(t *testing.T) {
 			continue
 		}
 		closeStore(t, stores[i])
-		if results[i].Version != 1 {
+		if results[i].Version != latest(t) {
 			t.Errorf("opener %d found version %d", i, results[i].Version)
 		}
 		applied += len(results[i].Applied)
 	}
-	if applied != 1 {
-		t.Errorf("the openers applied %d migrations between them, want 1", applied)
+	if want := len(shipped(t)); applied != want {
+		t.Errorf("the openers applied %d migrations between them, want %d", applied, want)
 	}
-	if n := query(t, srv.Pool(t, database), "SELECT count(*) FROM netbox_trueup_ai.goose_db_version WHERE version_id = 1"); !slices.Equal(n, []string{"1"}) {
-		t.Errorf("migration 1 is recorded %v times, want once", n)
+	for _, m := range shipped(t) {
+		if n := query(t, srv.Pool(t, database), "SELECT count(*) FROM netbox_trueup_ai.goose_db_version WHERE version_id = $1", m.Version); !slices.Equal(n, []string{"1"}) {
+			t.Errorf("migration %d is recorded %v times, want once", m.Version, n)
+		}
 	}
 }
 
@@ -277,7 +336,7 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
+	files := withMigration(t, nextName(t, "more"), "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
 
 	// A newer release can't migrate while an older one has the database
 	// open, and gives up after its wait.
@@ -332,7 +391,7 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 		t.Fatalf("migrating once the store closed: %v", r.err)
 	}
 	defer closeStore(t, r.s)
-	if diff := cmp.Diff([]store.Migration{{Version: 2, Name: "00002_more.sql"}}, r.migrated.Applied); diff != "" {
+	if diff := cmp.Diff([]store.Migration{{Version: latest(t) + 1, Name: nextName(t, "more")}}, r.migrated.Applied); diff != "" {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	if _, _, err := Open(t.Context(), Options{URL: url}); !errors.As(err, new(*store.SchemaTooNewError)) {
@@ -354,7 +413,7 @@ func TestOpeningWaitsForAMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err = open(t.Context(), Options{URL: url}, withMigration(t, "00002_x.sql", "-- +goose Up\n"), 300*time.Millisecond)
+	_, _, err = open(t.Context(), Options{URL: url}, withMigration(t, nextName(t, "x"), "-- +goose Up\n"), 300*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "another TrueUp process has been migrating the database, or waiting to, for over 300ms") ||
 		!errors.Is(err, errTimeout) {
 		t.Errorf("Open during a migration = %v, want it to wait and give up", err)
@@ -378,7 +437,7 @@ func TestAWaitEndsOnTheServerToo(t *testing.T) {
 	database := srv.NewDatabase(t)
 	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
 	openURL(t, url) // an older store, open throughout
-	files := withMigration(t, "00002_x.sql", "-- +goose Up\n")
+	files := withMigration(t, nextName(t, "x"), "-- +goose Up\n")
 
 	// A migration interrupted while it waits for the exclusive lock leaves
 	// no request in the lock's queue, which would keep stores from opening
@@ -465,7 +524,7 @@ func TestAWaitEndsAfterItsNotice(t *testing.T) {
 
 func TestAStoreThatLosesItsOwnConnection(t *testing.T) {
 	t.Parallel()
-	files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
+	files := withMigration(t, nextName(t, "more"), "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
 
 	// lose opens a store in a new database, gives it a pooled connection,
 	// and ends the session of the connection that holds its lock, as a
@@ -539,7 +598,7 @@ func TestAStoreThatLosesItsOwnConnection(t *testing.T) {
 			t.Fatalf("migrating once the pooled connections closed: %v", err)
 		}
 		closeStore(t, migrated)
-		if _, err := s.Sources(t.Context()); err == nil || !strings.Contains(err.Error(), "the database's schema changed from version 1 to 2 while TrueUp had it open") {
+		if _, err := s.Sources(t.Context()); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the database's schema changed from version %d to %d while TrueUp had it open", latest(t), latest(t)+1)) {
 			t.Errorf("Sources after the migration = %v, want it refused", err)
 		}
 	})
@@ -783,7 +842,7 @@ func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
 	}
 	closeStore(t, seed)
 	// A migration that isn't safe to apply twice, and takes a while.
-	files := withMigration(t, "00002_data.sql", "-- +goose Up\nUPDATE sources SET url = url || '/x';\nSELECT pg_sleep(2);\n")
+	files := withMigration(t, nextName(t, "data"), "-- +goose Up\nUPDATE sources SET url = url || '/x';\nSELECT pg_sleep(2);\n")
 	pool := srv.Pool(t, database)
 
 	first := make(chan error, 1)
@@ -817,8 +876,8 @@ func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
 	// migration rather than read the version from before it, and then
 	// refuses the newer schema.
 	var tooNew *store.SchemaTooNewError
-	if _, _, err := Open(t.Context(), Options{URL: url}); !errors.As(err, &tooNew) || tooNew.Version != 2 {
-		t.Errorf("an older release opening while the migration runs = %v, want it to wait and find version 2", err)
+	if _, _, err := Open(t.Context(), Options{URL: url}); !errors.As(err, &tooNew) || tooNew.Version != latest(t)+1 {
+		t.Errorf("an older release opening while the migration runs = %v, want it to wait and find version %d", err, latest(t)+1)
 	}
 
 	// A release that has the migration finds it applied.
@@ -827,8 +886,8 @@ func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
 		t.Fatalf("the second process: %v", err)
 	}
 	closeStore(t, second)
-	if len(migrated.Applied) != 0 || migrated.Version != 2 {
-		t.Errorf("the second process migrated %+v, want nothing applied, at version 2", migrated)
+	if len(migrated.Applied) != 0 || migrated.Version != latest(t)+1 {
+		t.Errorf("the second process migrated %+v, want nothing applied, at version %d", migrated, latest(t)+1)
 	}
 	if err := <-first; err == nil || !strings.Contains(err.Error(), "the migrations were applied, but the connection that held the database's lock broke meanwhile") {
 		t.Errorf("the first process = %v, want it to say it lost its lock after migrating", err)
@@ -836,8 +895,8 @@ func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
 	if got := query(t, pool, "SELECT url FROM netbox_trueup_ai.sources"); !slices.Equal(got, []string{"https://git.example.com/lib.git/x"}) {
 		t.Errorf("the migrated URL = %v, want it changed once", got)
 	}
-	if n := query(t, pool, "SELECT count(*) FROM netbox_trueup_ai.goose_db_version WHERE version_id = 2"); !slices.Equal(n, []string{"1"}) {
-		t.Errorf("migration 2 is recorded %v times, want once", n)
+	if n := query(t, pool, "SELECT count(*) FROM netbox_trueup_ai.goose_db_version WHERE version_id = $1", latest(t)+1); !slices.Equal(n, []string{"1"}) {
+		t.Errorf("migration %d is recorded %v times, want once", latest(t)+1, n)
 	}
 }
 
@@ -851,7 +910,7 @@ func TestServerTimeouts(t *testing.T) {
 		url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
 		s := openURL(t, url)
 		time.Sleep(time.Second)
-		files := withMigration(t, "00002_x.sql", "-- +goose Up\n")
+		files := withMigration(t, nextName(t, "x"), "-- +goose Up\n")
 		if _, _, err := open(t.Context(), Options{URL: url}, files, time.Second); !errors.Is(err, errTimeout) {
 			t.Errorf("migrating while an idle store is open = %v, want it to wait and give up", err)
 		}
@@ -874,14 +933,14 @@ func TestServerTimeouts(t *testing.T) {
 			t.Fatal(err)
 		}
 		start := time.Now()
-		_, _, err = open(t.Context(), Options{URL: url}, withMigration(t, "00002_x.sql", "-- +goose Up\n"), time.Second)
+		_, _, err = open(t.Context(), Options{URL: url}, withMigration(t, nextName(t, "x"), "-- +goose Up\n"), time.Second)
 		if !errors.Is(err, errTimeout) || time.Since(start) < time.Second {
 			t.Errorf("Open while the gate is held = %v after %v, want it to wait its second and give up", err, time.Since(start))
 		}
 		if err := exclusive(gateKey).release(t.Context(), migrating); err != nil {
 			t.Fatal(err)
 		}
-		slow := withMigration(t, "00002_slow.sql", "-- +goose Up\nSELECT pg_sleep(0.5);\n")
+		slow := withMigration(t, nextName(t, "slow"), "-- +goose Up\nSELECT pg_sleep(0.5);\n")
 		s, _, err := open(t.Context(), Options{URL: url}, slow, time.Second)
 		if err != nil {
 			t.Fatalf("a migration that takes longer than statement_timeout: %v", err)
@@ -910,9 +969,9 @@ func TestServerTimeouts(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
-		files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
+		files := withMigration(t, nextName(t, "more"), "-- +goose Up\nALTER TABLE sources ADD COLUMN note text;\n")
 		_, _, err = open(ctx, Options{URL: url}, files, time.Second)
-		if err == nil || !strings.Contains(err.Error(), "migration 00002_more.sql waited over 1s for a table that another session holds, such as a pg_dump") {
+		if err == nil || !strings.Contains(err.Error(), "migration "+nextName(t, "more")+" waited over 1s for a table that another session holds, such as a pg_dump") {
 			t.Errorf("migrating while another session reads the table = %v", err)
 		}
 	})

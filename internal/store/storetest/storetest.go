@@ -50,6 +50,13 @@ func Run(t *testing.T, open Open) {
 		{"snapshots read while fetches are recorded", testReadsAgree},
 		{"removing sources while they are recorded", testRemoveWhileRecording},
 		{"a large file list", testLarge},
+		{"comparisons", testComparisons},
+		{"comparisons need the version compared", testComparisonsNeedTheSnapshot},
+		{"comparisons go with their source", testComparisonsRemoved},
+		{"invalid comparisons record nothing", testInvalidComparisons},
+		{"comparisons sort as bytes", testComparisonsSorting},
+		{"comparisons recorded while the source is fetched or removed", testComparisonsWhileFetching},
+		{"many comparisons", testLargeComparisons},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

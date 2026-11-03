@@ -124,19 +124,9 @@ func (r checkJSON) denied() []string {
 // Warnings about the NetBox settings, which loadConfig has logged, are part
 // of the result too.
 func checkNetBox(ctx context.Context, cfg *config.Config, logger *slog.Logger) (checkJSON, error) {
-	nb := cfg.Settings.NetBox
-	c, err := netbox.Connect(ctx, netbox.Options{
-		URL:             nb.URL,
-		Token:           nb.Token,
-		CACerts:         nb.CACerts,
-		Timeout:         nb.Timeout,
-		MaxRequests:     nb.MaxRequests,
-		Retries:         nb.Retries,
-		MaxResponseSize: nb.MaxResponseSize,
-		Logger:          logger,
-	})
+	c, err := connectNetBox(ctx, cfg, logger)
 	if err != nil {
-		return checkJSON{}, fmt.Errorf("connect to NetBox at %s: %w", nb.URL, err)
+		return checkJSON{}, err
 	}
 	checks, err := c.CheckRead(ctx, netbox.ReadTypes())
 	if err != nil {
@@ -169,6 +159,26 @@ func checkNetBox(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		result.Warnings = append(result.Warnings, warningJSON{Message: w})
 	}
 	return result, nil
+}
+
+// connectNetBox connects to the NetBox the settings name, which checks its
+// release and the token.
+func connectNetBox(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*netbox.Client, error) {
+	nb := cfg.Settings.NetBox
+	c, err := netbox.Connect(ctx, netbox.Options{
+		URL:             nb.URL,
+		Token:           nb.Token,
+		CACerts:         nb.CACerts,
+		Timeout:         nb.Timeout,
+		MaxRequests:     nb.MaxRequests,
+		Retries:         nb.Retries,
+		MaxResponseSize: nb.MaxResponseSize,
+		Logger:          logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("connect to NetBox at %s: %w", nb.URL, err)
+	}
+	return c, nil
 }
 
 func writeCheckText(w io.Writer, r checkJSON) error {

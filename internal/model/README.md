@@ -4,7 +4,7 @@ TrueUp handles NetBox objects generically: an object is an object type and the v
 
 | Package | What it holds |
 | --- | --- |
-| `model` | `Object` and its values (`String`, `Integer`, `Decimal`, `Boolean`, `Date`, `Choice`, `Reference`, `Set`, `Children`, `Null`), which encode as JSON the way NetBox's API writes them, `Spec`, `Field.Normalize` and `Field.Validate`, `Check`, which checks that specs are consistent, and `Slugify`, which makes a slug from a name as NetBox's web UI does. |
+| `model` | `Object` and its values (`String`, `Integer`, `Decimal`, `Boolean`, `Date`, `Choice`, `Reference`, `Set`, `Children`, `Null`), which encode as JSON the way NetBox's API writes them, `Spec`, `Field.Normalize` and `Field.Validate`, `Spec.DecodeAPI`, which reads an object from NetBox's API as NetBox 4.7 writes each kind of field and checks its shape, `Check`, which checks that specs are consistent, and `Slugify`, which makes a slug from a name as NetBox's web UI does. |
 | `model/dcim` | The specs of dcim's object types: manufacturers and device types. Component templates follow in roadmap steps 11 and 12; `prototypes_test.go` sketches them. |
 | `model/openapi` | Reads NetBox's OpenAPI schema, trims it to a snapshot, and lists its choice values. `cmd/netbox-choices` generates a spec package's `choices_gen.go` from its snapshot. |
 | `model/spectest` | The tests every spec package runs: consistency, the contract with the schema, and citations of NetBox's source ([ADR 0023](../../docs/adr/0023-check-specs-against-the-schema-with-plain-json.md)). |

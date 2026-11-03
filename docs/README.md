@@ -3,6 +3,7 @@
 | Document | What it covers |
 | --- | --- |
 | [architecture.md](architecture.md) | How the server is designed: components, data flow and trust boundaries |
+| [usage.md](usage.md) | Using TrueUp from the command line: fetching devicetype-library, listing its definitions and comparing them with NetBox |
 | [configuration.md](configuration.md) | Every setting, its environment variable and flag, and where the config file is read from |
 | [roadmap.md](roadmap.md) | Milestones, and the pull requests that build each one |
 | [tooling.md](tooling.md) | Every tool, library and AI skill the project uses and why, plus how to set up a development environment |

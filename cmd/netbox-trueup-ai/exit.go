@@ -24,6 +24,9 @@ const (
 	exitCannotRead   = 4 // netbox check: the token can't read every object type TrueUp reads
 	exitFetchFailed  = 4 // source fetch: some sources couldn't be fetched
 	exitListProblems = 4 // list: some sources couldn't be read, or some files are invalid
+
+	exitCompareProblems = 4 // compare: some sources couldn't be read or recorded, or some files are invalid
+	exitNotInStep       = 5 // compare --exit-code: some definitions aren't in step with NetBox
 )
 
 // outcomeError is an outcome particular to one command, with an exit code of

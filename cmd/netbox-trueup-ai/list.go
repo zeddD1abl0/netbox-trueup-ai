@@ -218,37 +218,12 @@ func (a *app) listSources(ctx context.Context, cfg *config.Config, sources []con
 
 // listSource reads one source's last fetched version into its row.
 func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s config.Source, row *listSourceJSON) error {
-	kind, ok := kinds[s.Kind]
-	if !ok {
-		return fmt.Errorf("TrueUp can't read sources of kind %q", s.Kind)
-	}
-	spec, f, err := sourceSpec(s)
+	read, err := a.readSource(ctx, kinds, s)
 	if err != nil {
 		return err
 	}
-	// Walk, and hash, only the files the format reads, not the library's
-	// images.
-	if spec.Only, err = glob.CompileAll(f.Reads()); err != nil {
-		return fmt.Errorf("format %s: %w", f.Name(), err)
-	}
-	snap, err := source.Open(ctx, kind, spec)
-	if errors.Is(err, source.ErrNotFetched) {
-		// The kind says why, such as that the source's url changed since.
-		return fmt.Errorf("%w: run 'netbox-trueup-ai source fetch', or list with --fetch", err)
-	}
-	if err != nil {
-		return fmt.Errorf("open the cached version: %w", err)
-	}
-	defer func() {
-		if err := snap.Close(); err != nil {
-			a.logger.Warn("can't close the source's cache", "source", s.Name, "error", err)
-		}
-	}()
-	res, err := f.Read(ctx, snap)
-	if err != nil {
-		return fmt.Errorf("format %s: %w", f.Name(), err)
-	}
-	row.Ref, row.Version = &snap.Ref, &snap.Version
+	res := read.result
+	row.Ref, row.Version = &read.ref, &read.version
 	row.Files, row.InvalidFiles = res.Files, res.Invalid
 	row.OK = res.Invalid == 0
 	for _, d := range res.Definitions {
@@ -258,6 +233,48 @@ func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s co
 		row.Problems = append(row.Problems, problemOf(p))
 	}
 	return nil
+}
+
+// sourceRead is what a source's format read from its last fetched version.
+type sourceRead struct {
+	ref, version string
+	result       *format.Result
+}
+
+// readSource reads a source's last fetched version with its format, from
+// the cache, without touching the network or the database.
+func (a *app) readSource(ctx context.Context, kinds map[string]source.Kind, s config.Source) (sourceRead, error) {
+	kind, ok := kinds[s.Kind]
+	if !ok {
+		return sourceRead{}, fmt.Errorf("TrueUp can't read sources of kind %q", s.Kind)
+	}
+	spec, f, err := sourceSpec(s)
+	if err != nil {
+		return sourceRead{}, err
+	}
+	// Walk, and hash, only the files the format reads, not the library's
+	// images.
+	if spec.Only, err = glob.CompileAll(f.Reads()); err != nil {
+		return sourceRead{}, fmt.Errorf("format %s: %w", f.Name(), err)
+	}
+	snap, err := source.Open(ctx, kind, spec)
+	if errors.Is(err, source.ErrNotFetched) {
+		// The kind says why, such as that the source's url changed since.
+		return sourceRead{}, fmt.Errorf("%w: run 'netbox-trueup-ai source fetch', or use --fetch", err)
+	}
+	if err != nil {
+		return sourceRead{}, fmt.Errorf("open the cached version: %w", err)
+	}
+	defer func() {
+		if err := snap.Close(); err != nil {
+			a.logger.Warn("can't close the source's cache", "source", s.Name, "error", err)
+		}
+	}()
+	res, err := f.Read(ctx, snap)
+	if err != nil {
+		return sourceRead{}, fmt.Errorf("format %s: %w", f.Name(), err)
+	}
+	return sourceRead{ref: snap.Ref, version: snap.Version, result: res}, nil
 }
 
 func definitionOf(d format.Definition) definitionJSON {

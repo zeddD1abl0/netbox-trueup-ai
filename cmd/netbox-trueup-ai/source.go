@@ -166,9 +166,8 @@ func (r fetchJSON) failed() []string {
 // only a problem with the cache or the database, or an interrupt, is an
 // error.
 func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []config.Source) (_ fetchJSON, err error) {
-	root := filepath.Join(cfg.Settings.DataDir, "cache", "sources")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return fetchJSON{}, fmt.Errorf("create the source cache in the data directory: %w", err)
+	if _, err := cacheRoot(cfg); err != nil {
+		return fetchJSON{}, err
 	}
 	db, _, err := a.openStore(ctx, cfg)
 	if err != nil {
@@ -179,6 +178,26 @@ func (a *app) fetchSources(ctx context.Context, cfg *config.Config, sources []co
 			err = errors.Join(err, closeErr)
 		}
 	}()
+	return a.fetchInto(ctx, db, cfg, sources)
+}
+
+// cacheRoot returns the directory of the sources' caches, which it creates
+// if it doesn't exist.
+func cacheRoot(cfg *config.Config) (string, error) {
+	root := filepath.Join(cfg.Settings.DataDir, "cache", "sources")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("create the source cache in the data directory: %w", err)
+	}
+	return root, nil
+}
+
+// fetchInto fetches sources as fetchSources does, recording the fetches in
+// db, which is open.
+func (a *app) fetchInto(ctx context.Context, db store.Store, cfg *config.Config, sources []config.Source) (fetchJSON, error) {
+	root, err := cacheRoot(cfg)
+	if err != nil {
+		return fetchJSON{}, err
+	}
 	kinds := a.sourceKinds(root)
 	result := fetchJSON{OK: true, Sources: []fetchSourceJSON{}}
 	for _, s := range sources {

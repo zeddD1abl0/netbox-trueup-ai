@@ -78,6 +78,8 @@ Each package with integration tests starts a NetBox of its own, which takes abou
 TrueUp's NetBox client never writes, so tests create what they need through `netboxtest`:
 
 - `nb.Post(ctx, path, body, out)` sends `body` as JSON to an API path, such as `/api/dcim/manufacturers/`, with the superuser's token, and decodes the answer into `out`. A list creates many objects at once.
+- `nb.Patch(ctx, path, body, out)` changes the fields in `body` of the object at an API path, such as `/api/dcim/device-types/7/`, and `nb.Delete(ctx, path)` deletes it.
+- `nb.Import(ctx, path, data)` creates objects through NetBox's own bulk import, as a person does in its web UI: it signs in as the superuser and submits YAML to an import page, such as `/dcim/device-types/import/`, which for device types also creates the components a file lists. It returns NetBox's own errors when NetBox refuses the import. `cmd/netbox-trueup-ai`'s parity test imports devicetype-library's files this way.
 - `nb.UserToken(ctx, username, password)` provisions a read-only v2 token for another user, such as one a test made with `Post` and gave a single permission, to see what a token without the others can do.
 
 `internal/netbox`'s integration tests show both: they seed device types with interface templates, and a user who may view only manufacturers.

@@ -5,12 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +95,39 @@ func query(t *testing.T, db *sql.DB, q string) []string {
 }
 
 // withMigration returns this release's migrations and one more.
+// shipped returns the migrations this release ships, in order.
+func shipped(t *testing.T) []store.Migration {
+	t.Helper()
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []store.Migration
+	for _, e := range entries {
+		v, err := strconv.ParseInt(strings.SplitN(e.Name(), "_", 2)[0], 10, 64)
+		if err != nil {
+			t.Fatalf("migration %s: %v", e.Name(), err)
+		}
+		out = append(out, store.Migration{Version: v, Name: e.Name()})
+	}
+	return out
+}
+
+// latest returns the version of the newest migration this release ships.
+func latest(t *testing.T) int64 {
+	t.Helper()
+	m := shipped(t)
+	return m[len(m)-1].Version
+}
+
+// next returns the file name and version of a migration after those this
+// release ships.
+func next(t *testing.T, name string) (string, int64) {
+	t.Helper()
+	v := latest(t) + 1
+	return fmt.Sprintf("%05d_%s.sql", v, name), v
+}
+
 func withMigration(t *testing.T, name, content string) fs.FS {
 	t.Helper()
 	files := fstest.MapFS{name: {Data: []byte(content)}}
@@ -142,14 +177,14 @@ func TestMigrations(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	want := store.Migrated{
-		Engine: "sqlite", Location: dbPath, VersionBefore: 0, Version: 1,
-		Applied: []store.Migration{{Version: 1, Name: "00001_sources.sql"}},
+		Engine: "sqlite", Location: dbPath, VersionBefore: 0, Version: latest(t),
+		Applied: shipped(t),
 	}
 	if diff := cmp.Diff(want, migrated); diff != "" {
 		t.Errorf("opening a new database (-want +got):\n%s", diff)
 	}
 	tables := query(t, s.db, "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
-	wantTables := []string{"goose_db_version", "snapshot_files", "snapshot_skipped", "snapshots", "sources", "sqlite_sequence"}
+	wantTables := []string{"comparisons", "goose_db_version", "snapshot_files", "snapshot_skipped", "snapshots", "sources", "sqlite_sequence"}
 	if diff := cmp.Diff(wantTables, tables); diff != "" {
 		t.Errorf("tables (-want +got):\n%s", diff)
 	}
@@ -164,7 +199,7 @@ func TestMigrations(t *testing.T) {
 		t.Fatalf("Open again: %v", err)
 	}
 	closeStore(t, again)
-	want.VersionBefore, want.Applied = 1, nil
+	want.VersionBefore, want.Applied = latest(t), nil
 	if diff := cmp.Diff(want, migrated); diff != "" {
 		t.Errorf("opening it again (-want +got):\n%s", diff)
 	}
@@ -185,8 +220,8 @@ func TestNewerSchemaRefused(t *testing.T) {
 
 	_, _, err = Open(t.Context(), Options{Path: dbPath})
 	var tooNew *store.SchemaTooNewError
-	if !errors.As(err, &tooNew) || tooNew.Version != 7 || tooNew.Known != 1 {
-		t.Fatalf("Open = %v, want a SchemaTooNewError for version 7 against 1", err)
+	if !errors.As(err, &tooNew) || tooNew.Version != 7 || tooNew.Known != latest(t) {
+		t.Fatalf("Open = %v, want a SchemaTooNewError for version 7 against %d", err, latest(t))
 	}
 	if v := query(t, db, "SELECT MAX(version_id) FROM goose_db_version"); !slices.Equal(v, []string{"7"}) {
 		t.Errorf("the schema's version after refusing = %v, want it left at 7", v)
@@ -196,22 +231,23 @@ func TestNewerSchemaRefused(t *testing.T) {
 func TestFailedMigration(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "trueup.db")
-	files := withMigration(t, "00002_two.sql",
+	name, _ := next(t, "two")
+	files := withMigration(t, name,
 		// The second statement fails, so the first must be undone too.
 		"-- +goose Up\nCREATE TABLE two (x INTEGER) STRICT;\nINSERT INTO nowhere VALUES (1);\n")
 	_, migrated, err := open(t.Context(), Options{Path: dbPath}, files, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "migrate the database's schema from version 0: migration 00002_two.sql failed: ") {
+	if err == nil || !strings.Contains(err.Error(), "migrate the database's schema from version 0: migration "+name+" failed: ") {
 		t.Fatalf("Open = %v, want an error from the failed migration", err)
 	}
-	if diff := cmp.Diff([]store.Migration{{Version: 1, Name: "00001_sources.sql"}}, migrated.Applied); diff != "" {
+	if diff := cmp.Diff(shipped(t), migrated.Applied); diff != "" {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	db := rawDB(t, dbPath)
 	if tables := query(t, db, "SELECT name FROM sqlite_schema WHERE name IN ('sources', 'two')"); !slices.Equal(tables, []string{"sources"}) {
 		t.Errorf("tables after the failed migration = %v, want only the first migration's", tables)
 	}
-	if v := query(t, db, "SELECT MAX(version_id) FROM goose_db_version"); !slices.Equal(v, []string{"1"}) {
-		t.Errorf("schema version = %v, want 1", v)
+	if v := query(t, db, "SELECT MAX(version_id) FROM goose_db_version"); !slices.Equal(v, []string{strconv.FormatInt(latest(t), 10)}) {
+		t.Errorf("schema version = %v, want %d", v, latest(t))
 	}
 }
 
@@ -238,16 +274,18 @@ func TestConcurrentOpeners(t *testing.T) {
 			continue
 		}
 		closeStore(t, stores[i])
-		if results[i].Version != 1 {
+		if results[i].Version != latest(t) {
 			t.Errorf("opener %d found version %d", i, results[i].Version)
 		}
 		applied += len(results[i].Applied)
 	}
-	if applied != 1 {
-		t.Errorf("the openers applied %d migrations between them, want 1", applied)
+	if want := len(shipped(t)); applied != want {
+		t.Errorf("the openers applied %d migrations between them, want %d", applied, want)
 	}
-	if n := query(t, rawDB(t, dbPath), "SELECT COUNT(*) FROM goose_db_version WHERE version_id = 1"); !slices.Equal(n, []string{"1"}) {
-		t.Errorf("migration 1 is recorded %v times, want once", n)
+	for _, m := range shipped(t) {
+		if n := query(t, rawDB(t, dbPath), fmt.Sprintf("SELECT COUNT(*) FROM goose_db_version WHERE version_id = %d", m.Version)); !slices.Equal(n, []string{"1"}) {
+			t.Errorf("migration %d is recorded %v times, want once", m.Version, n)
+		}
 	}
 }
 
@@ -258,7 +296,8 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := withMigration(t, "00002_more.sql", "-- +goose Up\nALTER TABLE sources ADD COLUMN note TEXT;\n")
+	more, version := next(t, "more")
+	files := withMigration(t, more, "-- +goose Up\nALTER TABLE sources ADD COLUMN note TEXT;\n")
 
 	// A newer release can't migrate while an older one has the database
 	// open, and gives up after its wait.
@@ -308,7 +347,7 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 		t.Fatalf("migrating once the store closed: %v", r.err)
 	}
 	defer closeStore(t, r.s)
-	if diff := cmp.Diff([]store.Migration{{Version: 2, Name: "00002_more.sql"}}, r.migrated.Applied); diff != "" {
+	if diff := cmp.Diff([]store.Migration{{Version: version, Name: more}}, r.migrated.Applied); diff != "" {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	if _, _, err := Open(t.Context(), Options{Path: dbPath}); !errors.As(err, new(*store.SchemaTooNewError)) {
@@ -327,7 +366,8 @@ func TestOpeningWaitsForAMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = open(t.Context(), Options{Path: dbPath}, withMigration(t, "00002_x.sql", "-- +goose Up\n"), 300*time.Millisecond)
+	name, _ := next(t, "x")
+	_, _, err = open(t.Context(), Options{Path: dbPath}, withMigration(t, name, "-- +goose Up\n"), 300*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "another TrueUp process has been migrating the database, or waiting to, for over 300ms") ||
 		!errors.Is(err, filelock.ErrTimeout) {
 		t.Errorf("Open during a migration = %v, want it to wait and give up", err)
@@ -609,7 +649,8 @@ func TestBrokenForeignKeysRefusedOnEveryOpen(t *testing.T) {
 func TestAMigrationsSettingsDontOutliveIt(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "trueup.db")
-	files := withMigration(t, "00002_keys_off.sql", "-- +goose NO TRANSACTION\n-- +goose Up\nPRAGMA foreign_keys = OFF;\n")
+	keysOff, _ := next(t, "keys_off")
+	files := withMigration(t, keysOff, "-- +goose NO TRANSACTION\n-- +goose Up\nPRAGMA foreign_keys = OFF;\n")
 	s, _, err := open(t.Context(), Options{Path: dbPath}, files, time.Second)
 	if err != nil {
 		t.Fatal(err)
