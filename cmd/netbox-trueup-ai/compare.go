@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -112,7 +111,7 @@ Exit codes:
 				return outcomeError{code: exitCompareProblems, err: errors.New(result.summary())}
 			}
 			if n := result.notInStep(); signal && n > 0 {
-				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", n, len(result.Objects))}
+				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", n, len(result.results))}
 			}
 			return nil
 		},
@@ -136,9 +135,13 @@ type compareJSON struct {
 	ComparedAt time.Time           `json:"compared_at"`
 	Sources    []compareSourceJSON `json:"sources"`
 	// Objects are the comparisons of the definitions, source by source, in
-	// the order each source's format gives them.
-	Objects  []compare.Result `json:"objects"`
-	Warnings []warningJSON    `json:"warnings"`
+	// the order each source's format gives them, as JSON, which the
+	// database records too.
+	Objects  []json.RawMessage `json:"objects"`
+	Warnings []warningJSON     `json:"warnings"`
+
+	// results are the Objects, for text output.
+	results []compare.Result
 }
 
 type compareNetBoxJSON struct {
@@ -199,7 +202,7 @@ func (r compareJSON) summary() string {
 // notInStep counts the definitions compared that aren't in step with NetBox.
 func (r compareJSON) notInStep() int {
 	n := 0
-	for _, o := range r.Objects {
+	for _, o := range r.results {
 		if !o.InStep() {
 			n++
 		}
@@ -209,16 +212,18 @@ func (r compareJSON) notInStep() int {
 
 // sourceCompared is one source read for a comparison.
 type sourceCompared struct {
-	row     *compareSourceJSON
-	version string
-	// defined are all the source's definitions, and chosen those compared.
-	defined []format.Definition
-	chosen  []compare.Definition
+	row *compareSourceJSON
+	// defined are the keys of all the source's definitions, chosen the
+	// definitions compared, and chosenKeys their keys.
+	defined    []store.ComparisonKey
+	chosen     []compare.Definition
+	chosenKeys []store.ComparisonKey
 }
 
-// runCompare opens the database, fetches the sources if asked, compares
-// them with NetBox, and records the comparisons. It closes the database
-// before it returns, so that nothing is printed if closing it fails.
+// runCompare opens the database, connects to NetBox, fetches the sources if
+// asked, compares them with NetBox, and records the comparisons. It closes
+// the database before it returns, so that nothing is printed if closing it
+// fails.
 func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, manufacturers []string) (_ compareJSON, err error) {
 	db, _, err := a.openStore(ctx, cfg)
 	if err != nil {
@@ -229,9 +234,19 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 			err = errors.Join(err, closeErr)
 		}
 	}()
+	// NetBox first, so that a NetBox that can't be reached, or that refuses
+	// the token, stops the command before a fetch that may take minutes.
+	c, err := connectNetBox(ctx, cfg, a.logger)
+	if err != nil {
+		return compareJSON{}, err
+	}
 	fetchErrors := map[string]string{}
 	if fetch {
-		fetched, err := a.fetchInto(ctx, db, cfg, sources)
+		root, err := cacheRoot(cfg)
+		if err != nil {
+			return compareJSON{}, err
+		}
+		fetched, err := a.fetchInto(ctx, db, cfg, root, sources)
 		if err != nil {
 			return compareJSON{}, err
 		}
@@ -241,22 +256,22 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 			}
 		}
 	}
-	return a.compareSources(ctx, cfg, db, sources, fetchErrors, manufacturers)
+	return a.compareSources(ctx, cfg, db, c, sources, fetchErrors, manufacturers)
 }
 
 // compareSources reads each source's last fetched version, compares the
 // definitions chosen with NetBox, and records the comparisons. A source that
 // can't be read, or whose comparisons can't be recorded, is reported in the
 // result; NetBox and the database failing are errors.
-func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.Store, sources []config.Source,
+func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.Store, c *netbox.Client, sources []config.Source,
 	fetchErrors map[string]string, manufacturers []string,
 ) (compareJSON, error) {
 	chosen := map[string]bool{}
 	for _, name := range manufacturers {
 		chosen[name] = true
 	}
-	kinds := a.sourceKinds(filepath.Join(cfg.Settings.DataDir, "cache", "sources"))
-	result := compareJSON{OK: true, Sources: []compareSourceJSON{}, Objects: []compare.Result{}, Warnings: []warningJSON{}}
+	kinds := a.sourceKinds(cachePath(cfg))
+	result := compareJSON{OK: true, Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}}
 	var compared []sourceCompared
 	named := map[string]bool{}
 	for _, s := range sources {
@@ -271,20 +286,23 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			a.failSource(row, err.Error())
 		} else {
 			res := read.result
-			sc.version, sc.defined = read.version, res.Definitions
 			row.Ref, row.Version = &read.ref, &read.version
 			row.Files, row.InvalidFiles, row.Definitions = res.Files, res.Invalid, len(res.Definitions)
 			row.OK = res.Invalid == 0
-			for _, p := range res.Problems {
-				row.Problems = append(row.Problems, problemOf(p))
-			}
+			row.Problems = problemsOf(res.Problems)
 			for _, d := range res.Definitions {
+				k, err := comparisonKey(d)
+				if err != nil {
+					return compareJSON{}, fmt.Errorf("source %s: %w", s.Name, err)
+				}
+				sc.defined = append(sc.defined, k)
 				name, ok := manufacturerName(d)
 				if ok {
 					named[name] = true
 				}
 				if len(chosen) == 0 || ok && chosen[name] {
 					sc.chosen = append(sc.chosen, compare.Definition{Source: s.Name, Definition: d})
+					sc.chosenKeys = append(sc.chosenKeys, k)
 				}
 			}
 			row.Compared = len(sc.chosen)
@@ -293,27 +311,24 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	}
 	for _, name := range manufacturers {
 		if !named[name] {
-			msg := fmt.Sprintf("no source read defines the manufacturer %s", strconv.Quote(name))
-			a.logger.Warn(msg)
-			result.Warnings = append(result.Warnings, warningJSON{Message: msg})
+			a.logger.Warn("no source read defines the manufacturer", "manufacturer", name)
+			result.Warnings = append(result.Warnings, warningJSON{Message: "no source read defines the manufacturer " + strconv.Quote(name)})
 		}
 	}
 
-	c, err := connectNetBox(ctx, cfg, a.logger)
-	if err != nil {
-		return compareJSON{}, err
-	}
 	var defs []compare.Definition
 	for _, sc := range compared {
 		defs = append(defs, sc.chosen...)
 	}
-	observed, err := readNetBox(ctx, c, defs)
-	if err != nil {
-		return compareJSON{}, err
-	}
-	results, err := compare.Compare(dcim.Specs(), defs, observed)
-	if err != nil {
-		return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
+	var results []compare.Result
+	if len(defs) > 0 {
+		observed, err := readNetBox(ctx, c, defs)
+		if err != nil {
+			return compareJSON{}, err
+		}
+		if results, err = compare.Compare(dcim.Specs(), defs, observed); err != nil {
+			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
+		}
 	}
 	info := c.Info()
 	result.NetBox = compareNetBoxJSON{URL: info.URL, Version: info.Version}
@@ -328,7 +343,17 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		}
 		mine := results[:len(sc.chosen)]
 		results = results[len(sc.chosen):]
-		if err := a.recordComparisons(ctx, db, sc, mine, result); err != nil {
+		// Each result is written as JSON once, for the database and for
+		// the output alike.
+		written := make([]json.RawMessage, len(mine))
+		for i, r := range mine {
+			out, err := json.Marshal(r)
+			if err != nil {
+				return compareJSON{}, fmt.Errorf("source %s: write the comparison of %s: %w", sc.row.Name, sc.chosenKeys[i], err)
+			}
+			written[i] = out
+		}
+		if err := recordComparisons(ctx, db, sc, mine, written, result); err != nil {
 			if !errors.Is(err, store.ErrSnapshotChanged) {
 				return compareJSON{}, err
 			}
@@ -348,7 +373,8 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		}
 		result.OK = result.OK && sc.row.OK
 		result.Sources = append(result.Sources, *sc.row)
-		result.Objects = append(result.Objects, mine...)
+		result.Objects = append(result.Objects, written...)
+		result.results = append(result.results, mine...)
 	}
 	return result, nil
 }
@@ -358,34 +384,21 @@ func (a *app) failSource(row *compareSourceJSON, msg string) {
 	a.logger.Warn("can't compare source", "source", row.Name, "error", msg)
 }
 
-// recordComparisons records one source's comparisons as the latest of its
-// definitions.
-func (a *app) recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, results []compare.Result, run compareJSON) error {
+// recordComparisons records one source's comparisons, results written as
+// JSON, as the latest of its definitions, and removes those of definitions
+// it no longer holds.
+func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, results []compare.Result, written []json.RawMessage, run compareJSON) error {
 	rec := store.ComparisonRun{
 		Source:        sc.row.Name,
-		SourceVersion: sc.version,
+		SourceVersion: *sc.row.Version,
 		ComparedAt:    run.ComparedAt,
 		NetBoxURL:     run.NetBox.URL,
 		NetBoxVersion: run.NetBox.Version,
-	}
-	for _, d := range sc.defined {
-		k, err := comparisonKey(d)
-		if err != nil {
-			return err
-		}
-		rec.Defined = append(rec.Defined, k)
+		Defined:       sc.defined,
 	}
 	for i, r := range results {
-		k, err := comparisonKey(sc.chosen[i].Definition)
-		if err != nil {
-			return err
-		}
-		out, err := json.Marshal(r)
-		if err != nil {
-			return fmt.Errorf("source %s: write the comparison of %s: %w", sc.row.Name, k, err)
-		}
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{
-			ComparisonKey: k, Outcome: string(r.Outcome), NetBoxID: r.NetBoxID, Differences: r.Differences, Result: out,
+			ComparisonKey: sc.chosenKeys[i], Outcome: string(r.Outcome), NetBoxID: r.NetBoxID, Differences: r.Differences, Result: written[i],
 		})
 	}
 	return db.RecordComparisons(ctx, rec)
@@ -515,7 +528,7 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	}
 
 	var notInStep []compare.Result
-	for _, o := range r.Objects {
+	for _, o := range r.results {
 		if !o.InStep() {
 			notInStep = append(notInStep, o)
 		}
@@ -541,7 +554,7 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	}
 
 	var conflicts []string
-	for _, o := range r.Objects {
+	for _, o := range r.results {
 		if o.Outcome != compare.Conflict {
 			continue
 		}
@@ -561,7 +574,7 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	}
 
 	first := true
-	for _, o := range r.Objects {
+	for _, o := range r.results {
 		if o.NetBoxID == 0 || o.Differences == 0 {
 			continue
 		}

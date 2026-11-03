@@ -151,10 +151,10 @@ sequenceDiagram
     participant DB as Database
 
     Op->>CLI: compare
+    CLI->>NB: check NetBox version and token
     CLI->>Src: read the version last fetched, or fetch it first with --fetch
     Src->>DB: record snapshot, when fetching
     Src-->>CLI: definitions, file errors
-    CLI->>NB: check NetBox version and token
     CLI->>NB: list manufacturers, and the device types and templates of those named
     NB-->>CLI: observed objects
     CLI->>Cmp: match and diff

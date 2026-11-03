@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -193,8 +192,7 @@ func (r listJSON) summary() string {
 // can't be read is reported in the result, with fetchErrors giving why for
 // those whose fetch failed; only an interrupt is an error.
 func (a *app) listSources(ctx context.Context, cfg *config.Config, sources []config.Source, fetchErrors map[string]string) (listJSON, error) {
-	root := filepath.Join(cfg.Settings.DataDir, "cache", "sources")
-	kinds := a.sourceKinds(root)
+	kinds := a.sourceKinds(cachePath(cfg))
 	result := listJSON{OK: true, Sources: []listSourceJSON{}}
 	for _, s := range sources {
 		row := listSourceJSON{Name: s.Name, Format: s.Format, Definitions: []definitionJSON{}, Problems: []problemJSON{}}
@@ -229,9 +227,7 @@ func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s co
 	for _, d := range res.Definitions {
 		row.Definitions = append(row.Definitions, definitionOf(d))
 	}
-	for _, p := range res.Problems {
-		row.Problems = append(row.Problems, problemOf(p))
-	}
+	row.Problems = problemsOf(res.Problems)
 	return nil
 }
 
@@ -302,6 +298,15 @@ func definitionOf(d format.Definition) definitionJSON {
 	}
 	if out.Unmapped == nil {
 		out.Unmapped = map[string]int{}
+	}
+	return out
+}
+
+// problemsOf returns problems as list and compare print them.
+func problemsOf(ps []format.Problem) []problemJSON {
+	out := make([]problemJSON, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, problemOf(p))
 	}
 	return out
 }

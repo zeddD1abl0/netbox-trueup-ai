@@ -356,6 +356,8 @@ func TestCompareFails(t *testing.T) {
 	unknown := deviceType("Dell", "R670", "r670", nil)
 	unknown.Object.Type = "dcim.rack"
 	extra := deviceType("Dell", "R670", "r670", map[string]model.Value{"colour": model.String("red")})
+	derivedExtra := manufacturer("Dell", "dell")
+	derivedExtra.Object.Fields["colour"] = model.String("red")
 	nbExtra := nbDeviceType(10, 3, "Dell", "R670", "r670", map[string]model.Value{"colour": model.String("red")})
 	nbUnknown := dell
 	nbUnknown.Object = model.Object{Type: "dcim.rack", Fields: nil}
@@ -371,6 +373,12 @@ func TestCompareFails(t *testing.T) {
 		{"an object with a field the spec doesn't have", nil, []compare.Observed{dell, nbExtra}, `#10 sets "colour"`},
 		{"a definition of a type without a spec", []compare.Definition{unknown}, nil, `is a "dcim.rack", which has no spec`},
 		{"a definition with a field the spec doesn't have", []compare.Definition{extra}, nil, `sets "colour"`},
+		{
+			"a derived definition with a field the spec doesn't have",
+			[]compare.Definition{derivedExtra},
+			nil,
+			`library's definition dcim.manufacturer name "Dell" sets "colour"`,
+		},
 	}
 	for _, tt := range tests {
 		_, err := compare.Compare(dcim.Specs(), tt.defs, tt.observed)

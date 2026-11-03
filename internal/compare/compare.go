@@ -305,12 +305,7 @@ func (ix *index) compare(d *Definition) (Result, error) {
 		derived[name] = true
 	}
 
-	r := Result{
-		Type:       s.Type,
-		Identity:   d.Identity,
-		Unresolved: unresolved,
-		Collisions: []Collision{},
-	}
+	r := Result{Type: s.Type, Identity: d.Identity, Unresolved: unresolved}
 	var matches []int64
 	if key, ok := ruleKey(s.Unique[iu], fields); ok {
 		matches = ix.rules[s.Type][iu][key]
@@ -384,7 +379,7 @@ func (ix *index) compare(d *Definition) (Result, error) {
 // import finds a device type's manufacturer by name.
 func (ix *index) resolve(s *model.Spec, in map[string]model.Value) (map[string]model.Value, []Unresolved) {
 	fields := make(map[string]model.Value, len(in))
-	unresolved := []Unresolved{}
+	var unresolved []Unresolved
 	for i := range s.Fields {
 		f := &s.Fields[i]
 		v, ok := in[f.Name]
@@ -491,10 +486,19 @@ func identityKey(typ string, key map[string]model.Value) string {
 }
 
 // describeDefinition names a definition in an error: by its file, or by its
-// identity for a derived one.
+// type and identity for a derived one, such as dcim.manufacturer name
+// "Dell".
 func describeDefinition(d *Definition) string {
 	if d.Path != "" {
 		return format.Quote(d.Path)
 	}
-	return d.Object.Type + " " + format.Quote(identityKey("", d.Identity))
+	parts := make([]string, 0, len(d.Identity))
+	for _, name := range slices.Sorted(maps.Keys(d.Identity)) {
+		v := "unset"
+		if x := d.Identity[name]; x != nil {
+			v = x.String()
+		}
+		parts = append(parts, name+" "+v)
+	}
+	return d.Object.Type + " " + strings.Join(parts, ", ")
 }

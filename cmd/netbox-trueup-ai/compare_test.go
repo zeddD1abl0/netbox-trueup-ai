@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -557,5 +559,46 @@ func TestCompareEscapes(t *testing.T) {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("compare doesn't show %s escaped:\n%s", want, r.stdout)
 		}
+	}
+}
+
+func TestCompareNothingChosen(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	env, dataDir, _, configure := compareEnv(t, nb)
+	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
+		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+	before := recordedComparisons(t, dataDir, "lib")
+	listed := len(nb.listed("/api/dcim/manufacturers/"))
+
+	// NetBox is checked, but nothing is listed, and what was recorded stays.
+	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--manufacturer", "Nobody")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	if got := decodeCompare(t, r.stdout); len(got.Objects) != 0 || got.Sources[0].Compared != 0 || got.NetBox.Version != "4.7.2" {
+		t.Errorf("compare = %+v", got)
+	}
+	if n := len(nb.listed("/api/dcim/manufacturers/")); n != listed {
+		t.Errorf("listed manufacturers %d more times, with nothing to compare", n-listed)
+	}
+	if after := recordedComparisons(t, dataDir, "lib"); len(after) != len(before) {
+		t.Errorf("recorded %d comparisons, then %d", len(before), len(after))
+	}
+}
+
+func TestCompareChecksNetBoxBeforeFetching(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	repo, pool, _ := libraryRepo(t, nil)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repo+`","format":"devicetype-library"}]`)
+	env = append(env, checkEnv(t, nb.srv, "nbt_key.wrong")...)
+	r := runCLIApp(t, nil, trust(pool), env, "compare", "--fetch")
+	if r.code != exitFailure || r.stdout != "" || !strings.Contains(r.stderr, "NetBox refused the token") {
+		t.Fatalf("compare --fetch with a token NetBox refuses: exit code %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dataDir, "cache", "sources")); err == nil && len(entries) > 0 {
+		t.Errorf("the source was fetched before NetBox was checked: %v", entries)
 	}
 }
