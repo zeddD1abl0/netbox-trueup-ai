@@ -13,6 +13,7 @@ require (
 	github.com/knadh/koanf/v2 v2.4.1
 	github.com/moby/moby/api v1.56.1
 	github.com/pressly/goose/v3 v3.29.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/testcontainers/testcontainers-go v0.44.0

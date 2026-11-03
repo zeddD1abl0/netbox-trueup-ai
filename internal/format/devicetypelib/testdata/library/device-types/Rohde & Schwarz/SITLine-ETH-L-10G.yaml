@@ -1,0 +1,20 @@
+---
+manufacturer: Rohde & Schwarz
+model: SITLine ETH-L 10G
+slug: rohde-and-schwarz-sitline-eth-l-10g
+part_number: 5414.6282.23
+u_height: 1
+is_full_depth: false
+module-bays:
+  - name: PS1
+    position: '1'
+  - name: PS2
+    position: '2'
+interfaces:
+  - name: A1
+    type: 10gbase-x-sfpp
+  - name: X1
+    type: 10gbase-x-sfpp
+  - name: MGMT
+    type: 1000base-x-sfp
+    mgmt_only: true

@@ -42,35 +42,28 @@ type Spec struct {
 	// Include chooses the files to read; none means every file. Exclude
 	// leaves files out, even ones Include chooses.
 	Include, Exclude []glob.Pattern
-	Limits           config.SourceLimits
+	// Only, if set, narrows a snapshot to the files it matches as well, such
+	// as the files a format reads, so that a command that reads only those
+	// doesn't read and hash the rest. It isn't configured: a command sets
+	// it.
+	Only   []glob.Pattern
+	Limits config.SourceLimits
 }
 
 // NewSpec returns the Spec for a source from the configuration.
 func NewSpec(s config.Source) (Spec, error) {
 	spec := Spec{Name: s.Name, Kind: s.Kind, URL: s.URL, Ref: s.Ref, Limits: s.Limits}
 	var err error
-	if spec.Include, err = compile(s.Include); err != nil {
+	if spec.Include, err = glob.CompileAll(s.Include); err != nil {
 		return Spec{}, fmt.Errorf("source %s: include: %w", s.Name, err)
 	}
-	if spec.Exclude, err = compile(s.Exclude); err != nil {
+	if spec.Exclude, err = glob.CompileAll(s.Exclude); err != nil {
 		return Spec{}, fmt.Errorf("source %s: exclude: %w", s.Name, err)
 	}
 	if s.Limits.MaxFileSize <= 0 || s.Limits.MaxFiles <= 0 || s.Limits.FetchTimeout <= 0 || s.Limits.MaxFetchSize <= 0 {
 		return Spec{}, fmt.Errorf("source %s has no limits: settings must be loaded before sources are read", s.Name)
 	}
 	return spec, nil
-}
-
-func compile(patterns []string) ([]glob.Pattern, error) {
-	out := make([]glob.Pattern, 0, len(patterns))
-	for _, text := range patterns {
-		p, err := glob.Compile(text)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, nil
 }
 
 // Kind fetches one kind of source.
@@ -152,7 +145,9 @@ type File struct {
 	Digest string
 }
 
-// Skipped is an entry that patterns choose but a snapshot leaves out.
+// Skipped is an entry that patterns choose but a snapshot leaves out: a
+// file they choose, or anything else, such as a symbolic link or a
+// submodule, in which they could choose files.
 type Skipped struct {
 	// Path is the entry's path. For an unsafe path, it is the path as far
 	// as it could be read, and may hold any characters: escape it before

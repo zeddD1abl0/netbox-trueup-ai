@@ -16,6 +16,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/glob"
 )
 
 // node describes an entry of a fake source's content.
@@ -169,6 +170,7 @@ func TestSnapshot(t *testing.T) {
 		name         string
 		include      []string
 		exclude      []string
+		only         []string
 		wantFiles    []string
 		wantSkipped  []Skipped
 		wantReadDirs []string // when set, the directories the walk must read
@@ -207,6 +209,32 @@ func TestSnapshot(t *testing.T) {
 			wantReadDirs: []string{"root", "root/1", "root/1/1", "root/3"},
 		},
 		{
+			name:      "only narrows what a source holds",
+			only:      []string{"device-types/**", "schema/*.json"},
+			wantFiles: []string{"device-types/Cisco/C9300.yaml", "device-types/Juniper/EX2300.yml", "device-types/Juniper/MX204.yaml", "schema/devicetype.json"},
+			wantSkipped: []Skipped{
+				{Path: "device-types/Juniper/latest.yaml", Reason: Symlink},
+			},
+			// The images are never read, nor their directory.
+			wantReadDirs: []string{"root", "root/1", "root/1/1", "root/1/0", "root/3"},
+		},
+		{
+			name:      "only and include choose what both match",
+			include:   []string{"device-types/Juniper", "schema"},
+			only:      []string{"device-types/**/*.yaml"},
+			wantFiles: []string{"device-types/Juniper/MX204.yaml"},
+			wantSkipped: []Skipped{
+				{Path: "device-types/Juniper/latest.yaml", Reason: Symlink},
+			},
+			wantReadDirs: []string{"root", "root/1", "root/1/0"},
+		},
+		{
+			name:      "exclude wins over only",
+			only:      []string{"device-types/**"},
+			exclude:   []string{"device-types/Juniper"},
+			wantFiles: []string{"device-types/Cisco/C9300.yaml"},
+		},
+		{
 			name:      "exclude wins over include",
 			include:   []string{"device-types/**"},
 			exclude:   []string{"**/*.yml", "**/latest.yaml"},
@@ -217,7 +245,12 @@ func TestSnapshot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			content := library()
-			snap, err := Fetch(t.Context(), fakeKind{content: content}, spec(t, tt.include, tt.exclude))
+			s := spec(t, tt.include, tt.exclude)
+			var err error
+			if s.Only, err = glob.CompileAll(tt.only); err != nil {
+				t.Fatal(err)
+			}
+			snap, err := Fetch(t.Context(), fakeKind{content: content}, s)
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -349,6 +382,35 @@ func TestSnapshotSkipsUnsafeAndOtherEntries(t *testing.T) {
 		if id != "root" {
 			t.Errorf("read directory %s, below an unsafe name", id)
 		}
+	}
+}
+
+// TestSnapshotReportsWhatMayHoldChosenFiles checks that a symbolic link, a
+// submodule or another entry that isn't a file is reported when the
+// patterns could choose files inside it, as they could inside a directory,
+// though they don't choose it, and isn't when they couldn't.
+func TestSnapshotReportsWhatMayHoldChosenFiles(t *testing.T) {
+	t.Parallel()
+	content := newFake(
+		link("README.md"),
+		link("device-types"),
+		link("docs"),
+		node{name: "images", typ: EntryOther},
+		node{name: "schema", typ: EntrySubmodule},
+		node{name: "vendor", typ: EntrySubmodule},
+	)
+	s := spec(t, []string{"device-types/Juniper/**", "schema/*.json", "images/*.png"}, nil)
+	snap, err := Fetch(t.Context(), fakeKind{content: content}, s)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	want := []Skipped{
+		{Path: "device-types", Reason: Symlink},
+		{Path: "images", Reason: NotAFile},
+		{Path: "schema", Reason: Submodule},
+	}
+	if diff := cmp.Diff(want, snap.Skipped); diff != "" {
+		t.Errorf("skipped (-want +got):\n%s", diff)
 	}
 }
 

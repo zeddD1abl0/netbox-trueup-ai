@@ -21,8 +21,9 @@ const (
 	exitUsage   = 2 // unknown command or flag, or bad arguments
 	exitConfig  = 3 // the configuration is invalid or can't be read
 
-	exitCannotRead  = 4 // netbox check: the token can't read every object type TrueUp reads
-	exitFetchFailed = 4 // source fetch: some sources couldn't be fetched
+	exitCannotRead   = 4 // netbox check: the token can't read every object type TrueUp reads
+	exitFetchFailed  = 4 // source fetch: some sources couldn't be fetched
+	exitListProblems = 4 // list: some sources couldn't be read, or some files are invalid
 )
 
 // outcomeError is an outcome particular to one command, with an exit code of
@@ -103,8 +104,9 @@ func escapeControls(msg string) string {
 }
 
 // unsafeRune reports whether r shouldn't reach a terminal as it is: a control
-// character, or a format character, such as a bidirectional override or a
-// zero-width space, which can make text read as something it isn't.
+// character, a format character, such as a bidirectional override or a
+// zero-width space, or the line and paragraph separators U+2028 and U+2029,
+// which can make text read as something it isn't.
 func unsafeRune(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }

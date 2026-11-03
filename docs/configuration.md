@@ -105,7 +105,7 @@ Each source in the `sources` list has these fields:
 | `url` | Yes | For Git, an `https` or `ssh` URL, such as `https://github.com/netbox-community/devicetype-library.git` or `git@github.com:netbox-community/devicetype-library.git`. An `https` URL can't hold a user name or password, since a token can pass as a user name. An `ssh` URL can name a user, but not a password. Neither can have a query or fragment. |
 | `ref` | No | The Git branch or tag to follow. When it isn't set, TrueUp follows the repository's default branch. |
 | `format` | Yes | How the source's files are laid out. Only `devicetype-library` for now. |
-| `include` | No | [Patterns](#patterns) of paths to read, relative to the top of the source, such as `device-types/Juniper/**`. When it isn't set, TrueUp reads everything. |
+| `include` | No | [Patterns](#patterns) of paths to read, relative to the top of the source, such as `device-types/Juniper/**`. When it isn't set, TrueUp reads everything. When it is, TrueUp adds the files the source's format needs: for `devicetype-library`, its JSON schemas, `schema/*.json`. |
 | `exclude` | No | Patterns of paths to skip, even ones `include` chooses. |
 | `max_file_size` | No | The largest file to read: a number of bytes, or one with `KiB`, `MiB` or `GiB`, from `1KiB` to `64MiB`. Default `1MiB`. Larger files are skipped and reported, and a Git fetch doesn't download them. |
 | `max_files` | No | The most files the source may hold once its patterns apply, from 1 to 1000000. Default `50000`. A source with more fails to fetch. |
@@ -173,7 +173,7 @@ Skipped files (--output json lists them all):
 
 - **What a fetch does.** TrueUp asks the repository which commit its branch or tag is at: `ref`, or the default branch when `ref` isn't set. A name that is both a branch and a tag means the branch, as with `git clone --branch`. If the cache already holds that commit, nothing is downloaded. Otherwise TrueUp clones that one commit, without its history and without files larger than `max_file_size`, and reads the commit's files from Git's own storage without checking them out, so Git hooks, filters and submodules never run. TrueUp needs no `git` executable ([ADR 0020](adr/0020-git-sources-with-go-git.md)).
 - **The cache.** Each source has its own cache in `<data_dir>/cache/sources/<name>/`: a clone, in a directory named for its commit and a number, and `latest.json`, which names it. A new clone replaces the old one only once it is complete and its files have passed every check, so a fetch that fails leaves the previous version in place. The cache is disposable: delete it, and the next fetch downloads the source again. If a clone in the cache is damaged, the error says which directory to delete. `source fetch` removes the caches of sources that are no longer configured. Changing `url` or `ref`, or raising `max_file_size`, means a new clone at the next fetch; changing patterns or lowering a limit doesn't.
-- **Files.** Only plain files are read. These are skipped and reported, if the patterns choose them: files larger than `max_file_size`, symbolic links, which are never followed, Git submodules, and entries whose names are unsafe: empty, `.` or `..`, holding a slash, a backslash, a control character or invalid UTF-8, named `.git`, given twice in a directory, or more than 128 directories deep or 4096 bytes long. Nothing inside an unsafe directory is read.
+- **Files.** Only plain files are read. These are skipped and reported, if the patterns choose them, or could choose files inside them: files larger than `max_file_size`, symbolic links, which are never followed, Git submodules, and entries whose names are unsafe: empty, `.` or `..`, holding a slash, a backslash, a control character or invalid UTF-8, named `.git`, given twice in a directory, or more than 128 directories deep or 4096 bytes long. Nothing inside an unsafe directory is read.
 - **Limits.** A fetch stops after `fetch_timeout`; when the server sends more than `max_fetch_size`, or the fetch would write more than that to disk; when the repository's list of branches and tags is larger than 32 MiB; or when the server sends more than 1,100,000 objects. A source whose patterns choose more than `max_files` files fails, as does one holding more than a million entries in all, or a directory whose Git tree is larger than 32 MiB. Each fails the source, and leaves its previous version in the cache.
 - **Cost.** Each file is read once, after each fetch, to give its size and SHA-256 digest. Fetched whole at the defaults, devicetype-library downloads about 490 MB in about 35 seconds, and every fetch spends about 13 seconds reading its 17,000 files, mostly images. With `include: ["device-types", "schema"]`, the same reading takes about a second. Patterns don't shrink the download, since Git servers can't leave files out by path, but a smaller `max_file_size` does: at `128KiB`, the library downloads 64 MB in 6 seconds, with every YAML file still in.
 - **Private repositories.** Not yet. TrueUp fetches over `https` only, without credentials. An `ssh` URL, which the configuration accepts, fails to fetch until credentials are supported.
@@ -181,6 +181,39 @@ Skipped files (--output json lists them all):
 - **Records.** Each fetch is recorded in [the database](#the-database), which `source fetch` creates and migrates first if needed: when the fetch started, and the version, files and skipped entries it found, or why it failed. A source that fails keeps the records of the version it had, as its cache does. Fetches of one source take turns, even in different TrueUp processes: a fetch waits up to the source's `fetch_timeout` for another to finish and be recorded, under a lock in `<data_dir>/cache/sources/.locks/`, and otherwise fails, recording nothing. `source fetch` leaves the records and cache of a source no longer configured while another process is fetching it. The records of sources no longer configured are removed with their caches.
 - **Exit codes.** 0 when every source was fetched. 4 when some couldn't be, with the result printed as usual and each one's error. 2 when a name given isn't a configured source, 3 for a configuration problem, no sources at all, or a `database.url` this release can't use, and 1 when the command couldn't run, such as when the data directory can't be written to or the database can't be opened or written ([ADR 0018](adr/0018-cli-conventions.md)).
 - **JSON.** With `--output json`, the result is one document whose fields scripts can rely on: `ok` (whether every source was fetched), and `sources`, with for each one `name`, `kind`, `url`, `ref` (the branch or tag followed, the default branch's name when `ref` isn't set), `ok`, `version` (the commit), `files` (how many it holds), `skipped`, each with `path` and `reason` (`too_large`, `symlink`, `submodule`, `unsafe_path` or `not_a_file`), and `error`. `ref`, `version`, `files` and `error` are `null` where they don't apply.
+
+## Listing definitions
+
+To list the definitions in every configured source, or in those named, run:
+
+```sh
+netbox-trueup-ai list [source...]
+```
+
+It reads each source's version as it was last fetched, without the network, and prints a summary, then each manufacturer followed by its device types, then any warnings and invalid files:
+
+```text
+SOURCE              REF     VERSION                                   FILES  INVALID  WARNINGS  MANUFACTURERS  DEVICE TYPES
+devicetype-library  master  e160491884f3c56d2daef3431d52f56728971b85  13187  0        4         402            13187
+
+SOURCE              TYPE          MANUFACTURER  MODEL     SLUG                FROM
+devicetype-library  manufacturer  NETGEAR       -         netgear (derived)   1 file
+devicetype-library  device type   NETGEAR       GS510TLP  netgear-gs510tlp    device-types/Netgear/GS510TLP.yml
+devicetype-library  manufacturer  Netgear       -         netgear (derived)   48 files
+devicetype-library  device type   Netgear       D6220     netgear-d6220       device-types/Netgear/D6220.yaml
+...
+
+Warnings:
+  devicetype-library: manufacturers "NETGEAR" and "Netgear" would both get the slug "netgear", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source
+```
+
+- **What it reads.** For a `devicetype-library` source, each file in `device-types/<manufacturer>/` named `.yaml` or `.yml`, as the library's own tests find them, in directories and files whose names don't start with a dot. Other files below `device-types/` get a warning, and module and rack types aren't read yet. A device type the fetch left out, such as one larger than `max_file_size` or a symbolic link, is invalid, and so is a manufacturer's directory it left out, and a device type named `.YAML` or `.Yml`, which the library's tests refuse. A source whose `device-types` or `schema` the fetch left out lists nothing, and one with no device types at all, such as one whose include patterns match none, gets a warning.
+- **Manufacturers.** The library names manufacturers but has no files for them, so TrueUp derives one from each name its valid files give, with the slug NetBox's web UI would make from the name: ASCII letters, digits, `_` and `-` only, lower case, at most 50 characters. TrueUp uses a derived slug only to create a manufacturer, never to change one NetBox has. Names that differ only in case or punctuation are different manufacturers, as they are to NetBox's import, and a warning names any that would get the same slug.
+- **Validation.** Each file is read as NetBox's own YAML import reads it, with PyYAML's rules, so `part_number: 02351930` is text and `is_full_depth: yes` is true. It must be at most 256 KiB, nest at most 16 levels and hold at most 50,000 values, in one YAML document, and may not use anchors, aliases, merge keys, tags or a key twice. It is then checked against the library's JSON schemas from the same version, and against NetBox's rules for each field, such as a height of at most 999.5 units. An invalid file is reported with its path, line, column, field and reason, and skipped; the rest are still listed ([ADR 0024](adr/0024-read-source-files-as-pyyaml-does.md)).
+- **Schemas.** A source without `schema/devicetype.json`, or whose schemas aren't JSON or don't compile, lists nothing, and is reported. TrueUp never loads a schema from anywhere but the source, so a schema that refers to another file or a URL fails to compile.
+- **`--fetch`** fetches each source first, as `source fetch` does, records the fetch, and then lists it. A source whose fetch fails is reported, and not listed, even if an earlier version is in the cache: `list` without `--fetch` lists that.
+- **`--output json`** gives every definition with its type, identity, path or the files it was derived from, fields, derived fields, metadata, such as `front_image`, and the lists of components it holds but TrueUp doesn't read yet, with each problem's severity, path, line, column, field and reason.
+- **Exit codes.** 0 when every source was read and every file is valid, warnings or not. 4 when a source couldn't be read, such as one never fetched, or some files are invalid, with the result printed as usual. 2 when a name given isn't a configured source, 3 for a configuration problem or no sources, and 1 when the command couldn't run ([ADR 0018](adr/0018-cli-conventions.md)).
 
 ## The database
 

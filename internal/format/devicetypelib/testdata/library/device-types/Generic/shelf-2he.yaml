@@ -1,0 +1,12 @@
+---
+manufacturer: Generic
+model: shelf-2he
+slug: generic-shelf-2he
+u_height: 2
+is_full_depth: false
+airflow: passive
+is_powered: false
+subdevice_role: parent
+device-bays:
+  - name: A
+  - name: B

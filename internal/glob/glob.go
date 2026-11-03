@@ -40,6 +40,19 @@ func Compile(text string) (Pattern, error) {
 	return Pattern{text: text, segments: strings.Split(text, "/")}, nil
 }
 
+// CompileAll compiles patterns, stopping at the first that doesn't compile.
+func CompileAll(texts []string) ([]Pattern, error) {
+	out := make([]Pattern, 0, len(texts))
+	for _, text := range texts {
+		p, err := Compile(text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // Problem returns what is wrong with a pattern, or "" if nothing is. The
 // configuration checks patterns with it, so that a pattern it accepts always
 // compiles.

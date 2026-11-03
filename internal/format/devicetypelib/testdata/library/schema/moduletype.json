@@ -1,0 +1,235 @@
+{
+    "type": "object",
+    "$id": "urn:devicetype-library:module-type",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "manufacturer": {
+            "type": "string",
+            "maxLength": 100
+        },
+        "model": {
+            "type": "string",
+            "maxLength": 100
+        },
+        "part_number": {
+            "type": "string",
+            "maxLength": 50
+        },
+        "airflow": {
+            "$ref": "urn:devicetype-library:generated-schema#/definitions/airflow"
+        },
+        "weight": {
+            "$ref": "urn:devicetype-library:reusable#/definitions/weight"
+        },
+        "weight_unit": {
+            "$ref": "urn:devicetype-library:generated-schema#/definitions/weight-unit"
+        },
+        "console-ports": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/console-port"
+            }
+        },
+        "console-server-ports": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/console-server-port"
+            }
+        },
+        "power-ports": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/power-port"
+            }
+        },
+        "power-outlets": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/power-outlet"
+            }
+        },
+        "interfaces": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/interface"
+            }
+        },
+        "front-ports": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/front-port"
+            }
+        },
+        "rear-ports": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/rear-port"
+            }
+        },
+        "port-mappings": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/port-mappings"
+            }
+        },
+        "module-bays": {
+            "type": "array",
+            "items": {
+                "$ref": "urn:devicetype-library:components#/definitions/module-bay"
+            }
+        },
+        "description": {
+            "type": "string",
+            "maxLength": 200
+        },
+        "comments": {
+            "type": "string"
+        },
+        "profile": {
+            "type": "string",
+            "enum": ["CPU", "Fan", "GPU", "Hard disk", "Memory", "Power supply", "Expansion card", "Transceiver"]
+        },
+        "attribute_data": {
+            "type": "object"
+		}
+	},
+	"$defs": {
+        "cpu_attributes": {
+        "type": "object",
+		"additionalProperties": false,
+		"properties": {
+		    "architecture": { "type": "string" },
+		    "cores": { "type": "integer", "minimum": 1 },
+		    "speed": { "type": "number" }
+		}
+	    },
+	    "fan_attributes": {
+	    "type": "object",
+		"additionalProperties": false,
+		"properties": {
+		    "rpm": { "type": "integer", "minimum": 0 }
+		}
+	    },
+	    "gpu_attributes": {
+	    "type": "object",
+		"additionalProperties": false,
+        "required": ["memory"],
+		"properties": {
+		    "gpu": { "type": "string" },
+		    "interface": { "type": "string", "enum": [ "PCIe 4.0", "PCIe 4.0 x8", "PCIe 4.0 x16", "PCIe 5.0 x16"] },
+		    "memory": { "type": "integer" }
+		}
+            },
+	    "hard_disk_attributes": {
+		"type": "object",
+		"additionalProperties": false,
+        "required": ["size"],
+		"properties": {
+		    "size": { "type": "integer" },
+		    "speed": { "type": "integer" },
+		    "disk_type": { "type": "string", "enum": ["HD", "SSD", "NVME"] }
+		}
+	    },
+	    "memory_attributes": {
+		"type": "object",
+		"additionalProperties": false,
+        "required": ["class", "size"],
+		"properties": {
+		    "class": { "type": "string", "enum": ["DDR3", "DDR4", "DDR5"] },
+		    "data_rate": { "type": "integer" },
+		    "ecc": { "type": "boolean" },
+		    "size": { "type": "integer" }
+		}
+	    },
+	    "psu_attributes": {
+		"type": "object",
+		"additionalProperties": false,
+        "required": ["input_current", "input_voltage", "hot_swappable"],
+		"properties": {
+		    "wattage": { "type": "integer", "minimum": 0 },
+		    "hot_swappable": { "type": "boolean" },
+		    "input_current": { "type": "string", "enum": ["AC", "DC"] },
+		    "input_voltage": { "type": "number", "minimum": 0 }
+		}
+	    },
+	    "expansion_attributes": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+		    "bandwidth": { "type": "integer", "minimum": 0 },
+		    "connector_type": { "type": "string" }
+		}
+	    },
+	    "transceiver_attributes": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+		    "form_factor": { "type": "string" },
+		    "media": { "type": "string" },
+		    "phy": { "type": "string" },
+		    "data_rate": { "type": "string" },
+		    "reach": { "type": "number", "minimum": 0 },
+		    "connector_type": { "type": "string" }
+		}
+	    }
+	},
+    "if": { "required": ["profile"] },
+    "then": {
+        "oneOf": [
+    {
+     "properties": {
+        "profile": { "const": "CPU" },
+        "attribute_data": { "$ref": "#/$defs/cpu_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "Fan" },
+        "attribute_data": { "$ref": "#/$defs/fan_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "GPU" },
+        "attribute_data": { "$ref": "#/$defs/gpu_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "Hard disk" },
+        "attribute_data": { "$ref": "#/$defs/hard_disk_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "Memory" },
+        "attribute_data": { "$ref": "#/$defs/memory_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "Power supply" },
+        "attribute_data": { "$ref": "#/$defs/psu_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "Expansion card" },
+        "attribute_data": { "$ref": "#/$defs/expansion_attributes" }
+      }
+    },
+    {
+      "properties": {
+        "profile": { "const": "Transceiver" },
+        "attribute_data": { "$ref": "#/$defs/transceiver_attributes" }
+      }
+    }
+    ]
+    },
+    "dependentRequired": {
+        "weight": ["weight_unit"],
+        "weight_unit": ["weight"]
+    },
+    "required": ["manufacturer", "model"],
+    "additionalProperties": false
+}

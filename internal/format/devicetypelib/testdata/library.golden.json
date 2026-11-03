@@ -1,0 +1,1055 @@
+{
+  "Definitions": [
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "3Com",
+          "slug": "3com"
+        }
+      },
+      "Identity": {
+        "name": "3Com"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/3Com/4200G-12-Port.yml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "APC",
+          "slug": "apc"
+        }
+      },
+      "Identity": {
+        "name": "APC"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/APC/AP7516.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Apple",
+          "slug": "apple"
+        }
+      },
+      "Identity": {
+        "name": "Apple"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Apple/A1481.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Avocent",
+          "slug": "avocent"
+        }
+      },
+      "Identity": {
+        "name": "Avocent"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Avocent/DSRIQ-VSN.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Eaton",
+          "slug": "eaton"
+        }
+      },
+      "Identity": {
+        "name": "Eaton"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Eaton/Tripp-Lite-PDUMVR30HVNETLX.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "GL-iNet",
+          "slug": "gl-inet"
+        }
+      },
+      "Identity": {
+        "name": "GL-iNet"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/GL-iNet/GL-AR150.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "GL.iNet",
+          "slug": "gl-inet"
+        }
+      },
+      "Identity": {
+        "name": "GL.iNet"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/GL-iNet/GL-MT300N-V2.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Generic",
+          "slug": "generic"
+        }
+      },
+      "Identity": {
+        "name": "Generic"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Generic/shelf-2he.yaml",
+        "device-types/Generic/wall-box-1-utp-plug.yaml",
+        "device-types/Testing/Test-1000.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "HPE",
+          "slug": "hpe"
+        }
+      },
+      "Identity": {
+        "name": "HPE"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/HPE/ClearPass-C2000.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Huawei",
+          "slug": "huawei"
+        }
+      },
+      "Identity": {
+        "name": "Huawei"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Huawei/NE8000-X8.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "IBM",
+          "slug": "ibm"
+        }
+      },
+      "Identity": {
+        "name": "IBM"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/IBM/BladeCenter-HS22.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "NETGEAR",
+          "slug": "netgear"
+        }
+      },
+      "Identity": {
+        "name": "NETGEAR"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Netgear/GS510TLP.yml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Netgear",
+          "slug": "netgear"
+        }
+      },
+      "Identity": {
+        "name": "Netgear"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Netgear/GS105.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Rohde \u0026 Schwarz",
+          "slug": "rohde-schwarz"
+        }
+      },
+      "Identity": {
+        "name": "Rohde \u0026 Schwarz"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Rohde \u0026 Schwarz/SITLine-ETH-L-10G.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Ubiquiti",
+          "slug": "ubiquiti"
+        }
+      },
+      "Identity": {
+        "name": "Ubiquiti"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Ubiquiti/UVC-G4-INS.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Unipi Technology",
+          "slug": "unipi-technology"
+        }
+      },
+      "Identity": {
+        "name": "Unipi Technology"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Unipi Technology/Axon-M205.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Unipi technology",
+          "slug": "unipi-technology"
+        }
+      },
+      "Identity": {
+        "name": "Unipi technology"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Unipi Technology/Neuron-S103-RPi4.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.manufacturer",
+        "Fields": {
+          "name": "Vertiv",
+          "slug": "vertiv"
+        }
+      },
+      "Identity": {
+        "name": "Vertiv"
+      },
+      "Path": "",
+      "DerivedFrom": [
+        "device-types/Vertiv/SA1-01002.yaml"
+      ],
+      "Derived": [
+        "slug"
+      ],
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "3Com"
+          },
+          "model": "4200G 12 port",
+          "part_number": "3CR17660-91",
+          "slug": "3com-4200g-12-port",
+          "u_height": 1
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "3Com"
+        },
+        "model": "4200G 12 port"
+      },
+      "Path": "device-types/3Com/4200G-12-Port.yml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "console-ports": 1,
+        "interfaces": 17,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "comments": "Rack PDU, Basic, 1U, 14.4kW, 208V, (6) C19",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "APC"
+          },
+          "model": "AP7516",
+          "part_number": "AP7516",
+          "slug": "apc-ap7516",
+          "u_height": 1,
+          "weight": 17.59,
+          "weight_unit": "lb"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "APC"
+        },
+        "model": "AP7516"
+      },
+      "Path": "device-types/APC/AP7516.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "power-outlets": 6,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "bottom-to-top",
+          "comments": "See https://support.apple.com/en-us/112025\nOrder Number: ME253LL/A (Quad-Core) MD878LL/A (6-Core)",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Apple"
+          },
+          "model": "MacPro6,1",
+          "part_number": "A1481",
+          "slug": "apple-macpro61",
+          "u_height": 0,
+          "weight": 5,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Apple"
+        },
+        "model": "MacPro6,1"
+      },
+      "Path": "device-types/Apple/A1481.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "interfaces": 3,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Avocent"
+          },
+          "model": "DSRIQ-VSN",
+          "slug": "avocent-dsriq-vsn",
+          "u_height": 0
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Avocent"
+        },
+        "model": "DSRIQ-VSN"
+      },
+      "Path": "device-types/Avocent/DSRIQ-VSN.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "console-ports": 1,
+        "console-server-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "comments": "[Datasheet](https://assets.tripplite.com/product-pdfs/en/pdumvr30hvnetlx.pdf)\r\n[Drawing](https://assets.tripplite.com/submittal-drawing/pdumvr30hvnetlx-submittal-drawing-en.pdf)",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Eaton"
+          },
+          "model": "Tripp Lite PDUMVR30HVNETLX",
+          "part_number": "PDUMVR30HVNETLX",
+          "slug": "eaton-tripp-lite-pdumvr30hvnetlx",
+          "u_height": 0,
+          "weight": 5.44,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Eaton"
+        },
+        "model": "Tripp Lite PDUMVR30HVNETLX"
+      },
+      "Path": "device-types/Eaton/Tripp-Lite-PDUMVR30HVNETLX.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "console-ports": 2,
+        "interfaces": 1,
+        "power-outlets": 24,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "GL-iNet"
+          },
+          "model": "GL-AR150",
+          "slug": "gl-inet-gl-ar150",
+          "u_height": 1,
+          "weight": 0.1,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "GL-iNet"
+        },
+        "model": "GL-AR150"
+      },
+      "Path": "device-types/GL-iNet/GL-AR150.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "interfaces": 3,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "comments": "See [Product documentation](https://www.gl-inet.com/products/gl-mt300n-v2/).",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "GL.iNet"
+          },
+          "model": "GL-MT300N-V2",
+          "part_number": "GL-MT300N-V2",
+          "slug": "gl-inet-gl-mt300n-v2",
+          "u_height": 0,
+          "weight": 39,
+          "weight_unit": "g"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "GL.iNet"
+        },
+        "model": "GL-MT300N-V2"
+      },
+      "Path": "device-types/GL-iNet/GL-MT300N-V2.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "interfaces": 3,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Generic"
+          },
+          "model": "shelf-2he",
+          "slug": "generic-shelf-2he",
+          "subdevice_role": "parent",
+          "u_height": 2
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Generic"
+        },
+        "model": "shelf-2he"
+      },
+      "Path": "device-types/Generic/shelf-2he.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": {
+        "is_powered": false
+      },
+      "Unmapped": {
+        "device-bays": 2
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Generic"
+          },
+          "model": "Wall box, 1 UTP plug",
+          "slug": "generic-wall-box-1-utp-plug",
+          "u_height": 0
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Generic"
+        },
+        "model": "Wall box, 1 UTP plug"
+      },
+      "Path": "device-types/Generic/wall-box-1-utp-plug.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": {
+        "is_powered": false
+      },
+      "Unmapped": {
+        "front-ports": 1,
+        "port-mappings": 1,
+        "rear-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "front-to-rear",
+          "is_full_depth": true,
+          "manufacturer": {
+            "name": "HPE"
+          },
+          "model": "ClearPass C2000",
+          "part_number": "JZ509A",
+          "slug": "hpe-clearpass-c2000",
+          "u_height": 1,
+          "weight": 19.18,
+          "weight_unit": "lb"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "HPE"
+        },
+        "model": "ClearPass C2000"
+      },
+      "Path": "device-types/HPE/ClearPass-C2000.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": {
+        "front_image": true,
+        "rear_image": true
+      },
+      "Unmapped": {
+        "interfaces": 2,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "front-to-rear",
+          "comments": "[Huawei NE8000 X8](https://e.huawei.com/en/products/routers/ne8000)",
+          "is_full_depth": true,
+          "manufacturer": {
+            "name": "Huawei"
+          },
+          "model": "NE8000-X8",
+          "part_number": "02351930",
+          "slug": "huawei-ne8000-x8",
+          "u_height": 16,
+          "weight": 94,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Huawei"
+        },
+        "model": "NE8000-X8"
+      },
+      "Path": "device-types/Huawei/NE8000-X8.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "module-bays": 18
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "IBM"
+          },
+          "model": "BladeCenter HS22",
+          "slug": "ibm-bladecenter-hs22",
+          "subdevice_role": "child",
+          "u_height": 0
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "IBM"
+        },
+        "model": "BladeCenter HS22"
+      },
+      "Path": "device-types/IBM/BladeCenter-HS22.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": null
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "comments": "[Gigabit Unmanaged Switch Series GS105](https://www.netgear.com/business/wired/switches/unmanaged/gs105/)",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Netgear"
+          },
+          "model": "GS105",
+          "slug": "netgear-gs105",
+          "u_height": 1
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Netgear"
+        },
+        "model": "GS105"
+      },
+      "Path": "device-types/Netgear/GS105.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": {
+        "front_image": true,
+        "rear_image": true
+      },
+      "Unmapped": {
+        "interfaces": 5,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "NETGEAR"
+          },
+          "model": "GS510TLP",
+          "part_number": "GS510TLP-100EUS",
+          "slug": "netgear-gs510tlp",
+          "u_height": 1,
+          "weight": 1.74,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "NETGEAR"
+        },
+        "model": "GS510TLP"
+      },
+      "Path": "device-types/Netgear/GS510TLP.yml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": {
+        "is_powered": true
+      },
+      "Unmapped": {
+        "interfaces": 10,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Rohde \u0026 Schwarz"
+          },
+          "model": "SITLine ETH-L 10G",
+          "part_number": "5414.6282.23",
+          "slug": "rohde-and-schwarz-sitline-eth-l-10g",
+          "u_height": 1
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Rohde \u0026 Schwarz"
+        },
+        "model": "SITLine ETH-L 10G"
+      },
+      "Path": "device-types/Rohde \u0026 Schwarz/SITLine-ETH-L-10G.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "interfaces": 3,
+        "module-bays": 2
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "is_full_depth": true,
+          "manufacturer": {
+            "name": "Generic"
+          },
+          "model": "TEST-1000",
+          "slug": "generic-test-1000",
+          "subdevice_role": "parent",
+          "u_height": 2
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Generic"
+        },
+        "model": "TEST-1000"
+      },
+      "Path": "device-types/Testing/Test-1000.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "console-ports": 3,
+        "console-server-ports": 3,
+        "device-bays": 3,
+        "front-ports": 3,
+        "interfaces": 3,
+        "module-bays": 3,
+        "port-mappings": 3,
+        "power-outlets": 3,
+        "power-ports": 3,
+        "rear-ports": 3
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "comments": "[G4 Instant](https://techspecs.ui.com/unifi/cameras-nvrs/uvc-g4-ins)\n[Datasheet](https://dl.ubnt.com/ds/uvc-g4-ins-ds.pdf)\n\nDimensions: 81.6 x 50 x 47.2 mm (3.21 x 1.97 x 1.86\")\nResolution: 2688 x 1512 (4MP) at 30 FPS\nAudio: Two-way audio",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Ubiquiti"
+          },
+          "model": "Unifi G4 Instant",
+          "part_number": "UVC-G4-INS",
+          "slug": "ubiquiti-unifi-uvc-g4-ins",
+          "u_height": 0,
+          "weight": 125,
+          "weight_unit": "g"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Ubiquiti"
+        },
+        "model": "Unifi G4 Instant"
+      },
+      "Path": "device-types/Ubiquiti/UVC-G4-INS.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "interfaces": 1,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "comments": "See [Technical parameters](https://www.unipi.technology/unipi-axon-m205-p164?categoryId=27).\\r\\n\\r\\nSee [Datasheet](https://www.unipi.technology/shop/product/download?fileId=3702).",
+          "description": "Programmable logic controller and gateway designed for automation, control, regulation and monitoring",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Unipi Technology"
+          },
+          "model": "Axon M205",
+          "slug": "unipi-technology-axon-m205",
+          "u_height": 0,
+          "weight": 0.4,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Unipi Technology"
+        },
+        "model": "Axon M205"
+      },
+      "Path": "device-types/Unipi Technology/Axon-M205.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "console-ports": 6,
+        "interfaces": 1,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "passive",
+          "comments": "See [Technical parameters](https://www.unipi.technology/unipi-neuron-s103-rpi4-2gb-p363).\r\n\r\nSee [Product datasheet](https://www.unipi.technology/shop/product/download?fileId=3322).",
+          "description": "A programmable logic controller designed for automation, control, regulation and monitoring.",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Unipi technology"
+          },
+          "model": "Neuron S103 (RPi4)",
+          "slug": "unipi-technology-neuron-s103-rpi4",
+          "u_height": 0,
+          "weight": 0.19,
+          "weight_unit": "kg"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Unipi technology"
+        },
+        "model": "Neuron S103 (RPi4)"
+      },
+      "Path": "device-types/Unipi Technology/Neuron-S103-RPi4.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": null,
+      "Unmapped": {
+        "console-ports": 6,
+        "interfaces": 1,
+        "power-ports": 1
+      }
+    },
+    {
+      "Object": {
+        "Type": "dcim.devicetype",
+        "Fields": {
+          "airflow": "front-to-rear",
+          "description": "Vertiv SwitchAir SA1-01002",
+          "is_full_depth": false,
+          "manufacturer": {
+            "name": "Vertiv"
+          },
+          "model": "SA1-01002",
+          "part_number": "SA1-01002",
+          "slug": "vertiv-sa1-01002",
+          "u_height": 1,
+          "weight": 544,
+          "weight_unit": "g"
+        }
+      },
+      "Identity": {
+        "manufacturer": {
+          "name": "Vertiv"
+        },
+        "model": "SA1-01002"
+      },
+      "Path": "device-types/Vertiv/SA1-01002.yaml",
+      "DerivedFrom": null,
+      "Derived": null,
+      "Metadata": {
+        "is_powered": false
+      },
+      "Unmapped": null
+    }
+  ],
+  "Problems": [
+    {
+      "Severity": "warning",
+      "Path": "",
+      "Line": 0,
+      "Column": 0,
+      "Field": "",
+      "Reason": "manufacturers \"GL-iNet\" and \"GL.iNet\" would both get the slug \"gl-inet\", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source"
+    },
+    {
+      "Severity": "warning",
+      "Path": "",
+      "Line": 0,
+      "Column": 0,
+      "Field": "",
+      "Reason": "manufacturers \"NETGEAR\" and \"Netgear\" would both get the slug \"netgear\", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source"
+    },
+    {
+      "Severity": "warning",
+      "Path": "",
+      "Line": 0,
+      "Column": 0,
+      "Field": "",
+      "Reason": "manufacturers \"Unipi Technology\" and \"Unipi technology\" would both get the slug \"unipi-technology\", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source"
+    }
+  ],
+  "Files": 20,
+  "Invalid": 0
+}

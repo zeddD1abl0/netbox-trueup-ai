@@ -29,6 +29,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0021](0021-forward-only-migrations-when-opening.md) | Migrate the database forward only, when a command opens it | Accepted |
 | [0022](0022-postgresql-schema-and-advisory-locks.md) | Keep TrueUp's PostgreSQL tables in a schema of their own, and order processes with advisory locks | Accepted |
 | [0023](0023-check-specs-against-the-schema-with-plain-json.md) | Check specs against a snapshot of NetBox's OpenAPI schema, read with plain JSON decoding | Accepted |
+| [0024](0024-read-source-files-as-pyyaml-does.md) | Read source files as PyYAML does, within fixed limits, and validate them with santhosh-tekuri/jsonschema | Accepted |
 
 ## When to write one
 

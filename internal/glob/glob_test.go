@@ -218,3 +218,17 @@ func reference(segments, parts []string) bool {
 	ok, err := path.Match(segments[0], parts[0])
 	return err == nil && ok && reference(segments[1:], parts[1:])
 }
+
+func TestCompileAll(t *testing.T) {
+	t.Parallel()
+	got, err := CompileAll([]string{"device-types/**", "schema/*.json"})
+	if err != nil || len(got) != 2 || got[0].String() != "device-types/**" || got[1].String() != "schema/*.json" {
+		t.Errorf("CompileAll = %v, %v", got, err)
+	}
+	if got, err := CompileAll(nil); err != nil || len(got) != 0 {
+		t.Errorf("CompileAll(nil) = %v, %v", got, err)
+	}
+	if _, err := CompileAll([]string{"ok", "/abs"}); err == nil || !strings.Contains(err.Error(), `"/abs"`) {
+		t.Errorf("CompileAll of a bad pattern = %v", err)
+	}
+}
