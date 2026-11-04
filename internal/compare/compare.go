@@ -64,7 +64,7 @@ type Result struct {
 	NetBoxID int64
 	// Collisions are the NetBox objects, other than the match, that the
 	// definition collides with, sorted by rule and ID. A conflict has at
-	// least one.
+	// least one, or a reference with Candidates.
 	Collisions []Collision
 	// Unresolved lists the definition's references to objects that NetBox
 	// doesn't have, such as a device type's manufacturer.
@@ -95,12 +95,17 @@ type Collision struct {
 	Identity map[string]model.Value
 }
 
-// Unresolved is a reference to an object that NetBox doesn't have.
+// Unresolved is a reference to an object that NetBox doesn't have, or has
+// more than one of.
 type Unresolved struct {
 	// Field is the reference's field, such as manufacturer.
 	Field string
 	// Ref is the reference, by its natural key.
 	Ref model.Reference
+	// Candidates are the NetBox objects that all have the reference's key,
+	// sorted, when NetBox has more than one, which its uniqueness rules
+	// forbid. The definition is then a conflict.
+	Candidates []int64
 	// Outcome is that of the definition of the object referred to, among
 	// those compared at the same time, or "" if there isn't exactly one.
 	Outcome Outcome
@@ -174,8 +179,9 @@ type Row struct {
 // or collide with: every manufacturer, and the device types of each
 // manufacturer a definition names.
 //
-// It fails if a definition or an object is of a type without a spec, sets a
-// field its spec doesn't describe, or if NetBox listed an object twice.
+// It fails, rather than guess, if a definition or an object is of a type
+// without a spec, or doesn't hold its fields as its spec describes them (see
+// checkObserved and checkDefinition), or if NetBox listed an object twice.
 func Compare(specs []*model.Spec, defs []Definition, observed []Observed) ([]Result, error) {
 	ix := index{
 		specs:   map[string]*model.Spec{},
@@ -228,7 +234,7 @@ func (ix *index) add(o Observed) error {
 	if _, ok := ix.objects[s.Type][o.ID]; ok {
 		return fmt.Errorf("NetBox listed %s #%d twice", s.Type, o.ID)
 	}
-	if err := described(s, o.Object.Fields); err != nil {
+	if err := checkObserved(s, o.Object.Fields); err != nil {
 		return fmt.Errorf("NetBox's %s #%d %w", s.Type, o.ID, err)
 	}
 	ix.objects[s.Type][o.ID] = o.Object
@@ -292,51 +298,52 @@ func (ix *index) compare(d *Definition) (Result, error) {
 	if s == nil {
 		return Result{}, fmt.Errorf("a definition in %s is a %s, which has no spec", d.Source, strconv.Quote(d.Object.Type))
 	}
-	if err := described(s, d.Object.Fields); err != nil {
+	if err := checkDefinition(s, d); err != nil {
 		return Result{}, fmt.Errorf("%s's definition %s %w", d.Source, describeDefinition(d), err)
 	}
 	iu := identityRule(s)
 	if iu < 0 {
 		return Result{}, fmt.Errorf("the spec of %s has no identity among its uniqueness rules", s.Type)
 	}
-	fields, unresolved := ix.resolve(s, d.Object.Fields)
+	fields, unresolved, err := ix.resolve(s, d.Object.Fields)
+	if err != nil {
+		return Result{}, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
+	}
 	derived := map[string]bool{}
 	for _, name := range d.Derived {
 		derived[name] = true
 	}
 
 	r := Result{Type: s.Type, Identity: d.Identity, Unresolved: unresolved}
-	var matches []int64
-	if key, ok := ruleKey(s.Unique[iu], fields); ok {
-		matches = ix.rules[s.Type][iu][key]
-	}
-	if len(matches) == 1 {
-		r.NetBoxID = matches[0]
-	} else {
-		// NetBox's constraint forbids two objects with the same identity,
-		// so NetBox's answer can't be trusted to say which one this is.
-		for _, id := range matches {
-			r.Collisions = append(r.Collisions, ix.collision(s, iu, id))
-		}
-	}
-	for i, u := range s.Unique {
-		// A derived value is used only to create the object, so once the
-		// identity matches, it can't collide with anything.
-		if i == iu || r.NetBoxID != 0 && slices.ContainsFunc(u.Fields, func(f string) bool { return derived[f] }) {
+	// A reference that NetBox has more than one object for can't be
+	// resolved, since NetBox's answer can't be trusted to say which it is.
+	// The definition is then a conflict, colliding with what it would
+	// collide with under each of them.
+	assignments := []map[string]model.Value{fields}
+	for _, u := range unresolved {
+		if len(u.Candidates) == 0 {
 			continue
 		}
-		key, ok := ruleKey(u, fields)
-		if !ok {
-			continue
-		}
-		for _, id := range ix.rules[s.Type][i][key] {
-			if id != r.NetBoxID {
-				r.Collisions = append(r.Collisions, ix.collision(s, i, id))
+		var next []map[string]model.Value
+		for _, a := range assignments {
+			for _, id := range u.Candidates {
+				b := maps.Clone(a)
+				ref := u.Ref
+				ref.ID = id
+				b[u.Field] = ref
+				next = append(next, b)
 			}
 		}
+		assignments = next
+	}
+	ambiguous := len(assignments) > 1
+	if ambiguous {
+		r.Collisions = ix.collideUnderEach(s, assignments)
+	} else {
+		r.NetBoxID, r.Collisions = ix.match(s, iu, fields, derived)
 	}
 	switch {
-	case len(r.Collisions) > 0:
+	case len(r.Collisions) > 0 || ambiguous:
 		r.Outcome = Conflict
 	case r.NetBoxID != 0:
 		r.Outcome = Candidate
@@ -372,12 +379,76 @@ func (ix *index) compare(d *Definition) (Result, error) {
 	return r, nil
 }
 
+// match returns the NetBox object the definition's identity matches, if it
+// matches exactly one, and the objects the definition collides with under
+// the type's other rules, or, if its identity matches several, which
+// NetBox's constraint forbids, those.
+func (ix *index) match(s *model.Spec, iu int, fields map[string]model.Value, derived map[string]bool) (int64, []Collision) {
+	var match int64
+	var collisions []Collision
+	var matches []int64
+	if key, ok := ruleKey(s.Unique[iu], fields); ok {
+		matches = ix.rules[s.Type][iu][key]
+	}
+	if len(matches) == 1 {
+		match = matches[0]
+	} else {
+		// NetBox's answer can't be trusted to say which one this is.
+		for _, id := range matches {
+			collisions = append(collisions, ix.collision(s, iu, id))
+		}
+	}
+	for i, u := range s.Unique {
+		// A derived value is used only to create the object, so once the
+		// identity matches, it can't collide with anything.
+		if i == iu || match != 0 && slices.ContainsFunc(u.Fields, func(f string) bool { return derived[f] }) {
+			continue
+		}
+		key, ok := ruleKey(u, fields)
+		if !ok {
+			continue
+		}
+		for _, id := range ix.rules[s.Type][i][key] {
+			if id != match {
+				collisions = append(collisions, ix.collision(s, i, id))
+			}
+		}
+	}
+	return match, collisions
+}
+
+// collideUnderEach returns the objects that the fields collide with, under
+// any of the type's rules, in any of the assignments, each once.
+func (ix *index) collideUnderEach(s *model.Spec, assignments []map[string]model.Value) []Collision {
+	type seen struct {
+		rule int
+		id   int64
+	}
+	done := map[seen]bool{}
+	var collisions []Collision
+	for _, fields := range assignments {
+		for i, u := range s.Unique {
+			key, ok := ruleKey(u, fields)
+			if !ok {
+				continue
+			}
+			for _, id := range ix.rules[s.Type][i][key] {
+				if !done[seen{i, id}] {
+					done[seen{i, id}] = true
+					collisions = append(collisions, ix.collision(s, i, id))
+				}
+			}
+		}
+	}
+	return collisions
+}
+
 // resolve returns the definition's fields normalized as the spec says, with
 // each reference to an object that stands on its own resolved to its NetBox
 // ID, and lists the references NetBox has nothing, or more than one object,
 // for. A reference is resolved by its natural key, exactly, as NetBox's own
 // import finds a device type's manufacturer by name.
-func (ix *index) resolve(s *model.Spec, in map[string]model.Value) (map[string]model.Value, []Unresolved) {
+func (ix *index) resolve(s *model.Spec, in map[string]model.Value) (map[string]model.Value, []Unresolved, error) {
 	fields := make(map[string]model.Value, len(in))
 	var unresolved []Unresolved
 	for i := range s.Fields {
@@ -387,39 +458,50 @@ func (ix *index) resolve(s *model.Spec, in map[string]model.Value) (map[string]m
 			continue
 		}
 		v = f.Normalize(v)
-		if ref, isRef := v.(model.Reference); isRef && ref.ID == 0 && f.Ref != nil && f.Ref.Within == "" {
-			if id, found := ix.find(ref); found {
-				ref.ID = id
+		// checkDefinition makes sure such a reference has a key, and no ID.
+		if ref, isRef := v.(model.Reference); isRef && f.Ref.Within == "" {
+			ids, err := ix.find(ref)
+			switch {
+			case err != nil:
+				return nil, nil, fmt.Errorf("%s %w", f.Name, err)
+			case len(ids) == 1:
+				ref.ID = ids[0]
 				v = ref
-			} else {
-				unresolved = append(unresolved, Unresolved{Field: f.Name, Ref: ref})
+			default:
+				unresolved = append(unresolved, Unresolved{Field: f.Name, Ref: ref, Candidates: slices.Sorted(slices.Values(ids))})
 			}
 		}
 		fields[f.Name] = v
 	}
-	return fields, unresolved
+	return fields, unresolved, nil
 }
 
-// find returns the ID of the one NetBox object that ref's key is the
-// identity of.
-func (ix *index) find(ref model.Reference) (int64, bool) {
+// find returns the NetBox objects whose identity is ref's key: none, one,
+// or, from a NetBox that breaks its own uniqueness rules, several. It fails
+// if ref's key isn't the identity of the type it refers to.
+func (ix *index) find(ref model.Reference) ([]int64, error) {
 	target := ix.specs[ref.Type]
 	if target == nil {
-		return 0, false
+		return nil, fmt.Errorf("refers to a %s, which has no spec", strconv.Quote(ref.Type))
 	}
 	iu := identityRule(target)
 	if iu < 0 {
-		return 0, false
+		return nil, fmt.Errorf("refers to a %s, whose spec has no identity among its uniqueness rules", ref.Type)
 	}
-	key, ok := ruleKey(target.Unique[iu], ref.Key)
-	if !ok {
-		return 0, false
+	if len(ref.Key) != len(target.Identity) {
+		return nil, fmt.Errorf("refers to a %s by a key of %d fields, but its identity has %d", ref.Type, len(ref.Key), len(target.Identity))
 	}
-	ids := ix.rules[target.Type][iu][key]
-	if len(ids) != 1 {
-		return 0, false
+	for _, name := range target.Identity {
+		v, f := ref.Key[name], target.Field(name)
+		if v == nil || f == nil || v.Kind() == model.KindNull {
+			return nil, fmt.Errorf("refers to a %s without its %s", ref.Type, name)
+		}
+		if err := checkKind(f, v); err != nil {
+			return nil, fmt.Errorf("refers to a %s whose %s %w", ref.Type, name, err)
+		}
 	}
-	return ids[0], true
+	key, _ := ruleKey(target.Unique[iu], ref.Key)
+	return ix.rules[target.Type][iu][key], nil
 }
 
 func (ix *index) collision(s *model.Spec, rule int, id int64) Collision {

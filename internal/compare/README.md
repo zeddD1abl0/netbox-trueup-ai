@@ -8,11 +8,11 @@ results, err := compare.Compare(dcim.Specs(), definitions, observed)
 
 - `definitions` are a format's definitions, each with the name of its source.
 - `observed` are NetBox's objects, each read from NetBox's API through its spec by `Spec.DecodeAPI` in `internal/model`. They must include every object a definition could match or collide with: every manufacturer, and the device types of each manufacturer a definition names, since both of a device type's rules include its manufacturer.
-- `Compare` returns a result for each definition, in the same order: its outcome, `candidate`, `absent` or `conflict`, the collisions behind a conflict, the references NetBox has nothing for, and the columns and rows of the side-by-side table. Each result encodes as JSON the way `compare --output json` prints it, and the database records it so.
+- `Compare` returns a result for each definition, in the same order: its outcome, `candidate`, `absent` or `conflict`, the collisions behind a conflict, the references NetBox has nothing, or more than one object, for, and the columns and rows of the side-by-side table. Each result encodes as JSON the way `compare --output json` prints it, and the database records it so.
 
 What it settles, and where each rule comes from, is in ADR 0025: values compare exactly, case and white space included, as NetBox's constraints compare them; a value the format derived counts only where TrueUp would create the object; only the fields a definition sets are managed.
 
-Definitions come from sources and objects from NetBox, so both are untrusted. `Compare` fails, rather than guess, on an object of a type without a spec, a field its spec doesn't describe, or an object NetBox listed twice. Two NetBox objects that break one of NetBox's own uniqueness rules are a conflict.
+Definitions come from sources and objects from NetBox, so both are untrusted. `Compare` fails, rather than guess, on an object or a definition of a type without a spec, or that doesn't hold its fields as its spec describes them (`check.go`): a field it doesn't describe, a value of another kind, a NetBox object without one of its fields, a reference to a type the field can't refer to, or a definition whose identity disagrees with its fields. It fails on an object NetBox listed twice too. Two NetBox objects that break one of NetBox's own uniqueness rules are a conflict, and so is a device type whose manufacturer they both could be.
 
 ## Tests
 

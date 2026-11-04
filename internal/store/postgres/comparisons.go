@@ -14,7 +14,9 @@ import (
 
 // RecordComparisons records a run's comparisons in one transaction, which
 // first locks the source's row, as fetches and removals of the source do,
-// so that they take turns, and writes the comparisons in one COPY.
+// so that they take turns, and writes the comparisons in one COPY. It reads
+// committed data, whatever the server's default, so that once it has the
+// lock it sees the snapshot that a fetch it waited for recorded.
 func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) error {
 	run, err := run.Prepare()
 	if err != nil {
@@ -22,8 +24,13 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 	}
 	kept := run.Kept()
 	at := pgtype.Timestamptz{Time: run.ComparedAt, Valid: true}
-	err = s.inTx(ctx, pgx.TxOptions{}, func(q *postgresdb.Queries) error {
-		version, err := q.LockSnapshotVersion(ctx, run.Source)
+	err = s.inTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(q *postgresdb.Queries) error {
+		if _, err := q.LockSource(ctx, run.Source); errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: it was never fetched", store.ErrSnapshotChanged)
+		} else if err != nil {
+			return err
+		}
+		version, err := q.GetSnapshotVersion(ctx, run.Source)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("%w: it has no snapshot", store.ErrSnapshotChanged)

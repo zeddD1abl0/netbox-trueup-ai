@@ -79,8 +79,9 @@ Exit codes:
      release can't use.
   4  Some sources couldn't be read, such as one never fetched, or their
      comparisons couldn't be recorded, because the source was fetched again
-     while it was compared, or some files are invalid. The rest is compared,
-     and the result printed as usual.
+     while it was compared, or some files are invalid, or no source read
+     defines a manufacturer --manufacturer names. The rest is compared, and
+     the result printed as usual.
   5  Only with --exit-code: everything was read, and some definitions
      aren't in step with NetBox: they are absent, in conflict, or differ.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -140,8 +141,10 @@ type compareJSON struct {
 	Objects  []json.RawMessage `json:"objects"`
 	Warnings []warningJSON     `json:"warnings"`
 
-	// results are the Objects, for text output.
+	// results are the Objects, for text output, and unknown the names
+	// given to --manufacturer that no source read defines.
 	results []compare.Result
+	unknown []string
 }
 
 type compareNetBoxJSON struct {
@@ -195,6 +198,13 @@ func (r compareJSON) summary() string {
 		parts = append(parts, "1 file is invalid")
 	case invalid > 1:
 		parts = append(parts, fmt.Sprintf("%d files are invalid", invalid))
+	}
+	if len(r.unknown) > 0 {
+		quoted := make([]string, len(r.unknown))
+		for i, name := range r.unknown {
+			quoted[i] = strconv.Quote(name)
+		}
+		parts = append(parts, "no source read defines the manufacturer "+strings.Join(quoted, ", "))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -309,10 +319,14 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		}
 		compared = append(compared, sc)
 	}
+	// A name nothing defines, such as a typing mistake, leaves the
+	// comparison short of what was asked for, so the run isn't OK.
 	for _, name := range manufacturers {
 		if !named[name] {
 			a.logger.Warn("no source read defines the manufacturer", "manufacturer", name)
 			result.Warnings = append(result.Warnings, warningJSON{Message: "no source read defines the manufacturer " + strconv.Quote(name)})
+			result.OK = false
+			result.unknown = append(result.unknown, name)
 		}
 	}
 
@@ -559,6 +573,17 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 			continue
 		}
 		var parts []string
+		for _, u := range o.Unresolved {
+			if len(u.Candidates) == 0 {
+				continue
+			}
+			ids := make([]string, len(u.Candidates))
+			for i, id := range u.Candidates {
+				ids[i] = "#" + strconv.FormatInt(id, 10)
+			}
+			parts = append(parts, fmt.Sprintf("its %s, %s, could be any of NetBox's %ss %s, which NetBox should keep unique",
+				u.Field, strconv.Quote(text(u.Ref)), typeName(u.Ref.Type), strings.Join(ids, ", ")))
+		}
 		for _, c := range o.Collisions {
 			verb := "matches"
 			if len(c.Rule) > 1 {

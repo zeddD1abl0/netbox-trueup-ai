@@ -141,6 +141,7 @@ func TestDecodeAPIRefuses(t *testing.T) {
 		{"choice as bare value", thingAnswer(map[string]string{"airflow": `"front-to-rear"`}), "airflow: is text, not a choice's value and label"},
 		{"choice without value", thingAnswer(map[string]string{"airflow": `{"label": "x"}`}), "airflow: its value is missing, not text"},
 		{"choice value a number", thingAnswer(map[string]string{"airflow": `{"value": 1}`}), "airflow: its value is a number, not text"},
+		{"choice value in other case", thingAnswer(map[string]string{"airflow": `{"VALUE": "front-to-rear"}`}), "airflow: its value is missing, not text"},
 		{"date not a date", thingAnswer(map[string]string{"eol": `"2027-02-30"`}), `eol: "2027-02-30" isn't a date`},
 		{"reference as ID", thingAnswer(map[string]string{"maker": `5`}), "maker: is a number, not a reference to a test.maker"},
 		{"reference without id", thingAnswer(map[string]string{"maker": `{"name": "Dell"}`}), "maker: its id isn't in the answer"},

@@ -169,6 +169,8 @@ func TestListRefusesBrokenPages(t *testing.T) {
 		{name: "an ID before start", page: `{"next": "x", "results": [{"id": 1}, {"id": 2}]}`, want: "NetBox sent object 1 after 2"},
 		{name: "no ID", page: `{"next": null, "results": [{"name": "eth0"}]}`, want: "NetBox sent an object without a positive id"},
 		{name: "a zero ID", page: `{"next": null, "results": [{"id": 0}]}`, want: "NetBox sent an object without a positive id"},
+		// Only the key id counts, exactly, as when the object model reads it.
+		{name: "an ID in other case", page: `{"next": null, "results": [{"ID": 3}]}`, want: "NetBox sent an object without a positive id"},
 		{name: "a fractional ID", page: `{"next": null, "results": [{"id": 1.5}]}`, want: "an object in the answer can't be read"},
 		{name: "not an object", page: `{"next": null, "results": [7]}`, want: "an object in the answer can't be read"},
 		{name: "no results", page: `{"next": null, "count": 0}`, want: "the answer has no results list"},
@@ -279,6 +281,14 @@ func TestListByParentChecksParents(t *testing.T) {
 			name: "a null parent", ignore: true,
 			fields: func(int64) map[string]any { return map[string]any{"device_type": nil} },
 			want:   "NetBox sent an object without device_type",
+		},
+		{
+			// Only the key id counts, exactly, as when the object model reads
+			// the reference: an ID the parent check passed would otherwise
+			// differ from the one compared.
+			name: "a parent ID in other case", ignore: true,
+			fields: func(int64) map[string]any { return map[string]any{"device_type": map[string]any{"ID": 1}} },
+			want:   "NetBox sent an object whose device_type has no id",
 		},
 	}
 	for _, tt := range tests {

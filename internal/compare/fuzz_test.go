@@ -201,6 +201,22 @@ func oracle(d compare.Definition, observed []compare.Observed) expected {
 		if len(makers) == 1 {
 			maker = makers[0]
 		}
+		if len(makers) > 1 {
+			// NetBox can't say which manufacturer it is: a conflict, with
+			// whatever it would collide with under any of them.
+			for _, o := range observed {
+				if o.Object.Type == "dcim.devicetype" && slices.Contains(makers, makerOf(o)) &&
+					(str(o, "model") == trim(d.Object.Fields["model"]) || str(o, "slug") == trim(d.Object.Fields["slug"])) {
+					collide[o.ID] = true
+				}
+			}
+			for id := range collide {
+				e.collisions = append(e.collisions, id)
+			}
+			slices.Sort(e.collisions)
+			e.outcome = compare.Conflict
+			return e
+		}
 		var same []int64
 		for _, o := range observed {
 			if o.Object.Type != "dcim.devicetype" || maker == 0 || makerOf(o) != maker {

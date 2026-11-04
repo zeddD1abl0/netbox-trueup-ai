@@ -407,9 +407,11 @@ func TestCompareManufacturers(t *testing.T) {
 	}
 	before := recordedComparisons(t, dataDir, "lib")
 
-	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--manufacturer", "Huawei", "--manufacturer", "Nobody")
-	if r.code != exitOK {
-		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	// A name no source defines, perhaps mistyped, leaves the comparison
+	// short of what was asked for.
+	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--exit-code", "--manufacturer", "Huawei", "--manufacturer", "Nobody")
+	if r.code != exitCompareProblems || !strings.Contains(r.stderr, `Error: no source read defines the manufacturer "Nobody"`) {
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
 	}
 	got := decodeCompare(t, r.stdout)
 	if diff := cmp.Diff([]string{"candidate Huawei 0", "candidate NE8000-X8 1"}, outcomes(got)); diff != "" {
@@ -574,8 +576,8 @@ func TestCompareNothingChosen(t *testing.T) {
 
 	// NetBox is checked, but nothing is listed, and what was recorded stays.
 	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--manufacturer", "Nobody")
-	if r.code != exitOK {
-		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	if r.code != exitCompareProblems {
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
 	}
 	if got := decodeCompare(t, r.stdout); len(got.Objects) != 0 || got.Sources[0].Compared != 0 || got.NetBox.Version != "4.7.2" {
 		t.Errorf("compare = %+v", got)
@@ -600,5 +602,27 @@ func TestCompareChecksNetBoxBeforeFetching(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(filepath.Join(dataDir, "cache", "sources")); err == nil && len(entries) > 0 {
 		t.Errorf("the source was fetched before NetBox was checked: %v", entries)
+	}
+}
+
+func TestCompareAManufacturerNetBoxHoldsTwice(t *testing.T) {
+	t.Parallel()
+	// NetBox's own rules forbid this, so NetBox can't say which Netgear the
+	// definitions are.
+	netgear, again := nbManufacturer(1, "Netgear", "netgear"), nbManufacturer(3, "Netgear", "netgear-2")
+	nb := newCompareNetBox(t, []map[string]any{netgear, nbManufacturer(2, "Huawei", "huawei"), again}, libraryNetBox(t).deviceTypes)
+	env, _, _, configure := compareEnv(t, nb)
+	r := runCLIApp(t, nil, configure, env, "compare", "--manufacturer", "Netgear")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	for _, want := range []string{
+		`lib: manufacturer "Netgear" (1 file): its name matches NetBox's manufacturer #1, "Netgear"; its name matches NetBox's manufacturer #3, "Netgear"`,
+		`lib: device type Netgear "GS105" (device-types/Netgear/GS105.yaml): its manufacturer, "Netgear", could be any of NetBox's manufacturers #1, #3, which NetBox should keep unique; ` +
+			`its manufacturer and model match NetBox's device type #10, Netgear "GS105"; its manufacturer and slug match NetBox's device type #10, Netgear "GS105"`,
+	} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("compare doesn't say\n%s\nin:\n%s", want, r.stdout)
+		}
 	}
 }

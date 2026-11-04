@@ -1,12 +1,15 @@
--- name: LockSnapshotVersion :one
--- Returns the version of a source's snapshot, and locks the source's row
--- until the transaction ends, so that a fetch or a removal of the source, or
--- another recording of its comparisons, either finishes first or waits.
-SELECT snapshots.version
-FROM sources
-JOIN snapshots ON snapshots.source = sources.name
-WHERE sources.name = $1
-FOR UPDATE OF sources;
+-- name: LockSource :one
+-- Locks a source's row until the transaction ends, so that a fetch or a
+-- removal of the source, or another recording of its comparisons, either
+-- finishes first or waits. Read the snapshot's version afterwards, in a
+-- statement of its own: a join here would give the snapshot as it was
+-- before a fetch that the lock waited for, since PostgreSQL re-reads only
+-- the rows it locks.
+SELECT name FROM sources WHERE name = $1 FOR UPDATE;
+
+-- name: GetSnapshotVersion :one
+-- Returns the version of a source's snapshot.
+SELECT version FROM snapshots WHERE source = $1;
 
 -- name: DeleteComparisonsExcept :exec
 -- Deletes a source's comparisons, apart from those of the definitions

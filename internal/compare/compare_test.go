@@ -110,6 +110,9 @@ func summarize(r compare.Result) summary {
 	}
 	for _, u := range r.Unresolved {
 		s.Unresolved = append(s.Unresolved, u.Field+":"+string(u.Outcome))
+		if len(u.Candidates) > 0 && len(u.Candidates) < 2 {
+			s.Unresolved = append(s.Unresolved, "one candidate, which isn't ambiguous")
+		}
 	}
 	for _, row := range r.Rows {
 		if row.Differs && row.Managed {
@@ -263,6 +266,18 @@ func TestDeviceTypes(t *testing.T) {
 			[]compare.Observed{dell},
 			summary{Outcome: compare.Absent, Unresolved: []string{"manufacturer:"}},
 		},
+		{
+			// NetBox's constraint forbids two manufacturers of one name, so
+			// its answer can't say which the device type's is.
+			"the manufacturer is in NetBox twice", deviceType("Dell", "R670", "r670", nil),
+			[]compare.Observed{dell, nbManufacturer(4, "Dell", "dell-2"), nbDeviceType(10, 3, "Dell", "R670", "r670", nil)},
+			summary{Outcome: compare.Conflict, Collisions: []string{"manufacturer,model:10", "manufacturer,slug:10"}, Unresolved: []string{"manufacturer:"}},
+		},
+		{
+			"the manufacturer is in NetBox twice, without the device type", deviceType("Dell", "R770", "r770", nil),
+			[]compare.Observed{dell, nbManufacturer(4, "Dell", "dell-2"), nbDeviceType(10, 3, "Dell", "R670", "r670", nil)},
+			summary{Outcome: compare.Conflict, Unresolved: []string{"manufacturer:"}},
+		},
 	}
 	for _, tt := range tests {
 		got := summarize(run(t, []compare.Definition{tt.def}, tt.observed)[0])
@@ -356,6 +371,30 @@ func TestCompareFails(t *testing.T) {
 	unknown := deviceType("Dell", "R670", "r670", nil)
 	unknown.Object.Type = "dcim.rack"
 	extra := deviceType("Dell", "R670", "r670", map[string]model.Value{"colour": model.String("red")})
+	without := func(o compare.Observed, name string) compare.Observed {
+		o.Object.Fields = maps.Clone(o.Object.Fields)
+		delete(o.Object.Fields, name)
+		return o
+	}
+	with := func(o compare.Observed, name string, v model.Value) compare.Observed {
+		o.Object.Fields = maps.Clone(o.Object.Fields)
+		o.Object.Fields[name] = v
+		return o
+	}
+	nbDT := nbDeviceType(10, 3, "Dell", "R670", "r670", nil)
+	defWith := func(name string, v model.Value) compare.Definition {
+		d := deviceType("Dell", "R670", "r670", nil)
+		d.Object.Fields[name] = v
+		if _, ok := d.Identity[name]; ok {
+			d.Identity = maps.Clone(d.Identity)
+			d.Identity[name] = v
+		}
+		return d
+	}
+	identityOff := deviceType("Dell", "R670", "r670", nil)
+	identityOff.Identity = map[string]model.Value{"manufacturer": manufacturerRef("Dell"), "model": model.String("R770")}
+	noModel := deviceType("Dell", "R670", "r670", nil)
+	delete(noModel.Object.Fields, "model")
 	derivedExtra := manufacturer("Dell", "dell")
 	derivedExtra.Object.Fields["colour"] = model.String("red")
 	nbExtra := nbDeviceType(10, 3, "Dell", "R670", "r670", map[string]model.Value{"colour": model.String("red")})
@@ -373,6 +412,17 @@ func TestCompareFails(t *testing.T) {
 		{"an object with a field the spec doesn't have", nil, []compare.Observed{dell, nbExtra}, `#10 sets "colour"`},
 		{"a definition of a type without a spec", []compare.Definition{unknown}, nil, `is a "dcim.rack", which has no spec`},
 		{"a definition with a field the spec doesn't have", []compare.Definition{extra}, nil, `sets "colour"`},
+		{"an object without a field", nil, []compare.Observed{dell, without(nbDT, "u_height")}, "dcim.devicetype #10 has no u_height"},
+		{"an object with null where it can't be", nil, []compare.Observed{dell, with(nbDT, "model", model.Null{})}, "#10 model is null, which it can't be"},
+		{"an object with a value of another kind", nil, []compare.Observed{dell, with(nbDT, "u_height", model.String("1"))}, "#10 u_height is a string, not a decimal"},
+		{"an object referring to another type", nil, []compare.Observed{dell, with(nbDT, "manufacturer", model.Reference{Type: "dcim.platform", ID: 3})}, `#10 manufacturer refers to a "dcim.platform", which it can't`},
+		{"an object referring to no ID", nil, []compare.Observed{dell, with(nbDT, "manufacturer", manufacturerRef("Dell"))}, "#10 manufacturer refers to no NetBox object"},
+		{"a definition with a value of another kind", []compare.Definition{defWith("u_height", model.Integer(1))}, nil, "u_height is a integer, not a decimal"},
+		{"a definition referring by ID", []compare.Definition{defWith("manufacturer", model.Reference{Type: "dcim.manufacturer", ID: 999})}, nil, "manufacturer refers to a dcim.manufacturer other than by its natural key"},
+		{"a definition referring by nothing", []compare.Definition{defWith("manufacturer", model.Reference{Type: "dcim.manufacturer"})}, nil, "other than by its natural key"},
+		{"a definition referring by another key", []compare.Definition{defWith("manufacturer", model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"slug": model.String("dell")}})}, nil, "refers to a dcim.manufacturer without its name"},
+		{"a definition whose identity says otherwise", []compare.Definition{identityOff}, nil, `sets model to "R670", but its identity says "R770"`},
+		{"a definition without an identity field", []compare.Definition{noModel}, nil, "doesn't set model, which is part of its identity"},
 		{
 			"a derived definition with a field the spec doesn't have",
 			[]compare.Definition{derivedExtra},
@@ -414,7 +464,7 @@ func TestJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = `{"type":"dcim.devicetype","identity":{"manufacturer":{"name":"Arista"},"model":"7050"},"outcome":"absent","in_step":false,"netbox_id":null,"differences":0,` +
-		`"collisions":[],"unresolved":[{"field":"manufacturer","type":"dcim.manufacturer","key":{"name":"Arista"},"outcome":null}],` +
+		`"collisions":[],"unresolved":[{"field":"manufacturer","type":"dcim.manufacturer","key":{"name":"Arista"},"netbox_ids":[],"outcome":null}],` +
 		`"columns":[{"kind":"definition","source":"library","path":"device-types/Arista/7050.yaml","derived_from":[],"unmapped":{"interfaces":2}}],` +
 		`"rows":[{"path":["manufacturer"],"cells":[{"value":{"name":"Arista"}}],"differs":false,"managed":true,"derived":false},` +
 		`{"path":["model"],"cells":[{"value":"7050"}],"differs":false,"managed":true,"derived":false},` +

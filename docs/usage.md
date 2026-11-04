@@ -100,7 +100,7 @@ A candidate with no differences is **in step**. Some conflicts you will meet:
 - A device type whose slug alone matches: often a device type renamed in the library, or in NetBox.
 - A manufacturer whose name NetBox lacks, but whose derived slug another has: the library's `NETGEAR` beside NetBox's `Netgear`. Settle it in NetBox, by giving one of them another slug, or in the library.
 
-Values are compared exactly, case and white space included, as NetBox's database compares them: `Dell` and `dell` are different manufacturers, to NetBox's import as to TrueUp. A device type whose manufacturer NetBox lacks is absent, and its JSON says what the manufacturer's own definition found.
+Values are compared exactly, case and white space included, as NetBox's database compares them: `Dell` and `dell` are different manufacturers, to NetBox's import as to TrueUp. A device type whose manufacturer NetBox lacks is absent, and its JSON says what the manufacturer's own definition found. A NetBox that holds two objects with the same name or slug, which its own rules forbid, can't say which one a definition is: the definition is a conflict, and so are the device types of a manufacturer NetBox holds twice.
 
 ### Differences
 
@@ -111,7 +111,7 @@ Only the fields a definition sets are compared. devicetype-library leaves out fi
 ### Choosing what to compare
 
 - `compare devicetype-library` compares only the sources named.
-- `--manufacturer NAME` compares only that manufacturer, by its exact name, and its device types. Repeat it for more. A name no source defines gets a warning. TrueUp then reads only those manufacturers' device types from NetBox.
+- `--manufacturer NAME` compares only that manufacturer, by its exact name, and its device types. Repeat it for more. A name no source defines gets a warning, and the exit code 4, so that a mistyped name doesn't pass for a comparison in step. TrueUp then reads only those manufacturers' device types from NetBox.
 - `--fetch` fetches each source first, as `source fetch` does.
 
 ### Exit codes
@@ -122,7 +122,7 @@ Only the fields a definition sets are compared. devicetype-library leaves out fi
 | 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers or device types, or the database can't be opened or written. |
 | 2 | A name given isn't a configured source. |
 | 3 | The configuration is invalid, or `netbox.url` or the token isn't set. |
-| 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid. The rest is compared and printed as usual. |
+| 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid, or no source defines a manufacturer `--manufacturer` names. The rest is compared and printed as usual. |
 | 5 | Only with `--exit-code`: everything was read, and some definitions are absent, in conflict or differ. |
 
 `--exit-code` suits a scheduled job that should fail when NetBox falls behind the library.
@@ -150,7 +150,7 @@ Each object has:
 - `type` and `identity`, such as `{"manufacturer": {"name": "Dell"}, "model": "PowerEdge R640"}`;
 - `outcome`, `in_step`, `netbox_id` (null unless the identity matches) and `differences`, the count;
 - `collisions`, each with its `rule`, such as `["manufacturer", "slug"]`, and the NetBox object's `netbox_id` and `identity`;
-- `unresolved`: references to objects NetBox lacks, each with its `field`, `type`, `key` and the `outcome` of that object's own definition, or null;
+- `unresolved`: references to objects NetBox lacks, each with its `field`, `type`, `key`, `netbox_ids`, the objects that all have the key when NetBox holds more than one, and the `outcome` of that object's own definition, or null;
 - `columns`: the versions compared, the definition first, with its `source`, `path` (null for a derived manufacturer), `derived_from` and `unmapped`, the component lists not compared yet, then NetBox's object, with its `netbox_id`, when there is one;
 - `rows`: each field any version sets, with its `path`, a list of steps, one `cell` per column, `{"value": ...}` or `{}` where that version doesn't set the field, and `differs`, `managed` and `derived`.
 

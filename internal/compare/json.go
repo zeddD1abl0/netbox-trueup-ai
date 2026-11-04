@@ -36,6 +36,9 @@ type unresolvedJSON struct {
 	Field string                 `json:"field"`
 	Type  string                 `json:"type"`
 	Key   map[string]model.Value `json:"key"`
+	// NetBoxIDs are the NetBox objects that all have the key, when there
+	// are several, which NetBox's uniqueness rules forbid; empty otherwise.
+	NetBoxIDs []int64 `json:"netbox_ids"`
 	// Outcome is null when no one definition of the object was compared.
 	Outcome *Outcome `json:"outcome"`
 }
@@ -80,7 +83,10 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		out.Collisions = append(out.Collisions, collisionJSON{Rule: c.Rule, NetBoxID: c.ID, Identity: c.Identity})
 	}
 	for _, u := range r.Unresolved {
-		j := unresolvedJSON{Field: u.Field, Type: u.Ref.Type, Key: u.Ref.Key}
+		j := unresolvedJSON{Field: u.Field, Type: u.Ref.Type, Key: u.Ref.Key, NetBoxIDs: u.Candidates}
+		if j.NetBoxIDs == nil {
+			j.NetBoxIDs = []int64{}
+		}
 		if u.Outcome != "" {
 			j.Outcome = &u.Outcome
 		}

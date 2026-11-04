@@ -1251,3 +1251,66 @@ func TestOneWaitForAMigration(t *testing.T) {
 		t.Errorf("Open waited %v, longer than its one timeout of 1s", waited)
 	}
 }
+
+func TestRecordComparisonsSeesAFetchItWaitedFor(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	s := openURL(t, config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)))
+	fetch := store.Fetch{
+		Source:    store.SourceConfig{Name: "lib", Kind: "git", URL: "https://git.example.com/lib.git"},
+		FetchedAt: time.Now(), Version: "v1",
+	}
+	if err := s.RecordFetch(t.Context(), fetch); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fetch of v2 being recorded, as RecordFetch does it: the source's row
+	// first, then its snapshot, then its file lists, which can take a while.
+	pool := srv.Pool(t, database)
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	for _, q := range []string{
+		"UPDATE netbox_trueup_ai.sources SET fetched_at = now() WHERE name = 'lib'",
+		"UPDATE netbox_trueup_ai.snapshots SET version = 'v2' WHERE source = 'lib'",
+	} {
+		if _, err := tx.Exec(t.Context(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A comparison of v1 is recorded meanwhile, and waits for the fetch.
+	k := store.ComparisonKey{ObjectType: "dcim.devicetype", Path: "a.yaml", Identity: "{}"}
+	done := make(chan error, 1)
+	go func() {
+		done <- s.RecordComparisons(context.Background(), store.ComparisonRun{
+			Source: "lib", SourceVersion: "v1", ComparedAt: time.Now(),
+			NetBoxURL: "https://netbox.example.com", NetBoxVersion: "4.7.2",
+			Defined:     []store.ComparisonKey{k},
+			Comparisons: []store.Comparison{{ComparisonKey: k, Outcome: "absent", Result: []byte("{}")}},
+		})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		waiting := query(t, pool, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'")
+		if slices.Equal(waiting, []string{"1"}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RecordComparisons never waited for the fetch")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-done; !errors.Is(err, store.ErrSnapshotChanged) || !strings.Contains(err.Error(), `"v2"`) {
+		t.Errorf("RecordComparisons of v1, after a fetch of v2 it waited for = %v, want ErrSnapshotChanged naming v2", err)
+	}
+	if got, err := s.Comparisons(t.Context(), "lib"); err != nil || len(got) != 0 {
+		t.Errorf("Comparisons = %d, %v; want none", len(got), err)
+	}
+}

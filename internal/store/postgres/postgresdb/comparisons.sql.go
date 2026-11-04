@@ -51,6 +51,18 @@ func (q *Queries) DeleteComparisonsExcept(ctx context.Context, arg DeleteCompari
 	return err
 }
 
+const getSnapshotVersion = `-- name: GetSnapshotVersion :one
+SELECT version FROM snapshots WHERE source = $1
+`
+
+// Returns the version of a source's snapshot.
+func (q *Queries) GetSnapshotVersion(ctx context.Context, source string) (string, error) {
+	row := q.db.QueryRow(ctx, getSnapshotVersion, source)
+	var version string
+	err := row.Scan(&version)
+	return version, err
+}
+
 type InsertComparisonsParams struct {
 	Source        string
 	ObjectType    string
@@ -121,20 +133,19 @@ func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListCom
 	return items, nil
 }
 
-const lockSnapshotVersion = `-- name: LockSnapshotVersion :one
-SELECT snapshots.version
-FROM sources
-JOIN snapshots ON snapshots.source = sources.name
-WHERE sources.name = $1
-FOR UPDATE OF sources
+const lockSource = `-- name: LockSource :one
+SELECT name FROM sources WHERE name = $1 FOR UPDATE
 `
 
-// Returns the version of a source's snapshot, and locks the source's row
-// until the transaction ends, so that a fetch or a removal of the source, or
-// another recording of its comparisons, either finishes first or waits.
-func (q *Queries) LockSnapshotVersion(ctx context.Context, name string) (string, error) {
-	row := q.db.QueryRow(ctx, lockSnapshotVersion, name)
-	var version string
-	err := row.Scan(&version)
-	return version, err
+// Locks a source's row until the transaction ends, so that a fetch or a
+// removal of the source, or another recording of its comparisons, either
+// finishes first or waits. Read the snapshot's version afterwards, in a
+// statement of its own: a join here would give the snapshot as it was
+// before a fetch that the lock waited for, since PostgreSQL re-reads only
+// the rows it locks.
+func (q *Queries) LockSource(ctx context.Context, name string) (string, error) {
+	row := q.db.QueryRow(ctx, lockSource, name)
+	var name_2 string
+	err := row.Scan(&name_2)
+	return name_2, err
 }

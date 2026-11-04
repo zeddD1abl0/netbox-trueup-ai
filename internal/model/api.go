@@ -100,14 +100,13 @@ func (f *Field) decodeValue(specs []*Spec, raw json.RawMessage) (Value, error) {
 		return ParseDecimal(string(bytes.TrimSpace(raw)))
 	case KindChoice:
 		// {"value": ..., "label": ...}, as ChoiceField.to_representation
-		// writes it (netbox/api/fields.py).
-		var choice struct {
-			Value json.RawMessage `json:"value"`
-		}
+		// writes it (netbox/api/fields.py). Read through a map, which
+		// matches keys exactly, as everywhere else, unlike a struct.
+		var choice map[string]json.RawMessage
 		if kind != '{' || json.Unmarshal(raw, &choice) != nil {
 			return nil, fmt.Errorf("is %s, not a choice's value and label", describeJSON(kind))
 		}
-		s, err := jsonString(choice.Value, jsonKind(choice.Value))
+		s, err := jsonString(choice["value"], jsonKind(choice["value"]))
 		if err != nil {
 			return nil, fmt.Errorf("its value %w", err)
 		}
