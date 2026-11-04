@@ -322,7 +322,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	// A name nothing defines, such as a typing mistake, leaves the
 	// comparison short of what was asked for, so the run isn't OK.
 	invalid := slices.ContainsFunc(compared, func(sc sourceCompared) bool { return sc.row.InvalidFiles > 0 })
-	for _, name := range manufacturers {
+	for _, name := range slices.Compact(slices.Sorted(slices.Values(manufacturers))) {
 		if !named[name] {
 			a.logger.Warn("no source read defines the manufacturer", "manufacturer", name)
 			msg := "no source read defines the manufacturer " + strconv.Quote(name)
@@ -367,7 +367,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		mine := results[:len(sc.chosen)]
 		results = results[len(sc.chosen):]
 		for i, r := range mine {
-			if r.Type != sc.chosen[i].Object.Type || r.Columns[0].Source != sc.row.Name {
+			if d := sc.chosen[i]; r.Type != d.Object.Type || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
 				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of source %s is of another definition", i, sc.row.Name)
 			}
 		}
@@ -403,6 +403,9 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		result.Sources = append(result.Sources, *sc.row)
 		result.Objects = append(result.Objects, written...)
 		result.results = append(result.results, mine...)
+	}
+	if len(results) > 0 {
+		return compareJSON{}, fmt.Errorf("compare with NetBox: %d results of no definition", len(results))
 	}
 	return result, nil
 }

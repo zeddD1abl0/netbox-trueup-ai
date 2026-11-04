@@ -409,7 +409,7 @@ func TestCompareManufacturers(t *testing.T) {
 
 	// A name no source defines, perhaps mistyped, leaves the comparison
 	// short of what was asked for.
-	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--exit-code", "--manufacturer", "Huawei", "--manufacturer", "Nobody")
+	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--exit-code", "--manufacturer", "Huawei", "--manufacturer", "Nobody", "--manufacturer", "Nobody")
 	if r.code != exitCompareProblems || !strings.Contains(r.stderr, `Error: no source read defines the manufacturer "Nobody"`) {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
 	}

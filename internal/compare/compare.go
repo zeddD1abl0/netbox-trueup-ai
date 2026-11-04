@@ -535,6 +535,13 @@ func (ix *index) find(ref model.Reference) ([]int64, error) {
 		if err := checkKind(f, v); err != nil {
 			return nil, fmt.Errorf("refers to a %s whose %s %w", ref.Type, name, err)
 		}
+		// NetBox's import finds what a reference names as it is written,
+		// but stores names normalized, so a key it would store otherwise,
+		// such as a name with white space at an end, names nothing NetBox
+		// could hold, though the definition of what it names matches.
+		if !model.Equal(f.Normalize(v), v) {
+			return nil, fmt.Errorf("refers to a %s by a %s, %s, that NetBox would store otherwise", ref.Type, name, v)
+		}
 	}
 	key, ok := ruleKey(target.Unique[iu], ref.Key)
 	if !ok {

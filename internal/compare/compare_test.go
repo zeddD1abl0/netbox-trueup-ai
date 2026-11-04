@@ -430,6 +430,12 @@ func TestCompareFails(t *testing.T) {
 		{"a definition with a value of another kind", []compare.Definition{defWith("u_height", model.Integer(1))}, nil, "u_height is a integer, not a decimal"},
 		{"a definition referring by ID", []compare.Definition{defWith("manufacturer", model.Reference{Type: "dcim.manufacturer", ID: 999})}, nil, "manufacturer refers to a dcim.manufacturer other than by its natural key"},
 		{"a definition referring by nothing", []compare.Definition{defWith("manufacturer", model.Reference{Type: "dcim.manufacturer"})}, nil, "other than by its natural key"},
+		{
+			"a definition referring by a name NetBox would trim",
+			[]compare.Definition{defWith("manufacturer", manufacturerRef("Dell "))},
+			nil,
+			`manufacturer refers to a dcim.manufacturer by a name, "Dell ", that NetBox would store otherwise`,
+		},
 		{"a definition referring by another key", []compare.Definition{defWith("manufacturer", model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"slug": model.String("dell")}})}, nil, "refers to a dcim.manufacturer without its name"},
 		{"a definition whose identity says otherwise", []compare.Definition{identityOff}, nil, `sets model to "R670", but its identity says "R770"`},
 		{"a definition without an identity field", []compare.Definition{noModel}, nil, "doesn't set model, which is part of its identity"},
