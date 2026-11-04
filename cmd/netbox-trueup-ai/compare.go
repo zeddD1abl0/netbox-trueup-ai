@@ -385,7 +385,10 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			if !errors.Is(err, store.ErrSnapshotChanged) {
 				return compareJSON{}, err
 			}
-			a.failSource(sc.row, fmt.Sprintf("its comparisons weren't recorded: %v; run 'netbox-trueup-ai source fetch', or use --fetch, and compare again", err))
+			// No quote before the error, which can hold JSON, so that the
+			// message can't read as the error quoted (CodeQL's
+			// go/unsafe-quoting).
+			a.failSource(sc.row, fmt.Sprintf("its comparisons were not recorded: %v; run 'netbox-trueup-ai source fetch', or use --fetch, and compare again", err))
 		}
 		for _, r := range mine {
 			switch {

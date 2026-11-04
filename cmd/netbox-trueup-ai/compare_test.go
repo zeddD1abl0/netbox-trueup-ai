@@ -469,7 +469,7 @@ func TestCompareRecordsOnlyTheVersionCompared(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
 	}
 	got := decodeCompare(t, r.stdout)
-	if src := got.Sources[0]; src.OK || src.Error == nil || !strings.Contains(*src.Error, "its comparisons weren't recorded") ||
+	if src := got.Sources[0]; src.OK || src.Error == nil || !strings.Contains(*src.Error, "its comparisons were not recorded") ||
 		!strings.Contains(*src.Error, `the snapshot is of version "abc"`) || len(got.Objects) != 6 {
 		t.Errorf("the source = %+v, with %d objects", src, len(got.Objects))
 	}
