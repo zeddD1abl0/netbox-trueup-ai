@@ -106,8 +106,9 @@ type Unresolved struct {
 	// sorted, when NetBox has more than one, which its uniqueness rules
 	// forbid. The definition is then a conflict.
 	Candidates []int64
-	// Outcome is that of the definition of the object referred to, among
-	// those compared at the same time, or "" if there isn't exactly one.
+	// Outcome is that of the same source's definition of the object
+	// referred to, compared at the same time, or "" if it doesn't have
+	// exactly one.
 	Outcome Outcome
 }
 
@@ -569,20 +570,22 @@ func differ(cells []model.Value) bool {
 	return false
 }
 
-// fillOutcomes gives each unresolved reference the outcome of the
-// definition of the object it refers to, where exactly one of the results
-// is of that object, and sorts collisions.
+// fillOutcomes gives each unresolved reference the outcome of the same
+// source's definition of the object it refers to, where exactly one of the
+// results is, and sorts collisions.
 func fillOutcomes(results []Result) {
+	// By source, so that what a result records doesn't depend on which
+	// other sources were compared with it.
 	outcomes := map[string][]Outcome{}
 	for _, r := range results {
-		k := identityKey(r.Type, r.Identity)
+		k := r.Columns[0].Source + "\x00" + identityKey(r.Type, r.Identity)
 		outcomes[k] = append(outcomes[k], r.Outcome)
 	}
 	for i := range results {
 		r := &results[i]
 		for j := range r.Unresolved {
 			u := &r.Unresolved[j]
-			if o := outcomes[identityKey(u.Ref.Type, u.Ref.Key)]; len(o) == 1 {
+			if o := outcomes[r.Columns[0].Source+"\x00"+identityKey(u.Ref.Type, u.Ref.Key)]; len(o) == 1 {
 				u.Outcome = o[0]
 			}
 		}

@@ -115,21 +115,28 @@ func testPartialComparisons(t *testing.T, s store.Store) {
 		comparison(dell, "candidate", 3), comparison(a, "absent", 0), comparison(b, "absent", 0), comparison(c, "absent", 0))
 	recordComparisons(t, s, first)
 
-	// b.yaml failed to read, and the manufacturer it alone named wasn't
-	// derived, so neither is defined; the run says it may have left them
-	// out, and they keep what was recorded. a.yaml is compared afresh.
+	// b.yaml failed to read, so it defines nothing, and Dell, which only
+	// it named, isn't derived: b.yaml keeps what was recorded of it, and
+	// Dell, which no file holds now, doesn't. a.yaml is compared afresh.
 	partial := run("lib", "v1", t0.Add(time.Second), []store.ComparisonKey{a, c}, comparison(a, "candidate", 10))
-	partial.Partial = true
+	partial.KeptPaths = []string{"b.yaml"}
 	recordComparisons(t, s, partial)
 	checkComparisons(t, s, "lib", slicesConcat(
 		recorded(partial, comparison(a, "candidate", 10)),
-		recorded(first, comparison(b, "absent", 0), comparison(c, "absent", 0), comparison(dell, "candidate", 3)),
+		recorded(first, comparison(b, "absent", 0), comparison(c, "absent", 0)),
 	))
 
-	// The same run, whole, removes them.
-	partial.Partial, partial.ComparedAt = false, t0.Add(2*time.Second)
+	// Once b.yaml reads again, or goes, it is no longer kept.
+	partial.KeptPaths, partial.ComparedAt = nil, t0.Add(2*time.Second)
 	recordComparisons(t, s, partial)
 	checkComparisons(t, s, "lib", slicesConcat(recorded(partial, comparison(a, "candidate", 10)), recorded(first, comparison(c, "absent", 0))))
+
+	// A run can't both compare a file and keep it.
+	contradiction := run("lib", "v1", t0.Add(3*time.Second), []store.ComparisonKey{a}, comparison(a, "absent", 0))
+	contradiction.KeptPaths = []string{"a.yaml"}
+	if err := s.RecordComparisons(t.Context(), contradiction); err == nil {
+		t.Error("RecordComparisons of a file it keeps succeeded")
+	}
 }
 
 func slicesConcat(lists ...[]store.RecordedComparison) []store.RecordedComparison {

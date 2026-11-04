@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -227,6 +228,10 @@ type sourceCompared struct {
 	defined    []store.ComparisonKey
 	chosen     []compare.Definition
 	chosenKeys []store.ComparisonKey
+	// unread are the files that failed to read: they define nothing this
+	// time, but are still there, so their last comparisons stay until they
+	// read again, or go.
+	unread []string
 }
 
 // runCompare opens the database, connects to NetBox, fetches the sources if
@@ -299,6 +304,11 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			row.Files, row.InvalidFiles, row.Definitions = res.Files, res.Invalid, len(res.Definitions)
 			row.OK = res.Invalid == 0
 			row.Problems = problemsOf(res.Problems)
+			for _, p := range res.Problems {
+				if p.Severity == format.Error && p.Path != "" && !slices.Contains(sc.unread, p.Path) {
+					sc.unread = append(sc.unread, p.Path)
+				}
+			}
 			for _, d := range res.Definitions {
 				k, err := comparisonKey(d)
 				if err != nil {
@@ -320,10 +330,15 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	}
 	// A name nothing defines, such as a typing mistake, leaves the
 	// comparison short of what was asked for, so the run isn't OK.
+	invalid := slices.ContainsFunc(compared, func(sc sourceCompared) bool { return sc.row.InvalidFiles > 0 })
 	for _, name := range manufacturers {
 		if !named[name] {
 			a.logger.Warn("no source read defines the manufacturer", "manufacturer", name)
-			result.Warnings = append(result.Warnings, warningJSON{Message: "no source read defines the manufacturer " + strconv.Quote(name)})
+			msg := "no source read defines the manufacturer " + strconv.Quote(name)
+			if invalid {
+				msg += ", in the files that read: some files are invalid, and may"
+			}
+			result.Warnings = append(result.Warnings, warningJSON{Message: msg})
 			result.OK = false
 			result.unknown = append(result.unknown, name)
 		}
@@ -408,10 +423,7 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, r
 		NetBoxURL:     run.NetBox.URL,
 		NetBoxVersion: run.NetBox.Version,
 		Defined:       sc.defined,
-		// A file that failed to read defines nothing this time, but is
-		// still there: its last comparison stays until it reads again, or
-		// goes.
-		Partial: sc.row.InvalidFiles > 0,
+		KeptPaths:     sc.unread,
 	}
 	for i, r := range results {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{

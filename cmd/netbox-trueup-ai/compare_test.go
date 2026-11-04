@@ -636,8 +636,11 @@ func TestCompareKeepsTheComparisonOfAnInvalidFile(t *testing.T) {
 	}
 	before := recordedComparisons(t, dataDir, "lib")
 
-	// The next version breaks GS105's file, which then defines nothing.
-	broken, pool, _ := libraryRepo(t, map[string]string{"device-types/Netgear/GS105.yaml": "manufacturer: Netgear\nmodel: [GS105\n"})
+	// The next version breaks GS105's file, which then defines nothing, and
+	// removes Huawei's only device type.
+	files := libraryFiles(t, map[string]string{"device-types/Netgear/GS105.yaml": "manufacturer: Netgear\nmodel: [GS105\n"})
+	delete(files, "device-types/Huawei/NE8000-X8.yaml")
+	broken, pool, _ := gitRepoWith(t, files)
 	env = slices.DeleteFunc(slices.Clone(env), func(e string) bool { return strings.HasPrefix(e, "TRUEUP_SOURCES=") })
 	env = append(env, `TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"`+broken+`","format":"devicetype-library"}]`)
 	r := runCLIApp(t, nil, trust(pool), env, "compare", "--fetch")
@@ -649,7 +652,12 @@ func TestCompareKeepsTheComparisonOfAnInvalidFile(t *testing.T) {
 	if c, ok := after[k]; !ok || !c.ComparedAt.Equal(before[k].ComparedAt) {
 		t.Errorf("the comparison of %s, which no longer reads: %+v, want it kept as it was", k, c)
 	}
-	if c := after["device-types/Huawei/NE8000-X8.yaml"]; c.ComparedAt.Equal(before["device-types/Huawei/NE8000-X8.yaml"].ComparedAt) {
+	for _, gone := range []string{"device-types/Huawei/NE8000-X8.yaml", `{"name":"Huawei"}`} {
+		if _, ok := after[gone]; ok {
+			t.Errorf("the comparison of %s, which the source no longer holds, is kept", gone)
+		}
+	}
+	if c := after["device-types/Netgear/GS510TLP.yml"]; c.ComparedAt.Equal(before["device-types/Netgear/GS510TLP.yml"].ComparedAt) {
 		t.Error("the comparison of a file that still reads wasn't recorded again")
 	}
 }

@@ -3,6 +3,7 @@ package compare_test
 import (
 	"encoding/json"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -306,6 +307,15 @@ func TestUnresolvedReferenceGetsItsDefinitionsOutcome(t *testing.T) {
 	want := []string{"manufacturer:conflict", "manufacturer:absent", "manufacturer:"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("unresolved (-want +got)\n%s", diff)
+	}
+
+	// Another source that derives the same manufacturer changes nothing
+	// for this one's device types.
+	other := manufacturer("Arista", "arista")
+	other.Source = "other"
+	results = run(t, []compare.Definition{manufacturer("Arista", "arista"), other, deviceType("Arista", "7050", "7050", nil)}, nil)
+	if got := summarize(results[2]).Unresolved; !slices.Equal(got, []string{"manufacturer:absent"}) {
+		t.Errorf("with another source defining the manufacturer too, unresolved = %v", got)
 	}
 }
 
