@@ -408,6 +408,10 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, r
 		NetBoxURL:     run.NetBox.URL,
 		NetBoxVersion: run.NetBox.Version,
 		Defined:       sc.defined,
+		// A file that failed to read defines nothing this time, but is
+		// still there: its last comparison stays until it reads again, or
+		// goes.
+		Partial: sc.row.InvalidFiles > 0,
 	}
 	for i, r := range results {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{

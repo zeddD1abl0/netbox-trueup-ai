@@ -52,6 +52,7 @@ func Run(t *testing.T, open Open) {
 		{"a large file list", testLarge},
 		{"comparisons", testComparisons},
 		{"comparisons need the version compared", testComparisonsNeedTheSnapshot},
+		{"a partial run keeps the comparisons it doesn't define", testPartialComparisons},
 		{"comparisons go with their source", testComparisonsRemoved},
 		{"invalid comparisons record nothing", testInvalidComparisons},
 		{"comparisons sort as bytes", testComparisonsSorting},

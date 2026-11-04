@@ -626,3 +626,30 @@ func TestCompareAManufacturerNetBoxHoldsTwice(t *testing.T) {
 		}
 	}
 }
+
+func TestCompareKeepsTheComparisonOfAnInvalidFile(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	env, dataDir, _, configure := compareEnv(t, nb)
+	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
+		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+	before := recordedComparisons(t, dataDir, "lib")
+
+	// The next version breaks GS105's file, which then defines nothing.
+	broken, pool, _ := libraryRepo(t, map[string]string{"device-types/Netgear/GS105.yaml": "manufacturer: Netgear\nmodel: [GS105\n"})
+	env = slices.DeleteFunc(slices.Clone(env), func(e string) bool { return strings.HasPrefix(e, "TRUEUP_SOURCES=") })
+	env = append(env, `TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"`+broken+`","format":"devicetype-library"}]`)
+	r := runCLIApp(t, nil, trust(pool), env, "compare", "--fetch")
+	if r.code != exitCompareProblems || !strings.Contains(r.stdout, "Invalid files:\n  lib: device-types/Netgear/GS105.yaml") {
+		t.Fatalf("compare --fetch: exit code %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+	}
+	after := recordedComparisons(t, dataDir, "lib")
+	k := "device-types/Netgear/GS105.yaml"
+	if c, ok := after[k]; !ok || !c.ComparedAt.Equal(before[k].ComparedAt) {
+		t.Errorf("the comparison of %s, which no longer reads: %+v, want it kept as it was", k, c)
+	}
+	if c := after["device-types/Huawei/NE8000-X8.yaml"]; c.ComparedAt.Equal(before["device-types/Huawei/NE8000-X8.yaml"].ComparedAt) {
+		t.Error("the comparison of a file that still reads wasn't recorded again")
+	}
+}

@@ -108,6 +108,30 @@ func testComparisons(t *testing.T, s store.Store) {
 	checkComparisons(t, s, "other", recorded(r5, comparison(a, "absent", 0)))
 }
 
+func testPartialComparisons(t *testing.T, s store.Store) {
+	record(t, s, success("lib", "v1", t0, "a.yaml", "b.yaml", "c.yaml"))
+	dell, a, b, c := key("", "Dell"), key("a.yaml", "A"), key("b.yaml", "B"), key("c.yaml", "C")
+	first := run("lib", "v1", t0, []store.ComparisonKey{dell, a, b, c},
+		comparison(dell, "candidate", 3), comparison(a, "absent", 0), comparison(b, "absent", 0), comparison(c, "absent", 0))
+	recordComparisons(t, s, first)
+
+	// b.yaml failed to read, and the manufacturer it alone named wasn't
+	// derived, so neither is defined; the run says it may have left them
+	// out, and they keep what was recorded. a.yaml is compared afresh.
+	partial := run("lib", "v1", t0.Add(time.Second), []store.ComparisonKey{a, c}, comparison(a, "candidate", 10))
+	partial.Partial = true
+	recordComparisons(t, s, partial)
+	checkComparisons(t, s, "lib", slicesConcat(
+		recorded(partial, comparison(a, "candidate", 10)),
+		recorded(first, comparison(b, "absent", 0), comparison(c, "absent", 0), comparison(dell, "candidate", 3)),
+	))
+
+	// The same run, whole, removes them.
+	partial.Partial, partial.ComparedAt = false, t0.Add(2*time.Second)
+	recordComparisons(t, s, partial)
+	checkComparisons(t, s, "lib", slicesConcat(recorded(partial, comparison(a, "candidate", 10)), recorded(first, comparison(c, "absent", 0))))
+}
+
 func slicesConcat(lists ...[]store.RecordedComparison) []store.RecordedComparison {
 	var out []store.RecordedComparison
 	for _, l := range lists {

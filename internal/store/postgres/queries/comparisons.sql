@@ -23,6 +23,17 @@ AND (object_type, path, identity) NOT IN (
         unnest(sqlc.arg(identities)::text[])
 );
 
+-- name: DeleteComparisonsOf :exec
+-- Deletes the comparisons of the definitions given.
+DELETE FROM comparisons
+WHERE source = sqlc.arg(source)
+AND (object_type, path, identity) IN (
+    SELECT
+        unnest(sqlc.arg(object_types)::text[]),
+        unnest(sqlc.arg(paths)::text[]),
+        unnest(sqlc.arg(identities)::text[])
+);
+
 -- name: DeleteComparisons :exec
 -- Deletes every comparison of a source's definitions.
 DELETE FROM comparisons WHERE source = $1;

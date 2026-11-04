@@ -53,8 +53,13 @@ type ComparisonRun struct {
 	NetBoxURL, NetBoxVersion string
 	// Defined lists every definition the source holds at SourceVersion,
 	// compared or not. Comparisons of definitions it doesn't list are
-	// removed, and those it lists but Comparisons doesn't are kept.
+	// removed, unless Partial is set, and those it lists but Comparisons
+	// doesn't are kept.
 	Defined []ComparisonKey
+	// Partial says that Defined may leave out definitions the source still
+	// holds, such as those of files that failed to read, so the
+	// comparisons of definitions it doesn't list are kept too.
+	Partial bool
 	// Comparisons are the comparisons made, which replace those recorded
 	// before.
 	Comparisons []Comparison
@@ -136,8 +141,8 @@ func (k ComparisonKey) String() string {
 }
 
 // Kept returns the keys of the definitions whose recorded comparisons a run
-// keeps as they are: those defined but not compared. Every other comparison
-// of the source is replaced or removed.
+// that isn't Partial keeps as they are: those defined but not compared.
+// Every other comparison of the source is replaced or removed.
 func (r ComparisonRun) Kept() map[ComparisonKey]bool {
 	kept := make(map[ComparisonKey]bool, len(r.Defined))
 	for _, k := range r.Defined {
@@ -147,4 +152,14 @@ func (r ComparisonRun) Kept() map[ComparisonKey]bool {
 		delete(kept, c.ComparisonKey)
 	}
 	return kept
+}
+
+// Compared returns the keys of the definitions the run compared, whose
+// recorded comparisons it replaces.
+func (r ComparisonRun) Compared() []ComparisonKey {
+	keys := make([]ComparisonKey, len(r.Comparisons))
+	for i, c := range r.Comparisons {
+		keys[i] = c.ComparisonKey
+	}
+	return keys
 }

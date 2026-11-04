@@ -51,6 +51,35 @@ func (q *Queries) DeleteComparisonsExcept(ctx context.Context, arg DeleteCompari
 	return err
 }
 
+const deleteComparisonsOf = `-- name: DeleteComparisonsOf :exec
+DELETE FROM comparisons
+WHERE source = $1
+AND (object_type, path, identity) IN (
+    SELECT
+        unnest($2::text[]),
+        unnest($3::text[]),
+        unnest($4::text[])
+)
+`
+
+type DeleteComparisonsOfParams struct {
+	Source      string
+	ObjectTypes []string
+	Paths       []string
+	Identities  []string
+}
+
+// Deletes the comparisons of the definitions given.
+func (q *Queries) DeleteComparisonsOf(ctx context.Context, arg DeleteComparisonsOfParams) error {
+	_, err := q.db.Exec(ctx, deleteComparisonsOf,
+		arg.Source,
+		arg.ObjectTypes,
+		arg.Paths,
+		arg.Identities,
+	)
+	return err
+}
+
 const getSnapshotVersion = `-- name: GetSnapshotVersion :one
 SELECT version FROM snapshots WHERE source = $1
 `

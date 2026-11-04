@@ -47,7 +47,7 @@ type Store interface {
 	// definitions as their latest, all of them or nothing: it replaces the
 	// comparisons of the definitions compared, keeps those of the others
 	// the source defines, and removes those of definitions it no longer
-	// defines. It returns an error wrapping ErrSnapshotChanged, recording
+	// defines, unless the run is Partial. It returns an error wrapping ErrSnapshotChanged, recording
 	// nothing, if the source's recorded snapshot isn't the version
 	// compared. Recordings and fetches of one source take turns.
 	RecordComparisons(ctx context.Context, run ComparisonRun) error
