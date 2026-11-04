@@ -40,9 +40,20 @@ type Store interface {
 	// an error wrapping ErrNotFound if the source has none.
 	Snapshot(ctx context.Context, source string) (Snapshot, error)
 	// RemoveSources removes what is recorded about every source not named
-	// in keep, snapshots included, and returns the names it removed,
-	// sorted.
+	// in keep, snapshots and comparisons included, and returns the names it
+	// removed, sorted.
 	RemoveSources(ctx context.Context, keep []string) ([]string, error)
+	// RecordComparisons records a run's comparisons of one source's
+	// definitions as their latest, all of them or nothing: it replaces the
+	// comparisons of the definitions compared, keeps those of the others
+	// the source defines, and removes those of definitions it no longer
+	// defines. It returns an error wrapping ErrSnapshotChanged, recording
+	// nothing, if the source's recorded snapshot isn't the version
+	// compared. Recordings and fetches of one source take turns.
+	RecordComparisons(ctx context.Context, run ComparisonRun) error
+	// Comparisons returns the comparisons recorded of a source's
+	// definitions, sorted by object type, path and identity.
+	Comparisons(ctx context.Context, source string) ([]RecordedComparison, error)
 	// Close closes the database.
 	Close() error
 }

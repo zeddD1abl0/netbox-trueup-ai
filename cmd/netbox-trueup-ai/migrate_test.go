@@ -28,7 +28,7 @@ func TestMigrateText(t *testing.T) {
 	if r.code != exitOK {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
-	want := "Database:  SQLite, " + path + "\nSchema:    version 1, was 0\nApplied:   00001_sources.sql\n"
+	want := "Database:  SQLite, " + path + "\nSchema:    version 2, was 0\nApplied:   00001_sources.sql\n           00002_comparisons.sql\n"
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("migrate (-want +got):\n%s", diff)
 	}
@@ -37,7 +37,7 @@ func TestMigrateText(t *testing.T) {
 	}
 
 	r = runCLI(t, nil, env, "migrate")
-	want = "Database:  SQLite, " + path + "\nSchema:    version 1, up to date\n"
+	want = "Database:  SQLite, " + path + "\nSchema:    version 2, up to date\n"
 	if r.code != exitOK || r.stdout != want {
 		t.Errorf("migrate again: exit code %d, stdout %q, want %q", r.code, r.stdout, want)
 	}
@@ -49,8 +49,8 @@ func TestMigrateJSON(t *testing.T) {
 	env := []string{"TRUEUP_DATA_DIR=" + t.TempDir(), "TRUEUP_DATABASE_URL=" + sqliteURL(path)}
 
 	for i, want := range []migrateJSON{
-		{Engine: "sqlite", Location: path, VersionBefore: 0, Version: 1, Applied: []migrationJSON{{Version: 1, Name: "00001_sources.sql"}}},
-		{Engine: "sqlite", Location: path, VersionBefore: 1, Version: 1, Applied: []migrationJSON{}},
+		{Engine: "sqlite", Location: path, VersionBefore: 0, Version: 2, Applied: []migrationJSON{{Version: 1, Name: "00001_sources.sql"}, {Version: 2, Name: "00002_comparisons.sql"}}},
+		{Engine: "sqlite", Location: path, VersionBefore: 2, Version: 2, Applied: []migrationJSON{}},
 	} {
 		r := runCLI(t, nil, env, "migrate", "-o", "json")
 		if r.code != exitOK {
@@ -84,7 +84,7 @@ func TestMigrateFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.ExecContext(t.Context(), "INSERT INTO goose_db_version (version_id, is_applied) VALUES (2, 1)")
+	_, err = db.ExecContext(t.Context(), "INSERT INTO goose_db_version (version_id, is_applied) VALUES (3, 1)")
 	if closeErr := db.Close(); err != nil || closeErr != nil {
 		t.Fatal(err, closeErr)
 	}
@@ -115,7 +115,7 @@ func TestMigrateFailures(t *testing.T) {
 		},
 		{
 			name: "a schema newer than this release", env: []string{"TRUEUP_DATA_DIR=" + newerDir},
-			wantCode: exitFailure, wantStderr: "Error: open the database: the database's schema is at version 2, newer than this release of TrueUp knows (1): use a newer release\n",
+			wantCode: exitFailure, wantStderr: "Error: open the database: the database's schema is at version 3, newer than this release of TrueUp knows (2): use a newer release\n",
 		},
 		{
 			name: "a data directory that can't hold the database", env: []string{"TRUEUP_DATA_DIR=" + notADir},

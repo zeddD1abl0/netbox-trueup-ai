@@ -184,7 +184,7 @@ Skipped files (--output json lists them all):
 
 ## Listing definitions
 
-To list the definitions in every configured source, or in those named, run:
+[usage.md](usage.md) walks through listing and comparing definitions. To list the definitions in every configured source, or in those named, run:
 
 ```sh
 netbox-trueup-ai list [source...]
@@ -215,9 +215,13 @@ Warnings:
 - **`--output json`** gives every definition with its type, identity, path or the files it was derived from, fields, derived fields, metadata, such as `front_image`, and the lists of components it holds but TrueUp doesn't read yet, with each problem's severity, path, line, column, field and reason.
 - **Exit codes.** 0 when every source was read and every file is valid, warnings or not. 4 when a source couldn't be read, such as one never fetched, or some files are invalid, with the result printed as usual. 2 when a name given isn't a configured source, 3 for a configuration problem or no sources, and 1 when the command couldn't run ([ADR 0018](adr/0018-cli-conventions.md)).
 
+## Comparing with NetBox
+
+`netbox-trueup-ai compare [source...]` compares each source's definitions, from the version last fetched, with what NetBox holds, and records each comparison in [the database](#the-database). It needs the NetBox settings of [Connecting to NetBox](#connecting-to-netbox), and a token that can read manufacturers and device types. Its outcomes, output, JSON and exit codes are described in [usage.md](usage.md#compare-with-netbox).
+
 ## The database
 
-TrueUp records what it learns, such as each source's latest fetch, in a database: SQLite on a single host, which needs no setup, or PostgreSQL, which processes on several hosts can share. `database.url` chooses: unset, or a `sqlite:` URL, for SQLite, and a `postgres:` or `postgresql:` URL for PostgreSQL ([ADR 0011](adr/0011-store-state-with-sqlc-and-goose.md)). Either way, TrueUp creates what it needs, migrates it as [Migrations](#migrations) says, and refuses a database that holds another application's tables in the place of TrueUp's, before it changes anything.
+TrueUp records what it learns, such as each source's latest fetch and the latest comparison of each of its definitions, in a database: SQLite on a single host, which needs no setup, or PostgreSQL, which processes on several hosts can share. `database.url` chooses: unset, or a `sqlite:` URL, for SQLite, and a `postgres:` or `postgresql:` URL for PostgreSQL ([ADR 0011](adr/0011-store-state-with-sqlc-and-goose.md)). Either way, TrueUp creates what it needs, migrates it as [Migrations](#migrations) says, and refuses a database that holds another application's tables in the place of TrueUp's, before it changes anything.
 
 ### SQLite
 

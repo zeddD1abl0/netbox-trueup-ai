@@ -204,7 +204,7 @@ func TestListFailures(t *testing.T) {
 		if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
 			t.Fatal(err)
 		}
-		if s := got.Sources[0]; s.Error == nil || !strings.Contains(*s.Error, "hasn't been fetched: run 'netbox-trueup-ai source fetch', or list with --fetch") || s.Version != nil {
+		if s := got.Sources[0]; s.Error == nil || !strings.Contains(*s.Error, "hasn't been fetched: run 'netbox-trueup-ai source fetch', or use --fetch") || s.Version != nil {
 			t.Errorf("list -o json = %+v", s)
 		}
 		if !strings.Contains(r.stdout, `"version": null`) || !strings.Contains(r.stdout, `"definitions": []`) {

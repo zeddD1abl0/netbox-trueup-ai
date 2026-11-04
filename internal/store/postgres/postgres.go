@@ -345,8 +345,8 @@ func (s *Store) Snapshot(ctx context.Context, source string) (store.Snapshot, er
 	return snap, nil
 }
 
-// RemoveSources removes every source not named in keep, and its snapshot,
-// in one transaction. Foreign keys don't cascade, so it deletes each
+// RemoveSources removes every source not named in keep, its snapshot and
+// its comparisons, in one transaction. Foreign keys don't cascade, so it deletes each
 // source's rows from the bottom up, having locked the sources' rows first.
 func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, error) {
 	var removed []string
@@ -357,7 +357,7 @@ func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, err
 		}
 		for _, name := range names {
 			for _, del := range []func(context.Context, string) error{
-				q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,
+				q.DeleteComparisons, q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,
 			} {
 				if err := del(ctx, name); err != nil {
 					return fmt.Errorf("source %s: %w", name, err)

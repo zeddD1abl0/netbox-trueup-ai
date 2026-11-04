@@ -1,5 +1,7 @@
 package model
 
+import "slices"
+
 // Spec describes one NetBox object type: where NetBox's REST API keeps it,
 // what it depends on, how its objects are told apart, its fields and NetBox's
 // rules for them, its child collections, and the NetBox source it follows
@@ -229,6 +231,22 @@ func (s *Spec) Field(name string) *Field {
 	for i := range s.Fields {
 		if s.Fields[i].Name == name {
 			return &s.Fields[i]
+		}
+	}
+	return nil
+}
+
+// IdentityRule returns the index in Unique of the rule that is the spec's
+// identity, or -1 if none is, which Check reports.
+func (s *Spec) IdentityRule() int {
+	return slices.IndexFunc(s.Unique, func(u Unique) bool { return sameNames(u.Fields, s.Identity) })
+}
+
+// SpecOf returns the spec of object type typ among specs, or nil.
+func SpecOf(specs []*Spec, typ string) *Spec {
+	for _, s := range specs {
+		if s.Type == typ {
+			return s
 		}
 	}
 	return nil

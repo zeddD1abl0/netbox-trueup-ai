@@ -115,16 +115,34 @@ func (c *Client) list(ctx context.Context, endpoint string, query url.Values, fn
 
 // objectID returns the id of an object in a listing.
 func objectID(raw json.RawMessage) (int64, error) {
-	var obj struct {
-		ID *int64 `json:"id"`
-	}
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	id, err := idOf(raw)
+	if err != nil {
 		return 0, fmt.Errorf("an object in the answer can't be read: %w", err)
 	}
-	if obj.ID == nil || *obj.ID <= 0 {
+	if id == nil || *id <= 0 {
 		return 0, errors.New("NetBox sent an object without a positive id")
 	}
-	return *obj.ID, nil
+	return *id, nil
+}
+
+// idOf returns an object's id, or nil if it has none. It reads the object
+// through a map, so that only the key id counts, exactly, as it does when
+// the object model reads the object (model's Spec.DecodeAPI): a struct
+// would take ID or Id too.
+func idOf(raw json.RawMessage) (*int64, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+	v, ok := obj["id"]
+	if !ok || string(v) == "null" {
+		return nil, nil
+	}
+	var id int64
+	if err := json.Unmarshal(v, &id); err != nil {
+		return nil, err
+	}
+	return &id, nil
 }
 
 // parentField matches the names of fields that refer to a parent, such as
@@ -225,13 +243,11 @@ func parentID(raw json.RawMessage, field string) (int64, error) {
 	if !ok || string(ref) == "null" {
 		return 0, fmt.Errorf("NetBox sent an object without %s: if the query sets fields or omit, keep %s", field, field)
 	}
-	var nested struct {
-		ID *int64 `json:"id"`
-	}
-	if err := json.Unmarshal(ref, &nested); err != nil || nested.ID == nil {
+	id, err := idOf(ref)
+	if err != nil || id == nil {
 		return 0, fmt.Errorf("NetBox sent an object whose %s has no id", field)
 	}
-	return *nested.ID, nil
+	return *id, nil
 }
 
 // checkListing checks a listing's arguments, which come from TrueUp's own

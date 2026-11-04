@@ -9,6 +9,50 @@ import (
 	"context"
 )
 
+// iteratorForInsertComparisons implements pgx.CopyFromSource.
+type iteratorForInsertComparisons struct {
+	rows                 []InsertComparisonsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForInsertComparisons) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForInsertComparisons) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].Source,
+		r.rows[0].ObjectType,
+		r.rows[0].Path,
+		r.rows[0].Identity,
+		r.rows[0].SourceVersion,
+		r.rows[0].ComparedAt,
+		r.rows[0].NetboxUrl,
+		r.rows[0].NetboxVersion,
+		r.rows[0].Outcome,
+		r.rows[0].NetboxID,
+		r.rows[0].Differences,
+		r.rows[0].Result,
+	}, nil
+}
+
+func (r iteratorForInsertComparisons) Err() error {
+	return nil
+}
+
+// Adds comparisons, all in one COPY.
+func (q *Queries) InsertComparisons(ctx context.Context, arg []InsertComparisonsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"comparisons"}, []string{"source", "object_type", "path", "identity", "source_version", "compared_at", "netbox_url", "netbox_version", "outcome", "netbox_id", "differences", "result"}, &iteratorForInsertComparisons{rows: arg})
+}
+
 // iteratorForInsertSnapshotFiles implements pgx.CopyFromSource.
 type iteratorForInsertSnapshotFiles struct {
 	rows                 []InsertSnapshotFilesParams

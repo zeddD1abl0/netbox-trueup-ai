@@ -8,6 +8,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Comparison struct {
+	Source        string
+	ObjectType    string
+	Path          string
+	Identity      string
+	SourceVersion string
+	ComparedAt    pgtype.Timestamptz
+	NetboxUrl     string
+	NetboxVersion string
+	Outcome       string
+	NetboxID      pgtype.Int8
+	Differences   int64
+	Result        string
+}
+
 type Snapshot struct {
 	Source    string
 	Url       string

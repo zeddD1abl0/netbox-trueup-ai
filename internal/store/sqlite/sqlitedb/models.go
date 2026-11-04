@@ -8,6 +8,21 @@ import (
 	"database/sql"
 )
 
+type Comparison struct {
+	Source        string
+	ObjectType    string
+	Path          string
+	Identity      string
+	SourceVersion string
+	ComparedAt    string
+	NetboxUrl     string
+	NetboxVersion string
+	Outcome       string
+	NetboxID      sql.NullInt64
+	Differences   int64
+	Result        string
+}
+
 type Snapshot struct {
 	Source    string
 	Url       string

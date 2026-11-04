@@ -2,7 +2,7 @@
 
 Keep NetBox true to the YAML you keep in Git.
 
-> **Status: early development.** Nothing here is usable yet. To follow progress, watch the repository or read the [decision records](docs/adr/).
+> **Status: early development.** So far it lists devicetype-library's manufacturers and device types and compares them with a NetBox, writing nothing to NetBox ([usage](docs/usage.md)). To follow progress, watch the repository or read the [decision records](docs/adr/).
 
 NetBox TrueUp AI is a server that synchronizes infrastructure definitions written in YAML into [NetBox](https://github.com/netbox-community/netbox). Device types from the [NetBox device-type library](https://github.com/netbox-community/devicetype-library) are one example of such a source.
 
@@ -41,6 +41,7 @@ In practice:
 ## Documentation
 
 - [docs/](docs/): documentation index
+- [docs/usage.md](docs/usage.md): using it from the command line, as far as it goes today
 - [docs/architecture.md](docs/architecture.md): how it is designed
 - [docs/roadmap.md](docs/roadmap.md): what gets built next
 - [docs/tooling.md](docs/tooling.md): every tool and library we use, why, and how to set up a development environment

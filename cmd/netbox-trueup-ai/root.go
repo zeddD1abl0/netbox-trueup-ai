@@ -47,7 +47,7 @@ effective settings and where each came from.`,
 	root.SetErr(a.stderr)
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
 	config.RegisterFlags(root.PersistentFlags())
-	root.AddCommand(newVersionCommand(), newConfigCommand(a), newNetBoxCommand(a), newSourceCommand(a), newMigrateCommand(a), newListCommand(a))
+	root.AddCommand(newVersionCommand(), newConfigCommand(a), newNetBoxCommand(a), newSourceCommand(a), newMigrateCommand(a), newListCommand(a), newCompareCommand(a))
 	root.SetHelpCommand(newHelpCommand())
 	root.InitDefaultHelpCmd()
 	root.InitDefaultCompletionCmd()
