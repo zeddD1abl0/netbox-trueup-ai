@@ -111,12 +111,15 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
    - [ADR 0024](adr/0024-read-source-files-as-pyyaml-does.md): read source files as PyYAML does, within fixed limits, and validate them with santhosh-tekuri/jsonschema.
    - New dependency: santhosh-tekuri/jsonschema v6.0.3. go.yaml.in/yaml/v3 was already in use.
 
-10. **`feat(compare): compare manufacturers and device types with NetBox`.**
-    - Matching by NetBox's uniqueness rules (candidate, absent, conflict), normalization, and the side-by-side comparison structure, here with two columns: the library's definition and NetBox's object.
-    - `netbox-trueup-ai compare` with text and JSON output. The latest comparison of each definition is recorded in the database.
-    - The parity test through NetBox's own YAML import.
-    - A usage guide for `list` and `compare`.
-    - This is the first end-to-end slice, covering manufacturers and device type fields only.
+10. **`feat(compare): compare manufacturers and device types with NetBox`.** Done in #17.
+    - `internal/compare`, the comparison engine, with no I/O: each definition is matched to NetBox's objects by every uniqueness rule NetBox enforces, exactly, case included (candidate, absent or conflict), with a derived value, a manufacturer's slug, counting only where TrueUp would create the object, and two NetBox objects that break NetBox's own rules reported as a conflict. The side-by-side result has a column for each version and a row for each field any version sets, with structured paths, cells that tell unset from null, and which rows are managed, derived and differ. Input that isn't as its spec describes it is refused, and the engine is fuzzed against a plain reading of the rules.
+    - `model.Spec.DecodeAPI` reads NetBox's answers through the specs, checking every value's shape: choices as `{value, label}`, decimals as numbers, references.
+    - `netbox-trueup-ai compare`, with `--manufacturer`, `--fetch` and `--exit-code` (exit 5), as text or JSON. It reads every manufacturer, and the device types of the manufacturers the definitions refer to, asking NetBox for the specs' fields alone.
+    - The latest comparison of each definition is recorded, as `compare --output json` prints it, in the new `comparisons` table on both engines, only against the version of the source the database holds.
+    - A parity test imports the test library through NetBox's own YAML import, signed in to the disposable NetBox's web UI (`netboxtest.Import`), finds every definition in step, and finds exactly the difference each change in NetBox makes. Run by hand on 400 device types sampled from the whole library, it finds all 527 definitions in step.
+    - [docs/usage.md](usage.md), the guide to `list` and `compare`.
+    - [ADR 0025](adr/0025-match-by-netbox-uniqueness-rules.md): match by NetBox's uniqueness rules, compare side by side, and record each comparison as `compare` prints it.
+    - No new dependency.
 
 11. **`feat(compare): compare console, power, interface and bay templates`.**
     - Specs, mapping and child differences for console port, console server port, power port, power outlet (with its power port reference), interface, module bay and device bay templates.
