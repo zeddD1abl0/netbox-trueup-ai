@@ -53,13 +53,8 @@ type ComparisonRun struct {
 	NetBoxURL, NetBoxVersion string
 	// Defined lists every definition the source holds at SourceVersion,
 	// compared or not. Comparisons of definitions it doesn't list are
-	// removed, but for those in KeptPaths, and those it lists but
-	// Comparisons doesn't are kept.
+	// removed, and those it lists but Comparisons doesn't are kept.
 	Defined []ComparisonKey
-	// KeptPaths are files the source still holds but couldn't read this
-	// time, such as files that are invalid: they define nothing, so the
-	// comparisons recorded of definitions in them are kept as they were.
-	KeptPaths []string
 	// Comparisons are the comparisons made, which replace those recorded
 	// before.
 	Comparisons []Comparison
@@ -94,13 +89,6 @@ func (r ComparisonRun) Prepare() (ComparisonRun, error) {
 		return ComparisonRun{}, fmt.Errorf("source %s: a comparison must say when it was made", r.Source)
 	}
 	r.ComparedAt = r.ComparedAt.UTC().Truncate(time.Microsecond)
-	keptPaths := make(map[string]bool, len(r.KeptPaths))
-	for _, p := range r.KeptPaths {
-		if p == "" || !isText(p) {
-			return ComparisonRun{}, fmt.Errorf("source %s: a kept path %q isn't a path", r.Source, p)
-		}
-		keptPaths[p] = true
-	}
 	defined := make(map[ComparisonKey]bool, len(r.Defined))
 	for _, k := range r.Defined {
 		if err := k.check(); err != nil {
@@ -115,8 +103,6 @@ func (r ComparisonRun) Prepare() (ComparisonRun, error) {
 			return ComparisonRun{}, fmt.Errorf("source %s: a comparison of %s, which Defined doesn't list", r.Source, c.ComparisonKey)
 		case compared[c.ComparisonKey]:
 			return ComparisonRun{}, fmt.Errorf("source %s: two comparisons of %s", r.Source, c.ComparisonKey)
-		case keptPaths[c.Path]:
-			return ComparisonRun{}, fmt.Errorf("source %s: a comparison of %s, whose file it keeps as it couldn't be read", r.Source, c.ComparisonKey)
 		case c.Outcome == "" || !isText(c.Outcome):
 			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s has no outcome", r.Source, c.ComparisonKey)
 		case c.NetBoxID < 0 || c.Differences < 0:
@@ -151,7 +137,7 @@ func (k ComparisonKey) String() string {
 
 // Kept returns the keys of the definitions whose recorded comparisons a run
 // keeps as they are: those defined but not compared. Every other comparison
-// of the source is replaced or removed, but for those in KeptPaths.
+// of the source is replaced or removed.
 func (r ComparisonRun) Kept() map[ComparisonKey]bool {
 	kept := make(map[ComparisonKey]bool, len(r.Defined))
 	for _, k := range r.Defined {

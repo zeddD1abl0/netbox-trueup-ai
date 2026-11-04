@@ -13,7 +13,7 @@ SELECT version FROM snapshots WHERE source = $1;
 
 -- name: DeleteComparisonsExcept :exec
 -- Deletes a source's comparisons, apart from those of the definitions
--- given, and those of definitions in the files given.
+-- given.
 DELETE FROM comparisons
 WHERE source = sqlc.arg(source)
 AND (object_type, path, identity) NOT IN (
@@ -21,8 +21,7 @@ AND (object_type, path, identity) NOT IN (
         unnest(sqlc.arg(object_types)::text[]),
         unnest(sqlc.arg(paths)::text[]),
         unnest(sqlc.arg(identities)::text[])
-)
-AND path <> ALL (coalesce(sqlc.arg(kept_paths)::text[], '{}'));
+);
 
 -- name: DeleteComparisons :exec
 -- Deletes every comparison of a source's definitions.

@@ -228,10 +228,6 @@ type sourceCompared struct {
 	defined    []store.ComparisonKey
 	chosen     []compare.Definition
 	chosenKeys []store.ComparisonKey
-	// unread are the files that failed to read: they define nothing this
-	// time, but are still there, so their last comparisons stay until they
-	// read again, or go.
-	unread []string
 }
 
 // runCompare opens the database, connects to NetBox, fetches the sources if
@@ -304,11 +300,6 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			row.Files, row.InvalidFiles, row.Definitions = res.Files, res.Invalid, len(res.Definitions)
 			row.OK = res.Invalid == 0
 			row.Problems = problemsOf(res.Problems)
-			for _, p := range res.Problems {
-				if p.Severity == format.Error && p.Path != "" && !slices.Contains(sc.unread, p.Path) {
-					sc.unread = append(sc.unread, p.Path)
-				}
-			}
 			for _, d := range res.Definitions {
 				k, err := comparisonKey(d)
 				if err != nil {
@@ -336,7 +327,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			a.logger.Warn("no source read defines the manufacturer", "manufacturer", name)
 			msg := "no source read defines the manufacturer " + strconv.Quote(name)
 			if invalid {
-				msg += ", in the files that read: some files are invalid, and may"
+				msg += "; some files are invalid, and one of them may"
 			}
 			result.Warnings = append(result.Warnings, warningJSON{Message: msg})
 			result.OK = false
@@ -369,8 +360,17 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			result.Sources = append(result.Sources, *sc.row)
 			continue
 		}
+		// Compare gives a result for each definition, in their order.
+		if len(results) < len(sc.chosen) {
+			return compareJSON{}, fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.chosen), sc.row.Name)
+		}
 		mine := results[:len(sc.chosen)]
 		results = results[len(sc.chosen):]
+		for i, r := range mine {
+			if r.Type != sc.chosen[i].Object.Type || r.Columns[0].Source != sc.row.Name {
+				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of source %s is of another definition", i, sc.row.Name)
+			}
+		}
 		// Each result is written as JSON once, for the database and for
 		// the output alike.
 		written := make([]json.RawMessage, len(mine))
@@ -423,7 +423,6 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, r
 		NetBoxURL:     run.NetBox.URL,
 		NetBoxVersion: run.NetBox.Version,
 		Defined:       sc.defined,
-		KeptPaths:     sc.unread,
 	}
 	for i, r := range results {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{

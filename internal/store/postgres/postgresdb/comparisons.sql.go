@@ -30,7 +30,6 @@ AND (object_type, path, identity) NOT IN (
         unnest($3::text[]),
         unnest($4::text[])
 )
-AND path <> ALL (coalesce($5::text[], '{}'))
 `
 
 type DeleteComparisonsExceptParams struct {
@@ -38,18 +37,16 @@ type DeleteComparisonsExceptParams struct {
 	ObjectTypes []string
 	Paths       []string
 	Identities  []string
-	KeptPaths   []string
 }
 
 // Deletes a source's comparisons, apart from those of the definitions
-// given, and those of definitions in the files given.
+// given.
 func (q *Queries) DeleteComparisonsExcept(ctx context.Context, arg DeleteComparisonsExceptParams) error {
 	_, err := q.db.Exec(ctx, deleteComparisonsExcept,
 		arg.Source,
 		arg.ObjectTypes,
 		arg.Paths,
 		arg.Identities,
-		arg.KeptPaths,
 	)
 	return err
 }

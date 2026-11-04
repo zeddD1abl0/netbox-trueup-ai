@@ -30,22 +30,17 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		case version != run.SourceVersion:
 			return fmt.Errorf("%w: the snapshot is of version %q, not %q", store.ErrSnapshotChanged, version, run.SourceVersion)
 		}
-		if len(kept) == 0 && len(run.KeptPaths) == 0 {
+		if len(kept) == 0 {
 			if err := q.DeleteComparisons(ctx, run.Source); err != nil {
 				return err
 			}
 		} else {
-			keptPaths := map[string]bool{}
-			for _, p := range run.KeptPaths {
-				keptPaths[p] = true
-			}
 			keys, err := q.ListComparisonKeys(ctx, run.Source)
 			if err != nil {
 				return err
 			}
 			for _, k := range keys {
-				key := store.ComparisonKey{ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity}
-				if kept[key] || keptPaths[k.Path] {
+				if kept[store.ComparisonKey{ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity}] {
 					continue
 				}
 				if err := q.DeleteComparison(ctx, sqlitedb.DeleteComparisonParams{

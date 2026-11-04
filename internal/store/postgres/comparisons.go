@@ -39,13 +39,12 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		case version != run.SourceVersion:
 			return fmt.Errorf("%w: the snapshot is of version %q, not %q", store.ErrSnapshotChanged, version, run.SourceVersion)
 		}
-		switch {
-		case len(kept) == 0 && len(run.KeptPaths) == 0:
+		if len(kept) == 0 {
 			if err := q.DeleteComparisons(ctx, run.Source); err != nil {
 				return err
 			}
-		default:
-			except := postgresdb.DeleteComparisonsExceptParams{Source: run.Source, KeptPaths: run.KeptPaths}
+		} else {
+			except := postgresdb.DeleteComparisonsExceptParams{Source: run.Source}
 			for k := range kept {
 				except.ObjectTypes = append(except.ObjectTypes, k.ObjectType)
 				except.Paths = append(except.Paths, k.Path)

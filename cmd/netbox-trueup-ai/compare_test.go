@@ -627,7 +627,7 @@ func TestCompareAManufacturerNetBoxHoldsTwice(t *testing.T) {
 	}
 }
 
-func TestCompareKeepsTheComparisonOfAnInvalidFile(t *testing.T) {
+func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
 	env, dataDir, _, configure := compareEnv(t, nb)
@@ -647,17 +647,22 @@ func TestCompareKeepsTheComparisonOfAnInvalidFile(t *testing.T) {
 	if r.code != exitCompareProblems || !strings.Contains(r.stdout, "Invalid files:\n  lib: device-types/Netgear/GS105.yaml") {
 		t.Fatalf("compare --fetch: exit code %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
+	// A file that no longer reads defines nothing, as one the source no
+	// longer holds doesn't: the invalid file is reported, and neither keeps
+	// a comparison that would pass for current.
 	after := recordedComparisons(t, dataDir, "lib")
-	k := "device-types/Netgear/GS105.yaml"
-	if c, ok := after[k]; !ok || !c.ComparedAt.Equal(before[k].ComparedAt) {
-		t.Errorf("the comparison of %s, which no longer reads: %+v, want it kept as it was", k, c)
-	}
-	for _, gone := range []string{"device-types/Huawei/NE8000-X8.yaml", `{"name":"Huawei"}`} {
+	for _, gone := range []string{"device-types/Netgear/GS105.yaml", "device-types/Huawei/NE8000-X8.yaml", `{"name":"Huawei"}`} {
 		if _, ok := after[gone]; ok {
 			t.Errorf("the comparison of %s, which the source no longer holds, is kept", gone)
 		}
 	}
 	if c := after["device-types/Netgear/GS510TLP.yml"]; c.ComparedAt.Equal(before["device-types/Netgear/GS510TLP.yml"].ComparedAt) {
 		t.Error("the comparison of a file that still reads wasn't recorded again")
+	}
+
+	// A manufacturer an invalid file might define is said to be possible.
+	r = runCLIApp(t, nil, trust(pool), env, "compare", "--manufacturer", "Nobody")
+	if !strings.Contains(r.stdout, `no source read defines the manufacturer "Nobody"; some files are invalid, and one of them may`) {
+		t.Errorf("compare --manufacturer with invalid files:\n%s", r.stdout)
 	}
 }
