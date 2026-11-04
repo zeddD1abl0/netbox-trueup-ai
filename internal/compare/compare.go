@@ -177,13 +177,65 @@ type Row struct {
 // type of definition and observed object, and every type they refer to.
 // observed must hold every object NetBox has that a definition could match
 // or collide with: every manufacturer, and the device types of each
-// manufacturer a definition names.
+// manufacturer that Referenced finds the definitions refer to.
 //
 // It fails, rather than guess, if a definition or an object is of a type
 // without a spec, or doesn't hold its fields as its spec describes them (see
 // checkObserved and checkDefinition), or if NetBox listed an object twice.
 func Compare(specs []*model.Spec, defs []Definition, observed []Observed) ([]Result, error) {
-	ix := index{
+	ix, err := newIndex(specs, observed)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]Result, len(defs))
+	for i := range defs {
+		r, err := ix.compare(&defs[i])
+		if err != nil {
+			return nil, err
+		}
+		results[i] = r
+	}
+	fillOutcomes(results)
+	return results, nil
+}
+
+// Referenced returns, sorted, the NetBox objects of type typ, among
+// observed, that the definitions' references to typ resolve to, as Compare
+// resolves them, each candidate included where NetBox has several: so that
+// a caller reads the objects that refer to exactly those, such as the device
+// types of the manufacturers that device type definitions name.
+func Referenced(specs []*model.Spec, defs []Definition, observed []Observed, typ string) ([]int64, error) {
+	ix, err := newIndex(specs, observed)
+	if err != nil {
+		return nil, err
+	}
+	found := map[int64]bool{}
+	for i := range defs {
+		d := &defs[i]
+		s := ix.specs[d.Object.Type]
+		if s == nil {
+			return nil, fmt.Errorf("a definition in %s is a %s, which has no spec", d.Source, strconv.Quote(d.Object.Type))
+		}
+		for _, f := range s.Fields {
+			ref, ok := d.Object.Fields[f.Name].(model.Reference)
+			if !ok || ref.Type != typ || f.Ref == nil || f.Ref.Within != "" {
+				continue
+			}
+			ids, err := ix.find(ref)
+			if err != nil {
+				return nil, fmt.Errorf("%s's definition %s: %s %w", d.Source, describeDefinition(d), f.Name, err)
+			}
+			for _, id := range ids {
+				found[id] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(found)), nil
+}
+
+// newIndex indexes the objects observed, which it checks.
+func newIndex(specs []*model.Spec, observed []Observed) (*index, error) {
+	ix := &index{
 		specs:   map[string]*model.Spec{},
 		objects: map[string]map[int64]model.Object{},
 		rules:   map[string][]map[string][]int64{},
@@ -201,16 +253,7 @@ func Compare(specs []*model.Spec, defs []Definition, observed []Observed) ([]Res
 			return nil, err
 		}
 	}
-	results := make([]Result, len(defs))
-	for i := range defs {
-		r, err := ix.compare(&defs[i])
-		if err != nil {
-			return nil, err
-		}
-		results[i] = r
-	}
-	fillOutcomes(results)
-	return results, nil
+	return ix, nil
 }
 
 // index holds the objects NetBox has, by type and ID, and by the values of
@@ -275,6 +318,14 @@ func ruleKey(u model.Unique, fields map[string]model.Value) (string, bool) {
 				return "", false
 			}
 			fmt.Fprintf(&b, "%s#%d", v.Type, v.ID)
+		case model.Set:
+			// In any order, as NetBox and model.Equal take a set.
+			elems := make([]string, len(v))
+			for i, e := range v {
+				elems[i] = describe(e)
+			}
+			slices.Sort(elems)
+			fmt.Fprintf(&b, "%d:%q", v.Kind(), elems)
 		default:
 			// String quotes text and choices, so values can't run into
 			// each other.
@@ -285,14 +336,6 @@ func ruleKey(u model.Unique, fields map[string]model.Value) (string, bool) {
 	return b.String(), true
 }
 
-// identityRule returns the index of the spec's identity among its Unique
-// rules, which model.Check makes sure of, or -1.
-func identityRule(s *model.Spec) int {
-	return slices.IndexFunc(s.Unique, func(u model.Unique) bool {
-		return len(u.Fields) == len(s.Identity) && !slices.ContainsFunc(u.Fields, func(f string) bool { return !slices.Contains(s.Identity, f) })
-	})
-}
-
 func (ix *index) compare(d *Definition) (Result, error) {
 	s := ix.specs[d.Object.Type]
 	if s == nil {
@@ -301,7 +344,7 @@ func (ix *index) compare(d *Definition) (Result, error) {
 	if err := checkDefinition(s, d); err != nil {
 		return Result{}, fmt.Errorf("%s's definition %s %w", d.Source, describeDefinition(d), err)
 	}
-	iu := identityRule(s)
+	iu := s.IdentityRule()
 	if iu < 0 {
 		return Result{}, fmt.Errorf("the spec of %s has no identity among its uniqueness rules", s.Type)
 	}
@@ -338,7 +381,25 @@ func (ix *index) compare(d *Definition) (Result, error) {
 	}
 	ambiguous := len(assignments) > 1
 	if ambiguous {
-		r.Collisions = ix.collideUnderEach(s, assignments)
+		// Every object it would match or collide with, under each.
+		type seen struct {
+			rule int
+			id   int64
+		}
+		done := map[seen]bool{}
+		for _, a := range assignments {
+			match, collisions := ix.match(s, iu, a, derived)
+			if match != 0 {
+				collisions = append(collisions, ix.collision(s, iu, match))
+			}
+			for _, c := range collisions {
+				k := seen{slices.IndexFunc(s.Unique, func(u model.Unique) bool { return slices.Equal(u.Fields, c.Rule) }), c.ID}
+				if !done[k] {
+					done[k] = true
+					r.Collisions = append(r.Collisions, c)
+				}
+			}
+		}
 	} else {
 		r.NetBoxID, r.Collisions = ix.match(s, iu, fields, derived)
 	}
@@ -417,32 +478,6 @@ func (ix *index) match(s *model.Spec, iu int, fields map[string]model.Value, der
 	return match, collisions
 }
 
-// collideUnderEach returns the objects that the fields collide with, under
-// any of the type's rules, in any of the assignments, each once.
-func (ix *index) collideUnderEach(s *model.Spec, assignments []map[string]model.Value) []Collision {
-	type seen struct {
-		rule int
-		id   int64
-	}
-	done := map[seen]bool{}
-	var collisions []Collision
-	for _, fields := range assignments {
-		for i, u := range s.Unique {
-			key, ok := ruleKey(u, fields)
-			if !ok {
-				continue
-			}
-			for _, id := range ix.rules[s.Type][i][key] {
-				if !done[seen{i, id}] {
-					done[seen{i, id}] = true
-					collisions = append(collisions, ix.collision(s, i, id))
-				}
-			}
-		}
-	}
-	return collisions
-}
-
 // resolve returns the definition's fields normalized as the spec says, with
 // each reference to an object that stands on its own resolved to its NetBox
 // ID, and lists the references NetBox has nothing, or more than one object,
@@ -484,7 +519,7 @@ func (ix *index) find(ref model.Reference) ([]int64, error) {
 	if target == nil {
 		return nil, fmt.Errorf("refers to a %s, which has no spec", strconv.Quote(ref.Type))
 	}
-	iu := identityRule(target)
+	iu := target.IdentityRule()
 	if iu < 0 {
 		return nil, fmt.Errorf("refers to a %s, whose spec has no identity among its uniqueness rules", ref.Type)
 	}
@@ -500,7 +535,12 @@ func (ix *index) find(ref model.Reference) ([]int64, error) {
 			return nil, fmt.Errorf("refers to a %s whose %s %w", ref.Type, name, err)
 		}
 	}
-	key, _ := ruleKey(target.Unique[iu], ref.Key)
+	key, ok := ruleKey(target.Unique[iu], ref.Key)
+	if !ok {
+		// Such as a key that refers to another object in turn, which
+		// would need resolving first.
+		return nil, fmt.Errorf("refers to a %s by a key TrueUp can't match with NetBox's", ref.Type)
+	}
 	return ix.rules[target.Type][iu][key], nil
 }
 

@@ -164,7 +164,7 @@ func (c *checker) checkIdentity(s *Spec) {
 		if !c.child[s.Type] {
 			c.fail(s, "it has no identity, and isn't a child type")
 		}
-	} else if i := slices.IndexFunc(s.Unique, func(u Unique) bool { return sameNames(u.Fields, s.Identity) }); i < 0 {
+	} else if i := s.IdentityRule(); i < 0 {
 		c.fail(s, "its identity %v isn't one of its uniqueness rules", s.Identity)
 	} else if s.Unique[i].Gap != "" {
 		c.fail(s, "its identity %v is a uniqueness rule with a gap, which can't tell objects apart", s.Identity)

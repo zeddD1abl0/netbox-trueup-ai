@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -453,7 +452,10 @@ func manufacturerName(d format.Definition) (string, bool) {
 // make what it is show as absent.
 func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) ([]compare.Observed, error) {
 	specs := dcim.Specs()
-	manufacturer, deviceType := specOf(specs, "dcim.manufacturer"), specOf(specs, "dcim.devicetype")
+	manufacturer, deviceType := model.SpecOf(specs, "dcim.manufacturer"), model.SpecOf(specs, "dcim.devicetype")
+	if manufacturer == nil || deviceType == nil {
+		return nil, errors.New("TrueUp has no spec of manufacturers or device types")
+	}
 	var observed []compare.Observed
 	decode := func(s *model.Spec) func(json.RawMessage) error {
 		return func(raw json.RawMessage) error {
@@ -469,17 +471,11 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 		return nil, readError(manufacturer, err)
 	}
 
-	named := map[string]bool{}
-	for _, d := range defs {
-		if name, ok := manufacturerName(d.Definition); ok && d.Object.Type == deviceType.Type {
-			named[name] = true
-		}
-	}
-	var ids []int64
-	for _, o := range observed {
-		if name, ok := o.Object.Fields["name"].(model.String); ok && named[string(name)] {
-			ids = append(ids, o.ID)
-		}
+	// The manufacturers the definitions refer to, as the comparison will
+	// resolve them.
+	ids, err := compare.Referenced(specs, defs, observed, manufacturer.Type)
+	if err != nil {
+		return nil, fmt.Errorf("compare with NetBox: %w", err)
 	}
 	if len(ids) > 0 {
 		if err := c.ListByParent(ctx, deviceType.Endpoint, "manufacturer", ids, fieldsQuery(deviceType), decode(deviceType)); err != nil {
@@ -487,11 +483,6 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 		}
 	}
 	return observed, nil
-}
-
-func specOf(specs []*model.Spec, typ string) *model.Spec {
-	i := slices.IndexFunc(specs, func(s *model.Spec) bool { return s.Type == typ })
-	return specs[i]
 }
 
 // fieldsQuery asks NetBox for an object's ID and the fields its spec

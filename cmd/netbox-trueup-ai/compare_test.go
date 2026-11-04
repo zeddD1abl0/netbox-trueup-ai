@@ -619,7 +619,7 @@ func TestCompareAManufacturerNetBoxHoldsTwice(t *testing.T) {
 	for _, want := range []string{
 		`lib: manufacturer "Netgear" (1 file): its name matches NetBox's manufacturer #1, "Netgear"; its name matches NetBox's manufacturer #3, "Netgear"`,
 		`lib: device type Netgear "GS105" (device-types/Netgear/GS105.yaml): its manufacturer, "Netgear", could be any of NetBox's manufacturers #1, #3, which NetBox should keep unique; ` +
-			`its manufacturer and model match NetBox's device type #10, Netgear "GS105"; its manufacturer and slug match NetBox's device type #10, Netgear "GS105"`,
+			`its manufacturer and model match NetBox's device type #10, Netgear "GS105"`,
 	} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("compare doesn't say\n%s\nin:\n%s", want, r.stdout)

@@ -156,7 +156,7 @@ func (f *Field) decodeReference(specs []*Spec, raw json.RawMessage, kind byte) (
 	if err != nil {
 		return nil, fmt.Errorf("its id %w", err)
 	}
-	target := specFor(specs, typ)
+	target := SpecOf(specs, typ)
 	if target == nil {
 		return nil, fmt.Errorf("refers to a %s, which has no spec", typ)
 	}
@@ -198,15 +198,6 @@ func (f *Field) decodeTypeAndID(answer map[string]json.RawMessage) (Value, error
 		return nil, fmt.Errorf("%s %w", f.Ref.IDField, err)
 	}
 	return Reference{Type: typ, ID: id}, nil
-}
-
-func specFor(specs []*Spec, typ string) *Spec {
-	for _, s := range specs {
-		if s.Type == typ {
-			return s
-		}
-	}
-	return nil
 }
 
 // positiveID reads a NetBox ID: a whole number from 1.

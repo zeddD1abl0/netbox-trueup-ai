@@ -271,7 +271,7 @@ func TestDeviceTypes(t *testing.T) {
 			// its answer can't say which the device type's is.
 			"the manufacturer is in NetBox twice", deviceType("Dell", "R670", "r670", nil),
 			[]compare.Observed{dell, nbManufacturer(4, "Dell", "dell-2"), nbDeviceType(10, 3, "Dell", "R670", "r670", nil)},
-			summary{Outcome: compare.Conflict, Collisions: []string{"manufacturer,model:10", "manufacturer,slug:10"}, Unresolved: []string{"manufacturer:"}},
+			summary{Outcome: compare.Conflict, Collisions: []string{"manufacturer,model:10"}, Unresolved: []string{"manufacturer:"}},
 		},
 		{
 			"the manufacturer is in NetBox twice, without the device type", deviceType("Dell", "R770", "r770", nil),
@@ -472,5 +472,39 @@ func TestJSON(t *testing.T) {
 		`{"path":["u_height"],"cells":[{"value":1}],"differs":false,"managed":true,"derived":false}]}`
 	if string(got) != want {
 		t.Errorf("JSON:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestReferenced(t *testing.T) {
+	t.Parallel()
+	defs := []compare.Definition{
+		manufacturer("Dell", "dell"),
+		deviceType("Dell", "R670", "r670", nil),
+		deviceType("Netgear", "GS105", "gs105", nil),
+		deviceType("netgear", "GS108", "gs108", nil),
+		deviceType("Arista", "7050", "7050", nil),
+	}
+	observed := []compare.Observed{
+		nbManufacturer(3, "Dell", "dell"),
+		nbManufacturer(4, "HPE", "hpe"),
+		nbManufacturer(5, "Netgear", "netgear"),
+		nbManufacturer(6, "Netgear", "netgear-2"),
+	}
+	// Exactly, case included, every candidate where NetBox has several,
+	// and nothing for a manufacturer NetBox lacks or no device type names.
+	got, err := compare.Referenced(dcim.Specs(), defs, observed, "dcim.manufacturer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]int64{3, 5, 6}, got); diff != "" {
+		t.Errorf("Referenced (-want +got):\n%s", diff)
+	}
+
+	bad := deviceType("Dell", "R670", "r670", map[string]model.Value{
+		"manufacturer": model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"name": model.Integer(1)}},
+	})
+	if _, err := compare.Referenced(dcim.Specs(), []compare.Definition{bad}, observed, "dcim.manufacturer"); err == nil ||
+		!strings.Contains(err.Error(), "manufacturer refers to a dcim.manufacturer whose name is a integer, not a string") {
+		t.Errorf("Referenced with a key of the wrong kind = %v", err)
 	}
 }
