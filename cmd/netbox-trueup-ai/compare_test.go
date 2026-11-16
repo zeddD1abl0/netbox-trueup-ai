@@ -36,6 +36,9 @@ type compareNetBox struct {
 	// templates are the component templates, by endpoint.
 	templates map[string][]map[string]any
 	denied    []string
+	// refused is an endpoint NetBox refuses to list, as when a device type
+	// asked for no longer exists.
+	refused string
 
 	mu      sync.Mutex
 	queries map[string][]url.Values // by path
@@ -71,6 +74,9 @@ func newCompareNetBox(t *testing.T, manufacturers, deviceTypes []map[string]any,
 			return
 		case slices.Contains(f.denied, r.URL.Path):
 			answer(http.StatusForbidden, map[string]any{"detail": "You do not have permission to perform this action."})
+			return
+		case r.URL.Path == f.refused:
+			answer(http.StatusBadRequest, map[string]any{"device_type_id": []string{"Select a valid choice. 11 is not one of the available choices."}})
 			return
 		case r.URL.Path == "/api/dcim/manufacturers/":
 			objects = f.manufacturers
@@ -634,6 +640,14 @@ func TestCompareFailures(t *testing.T) {
 			wantCode: exitFailure, wantStderr: "the token can't read dcim.interfacetemplate (GET /api/dcim/interface-templates/: NetBox answered 403 Forbidden",
 		},
 		{
+			name: "a device type deleted while its templates are read", nb: refusing(libraryNetBox(t), "/api/dcim/module-bay-templates/"),
+			wantCode: exitFailure, wantStderr: "read dcim.modulebaytemplate from NetBox: GET /api/dcim/module-bay-templates/: NetBox answered 400 Bad Request",
+		},
+		{
+			name: "the advice after NetBox refuses a listing", nb: refusing(libraryNetBox(t), "/api/dcim/interface-templates/"),
+			wantCode: exitFailure, wantStderr: "; if a device type was deleted while TrueUp read NetBox, compare again",
+		},
+		{
 			name: "an object NetBox sends that can't be read", nb: newCompareNetBox(t, []map[string]any{brokenManufacturer}, nil),
 			wantCode: exitFailure, wantStderr: "NetBox's answer can't be read: dcim.manufacturer #1: slug: isn't in the answer",
 		},
@@ -879,4 +893,10 @@ func TestReadTypesCoverTheSpecs(t *testing.T) {
 			t.Errorf("netbox check doesn't look at %s at %s, which compare reads", s.Type, s.Endpoint)
 		}
 	}
+}
+
+// refusing makes nb refuse to list endpoint.
+func refusing(nb *compareNetBox, endpoint string) *compareNetBox {
+	nb.refused = endpoint
+	return nb
 }

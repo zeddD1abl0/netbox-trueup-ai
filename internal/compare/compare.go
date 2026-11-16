@@ -63,8 +63,9 @@ type Result struct {
 	// if it matches none, or more than one.
 	NetBoxID int64
 	// Collisions are the NetBox objects, other than the match, that the
-	// definition collides with, sorted by rule and ID. A conflict has at
-	// least one, or a reference with Candidates.
+	// definition collides with, and the NetBox children of the match that
+	// share a key, the object's own first, then by path, rule and ID. A
+	// conflict has at least one, or a reference with Candidates.
 	Collisions []Collision
 	// Unresolved lists the definition's references to objects that NetBox
 	// doesn't have, such as a device type's manufacturer.
@@ -73,7 +74,9 @@ type Result struct {
 	// NetBox's object if the identity matches one.
 	Columns []Column
 	// Rows hold every field that any version sets, in the order of the
-	// type's spec, with a cell for each column.
+	// type's spec, with a cell for each column; then, collection by
+	// collection, each child's row and the rows of its fields (see
+	// compareChildren).
 	Rows []Row
 	// Differences counts the rows that differ and are managed.
 	Differences int

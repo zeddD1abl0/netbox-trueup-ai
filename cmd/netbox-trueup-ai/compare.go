@@ -80,8 +80,10 @@ Exit codes:
      it is valid, whatever the outcomes.
   1  The command couldn't run, such as when NetBox can't be reached, runs a
      release TrueUp doesn't support, refuses the token, or the token can't
-     read manufacturers or device types ('netbox-trueup-ai netbox check'
-     says which), or when the database can't be opened or written.
+     read manufacturers, device types or the component templates compared
+     ('netbox-trueup-ai netbox check' says which), when NetBox changes while
+     it is read, such as a device type deleted, or when the database can't
+     be opened or written.
   2  A name given isn't a configured source.
   3  The configuration is invalid, no sources are configured, netbox.url
      or netbox.token isn't set, or database.url names a database this
@@ -344,12 +346,19 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	}
 	var results []compare.Result
 	if len(defs) > 0 {
-		observed, err := readNetBox(ctx, c, defs)
+		observed, childrenRead, err := readNetBox(ctx, c, defs)
 		if err != nil {
 			return compareJSON{}, err
 		}
 		if results, err = compare.Compare(dcim.Specs(), defs, observed); err != nil {
 			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
+		}
+		// A device type whose templates weren't read would show every one
+		// of them as missing.
+		for _, r := range results {
+			if r.Type == "dcim.devicetype" && r.NetBoxID != 0 && !childrenRead[r.NetBoxID] {
+				return compareJSON{}, fmt.Errorf("compare with NetBox: the templates of NetBox's device type #%d weren't read", r.NetBoxID)
+			}
 		}
 	}
 	info := c.Info()
@@ -414,6 +423,8 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 				sc.row.Absent++
 			case o.outcome == compare.Conflict:
 				sc.row.Conflicts++
+			default:
+				return compareJSON{}, fmt.Errorf("compare with NetBox: a result of source %s has the outcome %q", sc.row.Name, o.outcome)
 			}
 		}
 		result.OK = result.OK && sc.row.OK
@@ -435,9 +446,6 @@ func (a *app) failSource(row *compareSourceJSON, msg string) {
 	a.logger.Warn("can't compare source", "source", row.Name, "error", msg)
 }
 
-// recordComparisons records one source's comparisons, results written as
-// JSON, as the latest of its definitions, and removes those of definitions
-// it no longer holds.
 // outcomeOf is what the counts and the database need of a result.
 type outcomeOf struct {
 	outcome     compare.Outcome
@@ -446,6 +454,9 @@ type outcomeOf struct {
 	inStep      bool
 }
 
+// recordComparisons records one source's comparisons, results written as
+// JSON, as the latest of its definitions, and removes those of definitions
+// it no longer holds.
 func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, outcomes []outcomeOf, written []json.RawMessage, run compareJSON) error {
 	rec := store.ComparisonRun{
 		Source:        sc.row.Name,
@@ -497,13 +508,12 @@ func manufacturerName(d format.Definition) (string, bool) {
 // templates of each device type a definition matches, collection by
 // collection. Each object is read through its spec, and one that can't be
 // is an error, since leaving it out would make what it is show as absent.
-func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) ([]compare.Observed, error) {
+func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) (observed []compare.Observed, childrenRead map[int64]bool, err error) {
 	specs := dcim.Specs()
 	manufacturer, deviceType := model.SpecOf(specs, "dcim.manufacturer"), model.SpecOf(specs, "dcim.devicetype")
 	if manufacturer == nil || deviceType == nil {
-		return nil, errors.New("TrueUp has no spec of manufacturers or device types")
+		return nil, nil, errors.New("TrueUp has no spec of manufacturers or device types")
 	}
-	var observed []compare.Observed
 	decode := func(s *model.Spec) func(json.RawMessage) error {
 		return func(raw json.RawMessage) error {
 			id, obj, err := s.DecodeAPI(specs, raw)
@@ -515,18 +525,18 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 		}
 	}
 	if err := c.List(ctx, manufacturer.Endpoint, fieldsQuery(manufacturer), decode(manufacturer)); err != nil {
-		return nil, readError(manufacturer, err)
+		return nil, nil, readError(manufacturer, err)
 	}
 
 	// The manufacturers the definitions refer to, as the comparison will
 	// resolve them.
 	ids, err := compare.Referenced(specs, defs, observed, manufacturer.Type)
 	if err != nil {
-		return nil, fmt.Errorf("compare with NetBox: %w", err)
+		return nil, nil, fmt.Errorf("compare with NetBox: %w", err)
 	}
 	if len(ids) > 0 {
 		if err := c.ListByParent(ctx, deviceType.Endpoint, "manufacturer", ids, fieldsQuery(deviceType), decode(deviceType)); err != nil {
-			return nil, readError(deviceType, err)
+			return nil, nil, readListingError(deviceType, manufacturer, err)
 		}
 	}
 
@@ -534,16 +544,20 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 	// comparison will match them; of no others, which nothing compares.
 	matched, err := compare.Matched(specs, defs, observed, deviceType.Type)
 	if err != nil {
-		return nil, fmt.Errorf("compare with NetBox: %w", err)
+		return nil, nil, fmt.Errorf("compare with NetBox: %w", err)
+	}
+	childrenRead = make(map[int64]bool, len(matched))
+	for _, id := range matched {
+		childrenRead[id] = true
 	}
 	if len(matched) == 0 {
-		return observed, nil
+		return observed, childrenRead, nil
 	}
 	children, err := readChildren(ctx, c, specs, deviceType, matched)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return append(observed, children...), nil
+	return append(observed, children...), childrenRead, nil
 }
 
 // readChildren reads the children of the objects of type parent with IDs
@@ -554,6 +568,15 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 func readChildren(ctx context.Context, c *netbox.Client, specs []*model.Spec, parent *model.Spec, ids []int64) ([]compare.Observed, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// Every collection's spec, before any listing starts.
+	of := make([]*model.Spec, len(parent.Children))
+	for i, col := range parent.Children {
+		s := model.SpecOf(specs, col.Type)
+		if s == nil || s.Endpoint == "" {
+			return nil, fmt.Errorf("TrueUp can't read the %s of %ss from NetBox", col.Name, typeName(parent.Type))
+		}
+		of[i] = s
+	}
 	read := make([][]compare.Observed, len(parent.Children))
 	var (
 		mu     sync.Mutex
@@ -561,10 +584,7 @@ func readChildren(ctx context.Context, c *netbox.Client, specs []*model.Spec, pa
 		wg     sync.WaitGroup
 	)
 	for i, col := range parent.Children {
-		s := model.SpecOf(specs, col.Type)
-		if s == nil || s.Endpoint == "" {
-			return nil, fmt.Errorf("TrueUp can't read the %s of %ss from NetBox", col.Name, typeName(parent.Type))
-		}
+		s := of[i]
 		wg.Go(func() {
 			err := c.ListByParent(ctx, s.Endpoint, col.Parent, ids, fieldsQuery(s), func(raw json.RawMessage) error {
 				id, obj, err := s.DecodeAPI(specs, raw)
@@ -578,7 +598,7 @@ func readChildren(ctx context.Context, c *netbox.Client, specs []*model.Spec, pa
 				mu.Lock()
 				defer mu.Unlock()
 				if failed == nil {
-					failed = readError(s, err)
+					failed = readListingError(s, parent, err)
 					cancel()
 				}
 			}
@@ -604,6 +624,19 @@ func fieldsQuery(s *model.Spec) url.Values {
 		names = append(names, f.Name)
 	}
 	return url.Values{"fields": {strings.Join(names, ",")}}
+}
+
+// readListingError is readError for a listing of the objects of type s
+// that belong to some objects of type parent. NetBox refuses such a listing
+// when one of those parents no longer exists (a ModelMultipleChoiceFilter,
+// such as DeviceTypeComponentFilterSet.device_type_id in
+// dcim/filtersets.py), as when it is deleted while TrueUp reads NetBox, so
+// a refusal says to compare again.
+func readListingError(s, parent *model.Spec, err error) error {
+	if se, ok := errors.AsType[*netbox.StatusError](err); ok && se.StatusCode == http.StatusBadRequest && se.FromNetBox() {
+		return fmt.Errorf("read %s from NetBox: %w; if a %s was deleted while TrueUp read NetBox, compare again", s.Type, err, typeName(parent.Type))
+	}
+	return readError(s, err)
 }
 
 // readError says what reading an object type from NetBox failed on, and

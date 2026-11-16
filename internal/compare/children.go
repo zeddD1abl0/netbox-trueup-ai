@@ -17,7 +17,9 @@ import (
 // NetBox's as it gives them.
 //
 // Each child has a row whose path ends at its key, saying whether each
-// version has it. A child only the definition has is one difference, not
+// version has it. NetBox's children that share a key are collisions, and
+// neither is compared: the definition's child's fields show NetBox's cells
+// unset. A child only the definition has is one difference, not
 // one for each of its fields; a child only NetBox has is reported, but
 // isn't managed, since TrueUp never removes one, so it doesn't count. A
 // child's fields have rows where the definition sets them, or where NetBox
