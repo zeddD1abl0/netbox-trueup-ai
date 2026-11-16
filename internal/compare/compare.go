@@ -603,11 +603,20 @@ func Matched(specs []*model.Spec, defs []Definition, observed []Observed, typ st
 		if d.Object.Type != typ {
 			continue
 		}
-		s, iu, err := ix.checked(d)
+		// Matching needs the definition's own fields alone; Compare
+		// checks its children.
+		own := *d
+		own.Object.Fields = maps.Clone(d.Object.Fields)
+		if s := ix.specs[d.Object.Type]; s != nil {
+			for _, col := range s.Children {
+				delete(own.Object.Fields, col.Name)
+			}
+		}
+		s, iu, err := ix.checked(&own)
 		if err != nil {
 			return nil, err
 		}
-		m, err := ix.matchDefinition(s, iu, d)
+		m, err := ix.matchDefinition(s, iu, &own)
 		if err != nil {
 			return nil, err
 		}

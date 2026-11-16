@@ -232,8 +232,12 @@ func (r *reader) within(f *model.Field, n *format.Node) (model.Value, string) {
 // references checks that each reference to another template of the device
 // type names one the file gives, as NetBox's import does: it refuses a name
 // it can't find among the templates it has created, which it creates list
-// by list, in the order of componentLists. A template the file gives with
-// an error of its own counts, so that what refers to it isn't blamed too.
+// by list, in the order of componentLists, and item by item. A power
+// outlet's power port is in an earlier list, so any of the file's power
+// ports will do; a reference within one list, such as an interface's parent,
+// which TrueUp doesn't read, would have to name an earlier item. A template
+// the file gives with an error of its own counts, so that what refers to it
+// isn't blamed too.
 func (r *reader) references(refs []pendingRef, given names, at childAt) {
 	for _, p := range refs {
 		if !given[p.ref.Type][p.ref.Key["name"]] {

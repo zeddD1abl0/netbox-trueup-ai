@@ -49,7 +49,7 @@ func (ix *index) checkDefinition(s *model.Spec, d *Definition) error {
 	// The keys of the definition's children, by collection, and their
 	// references to each other, checked once every collection's keys are
 	// known.
-	keys := map[string]map[string]bool{}
+	keys := map[string]map[string]int{}
 	var refs []childRef
 	for _, name := range slices.Sorted(maps.Keys(d.Object.Fields)) {
 		v := d.Object.Fields[name]
@@ -76,7 +76,7 @@ func (ix *index) checkDefinition(s *model.Spec, d *Definition) error {
 		}
 	}
 	for _, r := range refs {
-		if !keys[r.col.Name][r.key] {
+		if _, ok := keys[r.col.Name][r.key]; !ok {
 			return fmt.Errorf("%s refers to %s, which the definition hasn't got", r.where, r.ref)
 		}
 	}
@@ -113,7 +113,7 @@ type childRef struct {
 // store it, which it adds to refs. It returns the children's keys. TrueUp
 // doesn't compare nested collections, or a child's references to objects
 // that stand on their own, yet.
-func (ix *index) checkChildren(s *model.Spec, col *model.Collection, v model.Value, refs *[]childRef) (map[string]bool, error) {
+func (ix *index) checkChildren(s *model.Spec, col *model.Collection, v model.Value, refs *[]childRef) (map[string]int, error) {
 	children, ok := v.(model.Children)
 	cs := ix.specs[col.Type]
 	switch {
@@ -159,7 +159,7 @@ func (ix *index) checkChildren(s *model.Spec, col *model.Collection, v model.Val
 			r.where = where + " " + name
 			*refs = append(*refs, r)
 		}
-		key, ok := ruleKey(model.Unique{Fields: col.Key}, normalized(cs, c.Fields, col.Key))
+		key, _, ok := keyOf(col, normalized(cs, c.Fields, col.Key))
 		if !ok {
 			return nil, fmt.Errorf("%s hasn't got its key, %s", where, strings.Join(col.Key, " and "))
 		}
@@ -168,11 +168,7 @@ func (ix *index) checkChildren(s *model.Spec, col *model.Collection, v model.Val
 		}
 		keys[key] = i
 	}
-	out := make(map[string]bool, len(keys))
-	for k := range keys {
-		out[k] = true
-	}
-	return out, nil
+	return keys, nil
 }
 
 // childRef returns, for a reference from a child of an object of type s to
@@ -190,11 +186,11 @@ func (ix *index) childRef(s *model.Spec, ref model.Reference) (childRef, error) 
 		if len(ref.Key) != len(col.Key) {
 			return childRef{}, fmt.Errorf("refers to a %s by a key of %d fields, but the %s's is %s", ref.Type, len(ref.Key), col.Name, strings.Join(col.Key, " and "))
 		}
-		key, ok := ruleKey(model.Unique{Fields: col.Key}, ref.Key)
+		key, _, ok := keyOf(col, ref.Key)
 		if !ok {
 			return childRef{}, fmt.Errorf("refers to a %s without its %s", ref.Type, strings.Join(col.Key, " and "))
 		}
-		if want, _ := ruleKey(model.Unique{Fields: col.Key}, normalized(cs, ref.Key, col.Key)); want != key {
+		if want, _, _ := keyOf(col, normalized(cs, ref.Key, col.Key)); want != key {
 			return childRef{}, fmt.Errorf("refers to %s, by a key NetBox would store otherwise", ref)
 		}
 		return childRef{ref: ref, col: col, key: key}, nil

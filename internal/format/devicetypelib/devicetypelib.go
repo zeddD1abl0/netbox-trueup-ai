@@ -345,6 +345,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 	given := names{}
 	for _, pair := range root.Pairs {
 		key, n := pair.Key.Value, pair.Value
+		list := componentListOf(key)
 		switch {
 		case key == "manufacturer":
 			ref, reason := r.manufacturerOf(n)
@@ -382,8 +383,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 				def.Metadata = map[string]model.Value{}
 			}
 			def.Metadata[key] = model.Boolean(n.Value == "true")
-		case componentListOf(key) != nil:
-			list := componentListOf(key)
+		case list != nil:
 			if children, ok := r.components(list, n, at, &refs, given); ok {
 				def.Object.Fields[list.Collection] = children
 			}

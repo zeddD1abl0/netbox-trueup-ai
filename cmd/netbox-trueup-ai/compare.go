@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -104,7 +105,7 @@ Exit codes:
 			if err := requireNetBox(cfg.Settings.NetBox); err != nil {
 				return err
 			}
-			result, err := a.runCompare(cmd.Context(), cfg, sources, fetch, manufacturers)
+			result, err := a.runCompare(cmd.Context(), cfg, sources, fetch, manufacturers, out != outputJSON)
 			if err != nil {
 				return err
 			}
@@ -119,8 +120,8 @@ Exit codes:
 			if !result.OK {
 				return outcomeError{code: exitCompareProblems, err: errors.New(result.summary())}
 			}
-			if n := result.notInStep(); signal && n > 0 {
-				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", n, len(result.results))}
+			if n := result.notInStep; signal && n > 0 {
+				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", n, result.compared)}
 			}
 			return nil
 		},
@@ -149,10 +150,14 @@ type compareJSON struct {
 	Objects  []json.RawMessage `json:"objects"`
 	Warnings []warningJSON     `json:"warnings"`
 
-	// results are the Objects, for text output, and unknown the names
-	// given to --manufacturer that no source read defines.
-	results []compare.Result
-	unknown []string
+	// results are the Objects, kept for text output only, since they
+	// take more memory than their JSON; Objects are kept for JSON output
+	// only. compared and notInStep count the definitions compared, and
+	// those not in step with NetBox. unknown are the names given to
+	// --manufacturer that no source read defines.
+	results             []compare.Result
+	compared, notInStep int
+	unknown             []string
 }
 
 type compareNetBoxJSON struct {
@@ -217,17 +222,6 @@ func (r compareJSON) summary() string {
 	return strings.Join(parts, "; ")
 }
 
-// notInStep counts the definitions compared that aren't in step with NetBox.
-func (r compareJSON) notInStep() int {
-	n := 0
-	for _, o := range r.results {
-		if !o.InStep() {
-			n++
-		}
-	}
-	return n
-}
-
 // sourceCompared is one source read for a comparison.
 type sourceCompared struct {
 	row *compareSourceJSON
@@ -239,10 +233,11 @@ type sourceCompared struct {
 }
 
 // runCompare opens the database, connects to NetBox, fetches the sources if
-// asked, compares them with NetBox, and records the comparisons. It closes
-// the database before it returns, so that nothing is printed if closing it
-// fails.
-func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, manufacturers []string) (_ compareJSON, err error) {
+// asked, compares them with NetBox, and records the comparisons, keeping
+// the results for text output if forText, and their JSON otherwise. It
+// closes the database before it returns, so that nothing is printed if
+// closing it fails.
+func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, manufacturers []string, forText bool) (_ compareJSON, err error) {
 	db, _, err := a.openStore(ctx, cfg)
 	if err != nil {
 		return compareJSON{}, err
@@ -274,7 +269,7 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 			}
 		}
 	}
-	return a.compareSources(ctx, cfg, db, c, sources, fetchErrors, manufacturers)
+	return a.compareSources(ctx, cfg, db, c, sources, fetchErrors, manufacturers, forText)
 }
 
 // compareSources reads each source's last fetched version, compares the
@@ -282,7 +277,7 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 // can't be read, or whose comparisons can't be recorded, is reported in the
 // result; NetBox and the database failing are errors.
 func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.Store, c *netbox.Client, sources []config.Source,
-	fetchErrors map[string]string, manufacturers []string,
+	fetchErrors map[string]string, manufacturers []string, forText bool,
 ) (compareJSON, error) {
 	chosen := map[string]bool{}
 	for _, name := range manufacturers {
@@ -380,16 +375,23 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			}
 		}
 		// Each result is written as JSON once, for the database and for
-		// the output alike.
+		// the output alike. For JSON output, a result is let go once it is
+		// written, since it takes more memory than its JSON, keeping only
+		// what the counts and the database need.
 		written := make([]json.RawMessage, len(mine))
-		for i, r := range mine {
-			out, err := json.Marshal(r)
+		outcomes := make([]outcomeOf, len(mine))
+		for i := range mine {
+			out, err := json.Marshal(mine[i])
 			if err != nil {
 				return compareJSON{}, fmt.Errorf("source %s: write the comparison of %s: %w", sc.row.Name, sc.chosenKeys[i], err)
 			}
 			written[i] = out
+			outcomes[i] = outcomeOf{outcome: mine[i].Outcome, netboxID: mine[i].NetBoxID, differences: mine[i].Differences, inStep: mine[i].InStep()}
+			if !forText {
+				mine[i] = compare.Result{}
+			}
 		}
-		if err := recordComparisons(ctx, db, sc, mine, written, result); err != nil {
+		if err := recordComparisons(ctx, db, sc, outcomes, written, result); err != nil {
 			if !errors.Is(err, store.ErrSnapshotChanged) {
 				return compareJSON{}, err
 			}
@@ -398,22 +400,29 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			// go/unsafe-quoting).
 			a.failSource(sc.row, fmt.Sprintf("its comparisons were not recorded: %v; run 'netbox-trueup-ai source fetch', or use --fetch, and compare again", err))
 		}
-		for _, r := range mine {
+		for _, o := range outcomes {
+			result.compared++
+			if !o.inStep {
+				result.notInStep++
+			}
 			switch {
-			case r.InStep():
+			case o.inStep:
 				sc.row.InStep++
-			case r.Outcome == compare.Candidate:
+			case o.outcome == compare.Candidate:
 				sc.row.Differing++
-			case r.Outcome == compare.Absent:
+			case o.outcome == compare.Absent:
 				sc.row.Absent++
-			case r.Outcome == compare.Conflict:
+			case o.outcome == compare.Conflict:
 				sc.row.Conflicts++
 			}
 		}
 		result.OK = result.OK && sc.row.OK
 		result.Sources = append(result.Sources, *sc.row)
-		result.Objects = append(result.Objects, written...)
-		result.results = append(result.results, mine...)
+		if forText {
+			result.results = append(result.results, mine...)
+		} else {
+			result.Objects = append(result.Objects, written...)
+		}
 	}
 	if len(results) > 0 {
 		return compareJSON{}, fmt.Errorf("compare with NetBox: %d results of no definition", len(results))
@@ -429,7 +438,15 @@ func (a *app) failSource(row *compareSourceJSON, msg string) {
 // recordComparisons records one source's comparisons, results written as
 // JSON, as the latest of its definitions, and removes those of definitions
 // it no longer holds.
-func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, results []compare.Result, written []json.RawMessage, run compareJSON) error {
+// outcomeOf is what the counts and the database need of a result.
+type outcomeOf struct {
+	outcome     compare.Outcome
+	netboxID    int64
+	differences int
+	inStep      bool
+}
+
+func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, outcomes []outcomeOf, written []json.RawMessage, run compareJSON) error {
 	rec := store.ComparisonRun{
 		Source:        sc.row.Name,
 		SourceVersion: *sc.row.Version,
@@ -438,9 +455,9 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, r
 		NetBoxVersion: run.NetBox.Version,
 		Defined:       sc.defined,
 	}
-	for i, r := range results {
+	for i, o := range outcomes {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{
-			ComparisonKey: sc.chosenKeys[i], Outcome: string(r.Outcome), NetBoxID: r.NetBoxID, Differences: r.Differences, Result: written[i],
+			ComparisonKey: sc.chosenKeys[i], Outcome: string(o.outcome), NetBoxID: o.netboxID, Differences: o.differences, Result: written[i],
 		})
 	}
 	return db.RecordComparisons(ctx, rec)
@@ -522,16 +539,56 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 	if len(matched) == 0 {
 		return observed, nil
 	}
-	for _, col := range deviceType.Children {
+	children, err := readChildren(ctx, c, specs, deviceType, matched)
+	if err != nil {
+		return nil, err
+	}
+	return append(observed, children...), nil
+}
+
+// readChildren reads the children of the objects of type parent with IDs
+// ids, a collection at a time, all at once, as each listing waits on its own
+// requests; the client's cap on requests in flight still holds. The first
+// listing that fails stops the others, and is the error returned. The
+// children come in the collections' order.
+func readChildren(ctx context.Context, c *netbox.Client, specs []*model.Spec, parent *model.Spec, ids []int64) ([]compare.Observed, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	read := make([][]compare.Observed, len(parent.Children))
+	var (
+		mu     sync.Mutex
+		failed error
+		wg     sync.WaitGroup
+	)
+	for i, col := range parent.Children {
 		s := model.SpecOf(specs, col.Type)
 		if s == nil || s.Endpoint == "" {
-			return nil, fmt.Errorf("TrueUp can't read the %s of device types from NetBox", col.Name)
+			return nil, fmt.Errorf("TrueUp can't read the %s of %ss from NetBox", col.Name, typeName(parent.Type))
 		}
-		if err := c.ListByParent(ctx, s.Endpoint, col.Parent, matched, fieldsQuery(s), decode(s)); err != nil {
-			return nil, readError(s, err)
-		}
+		wg.Go(func() {
+			err := c.ListByParent(ctx, s.Endpoint, col.Parent, ids, fieldsQuery(s), func(raw json.RawMessage) error {
+				id, obj, err := s.DecodeAPI(specs, raw)
+				if err != nil {
+					return fmt.Errorf("NetBox's answer can't be read: %w", err)
+				}
+				read[i] = append(read[i], compare.Observed{ID: id, Object: obj})
+				return nil
+			})
+			if err != nil {
+				mu.Lock()
+				defer mu.Unlock()
+				if failed == nil {
+					failed = readError(s, err)
+					cancel()
+				}
+			}
+		})
 	}
-	return observed, nil
+	wg.Wait()
+	if failed != nil {
+		return nil, failed
+	}
+	return slices.Concat(read...), nil
 }
 
 // fieldsQuery asks NetBox for an object's ID and the fields its spec
@@ -873,11 +930,16 @@ func writeCompareJSON(w io.Writer, r compareJSON) error {
 				return err
 			}
 		}
-		if len(r.Objects) == 0 {
+		switch {
+		case r.Objects == nil:
+			if err := text("  \"objects\": null,\n"); err != nil {
+				return err
+			}
+		case len(r.Objects) == 0:
 			if err := text("  \"objects\": [],\n"); err != nil {
 				return err
 			}
-		} else {
+		default:
 			if err := text("  \"objects\": [\n"); err != nil {
 				return err
 			}

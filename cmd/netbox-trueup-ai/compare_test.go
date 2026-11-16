@@ -19,6 +19,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/netbox"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
@@ -798,6 +800,7 @@ func TestCompareJSONIsWrittenAsWriteJSONWould(t *testing.T) {
 	t.Parallel()
 	msg := "a <warning> & more"
 	for _, r := range []compareJSON{
+		{},
 		{Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}},
 		{
 			OK:         true,
@@ -860,6 +863,20 @@ func TestValueText(t *testing.T) {
 	for _, tt := range tests {
 		if got := valueText(tt.v); got != tt.want {
 			t.Errorf("valueText(%v) = %q, want %q", tt.v, got, tt.want)
+		}
+	}
+}
+
+// TestReadTypesCoverTheSpecs checks that netbox check looks at every object
+// type compare reads, at the endpoint compare reads it from.
+func TestReadTypesCoverTheSpecs(t *testing.T) {
+	t.Parallel()
+	for _, s := range dcim.Specs() {
+		if s.Endpoint == "" {
+			continue
+		}
+		if !slices.Contains(netbox.ReadTypes(), netbox.ObjectType{Name: s.Type, Endpoint: s.Endpoint}) {
+			t.Errorf("netbox check doesn't look at %s at %s, which compare reads", s.Type, s.Endpoint)
 		}
 	}
 }
