@@ -91,11 +91,16 @@ type pendingRef struct {
 	ref   model.Reference
 }
 
+// names holds, by template type, the names a file gives its templates, as
+// NetBox would store them, whether or not the template has an error.
+type names map[string]map[model.Value]bool
+
 // components reads one of a device type's lists of component templates
 // into the children of the device type's collection, as NetBox's import
-// would create them, reporting each problem with at. It returns false, and
-// no children, if the value isn't a list.
-func (r *reader) components(list *componentList, n *format.Node, at childAt, refs *[]pendingRef) (model.Children, bool) {
+// would create them, reporting each problem with at, and adding each name
+// to given and each reference to another template to refs. It returns
+// false, and no children, if the value isn't a list.
+func (r *reader) components(list *componentList, n *format.Node, at childAt, refs *[]pendingRef, given names) (model.Children, bool) {
 	col := r.deviceType.Collection(list.Collection)
 	spec := r.specs[col.Type]
 	if n.Kind != format.Sequence {
@@ -113,6 +118,12 @@ func (r *reader) components(list *componentList, n *format.Node, at childAt, ref
 			continue
 		}
 		child, ok := r.component(list, spec, col, item, where, at, refs)
+		if name, named := child.Fields["name"]; named {
+			if given[spec.Type] == nil {
+				given[spec.Type] = map[model.Value]bool{}
+			}
+			given[spec.Type][name] = true
+		}
 		if !ok {
 			continue
 		}
@@ -219,33 +230,17 @@ func (r *reader) within(f *model.Field, n *format.Node) (model.Value, string) {
 }
 
 // references checks that each reference to another template of the device
-// type names one the definition has, as NetBox's import does: it refuses a
-// name it can't find among the templates it has created, which it creates
-// list by list, in the order of componentLists.
-func (r *reader) references(def *format.Definition, refs []pendingRef, at childAt) {
+// type names one the file gives, as NetBox's import does: it refuses a name
+// it can't find among the templates it has created, which it creates list
+// by list, in the order of componentLists. A template the file gives with
+// an error of its own counts, so that what refers to it isn't blamed too.
+func (r *reader) references(refs []pendingRef, given names, at childAt) {
 	for _, p := range refs {
-		if !hasChild(def.Object, r.deviceType, p.ref) {
+		if !given[p.ref.Type][p.ref.Key["name"]] {
 			at(format.Error, p.node, p.field,
 				fmt.Sprintf("names %s, which isn't one of the device type's %s, so NetBox's import wouldn't find it", p.ref.Key["name"], collectionNoun(r.deviceType, p.ref.Type)))
 		}
 	}
-}
-
-// hasChild reports whether obj, of spec's type, holds a child that ref
-// names by its collection's key.
-func hasChild(obj model.Object, spec *model.Spec, ref model.Reference) bool {
-	for _, col := range spec.Children {
-		if col.Type != ref.Type {
-			continue
-		}
-		children, _ := obj.Fields[col.Name].(model.Children)
-		for _, c := range children {
-			if model.Equal(c.Fields["name"], ref.Key["name"]) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // collectionNoun names the library's list that holds templates of type typ,

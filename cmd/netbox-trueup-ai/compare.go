@@ -643,8 +643,12 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 				strings.Join(c.Rule, " and "), verb, typeName(o.Type), c.ID, identityText(o.Type, c.Identity)))
 		}
 		for _, p := range where {
-			parts = append(parts, fmt.Sprintf("NetBox's #%d has %s twice, as %s, which NetBox should keep unique, so neither is compared",
-				o.NetBoxID, p, strings.Join(twice[p], " and ")))
+			times, none := "twice", "neither"
+			if n := len(twice[p]); n > 2 {
+				times, none = strconv.Itoa(n)+" times", "none"
+			}
+			parts = append(parts, fmt.Sprintf("NetBox's #%d has %s %s, as %s, which NetBox should keep unique, so %s is compared",
+				o.NetBoxID, p, times, strings.Join(twice[p], ", "), none))
 		}
 		conflicts = append(conflicts, "  "+cell(objectText(o)+": "+strings.Join(parts, "; ")))
 	}
@@ -791,9 +795,9 @@ func valueText(v model.Value) string {
 		return "not set"
 	case model.Reference:
 		if len(v.Key) == 0 {
-			// Another template, by ID alone, which isn't one of the
-			// device type's.
-			return fmt.Sprintf("#%d, not one of the device type's", v.ID)
+			// By its ID alone, such as a template's reference to one that
+			// isn't another of its device type's.
+			return fmt.Sprintf("#%d", v.ID)
 		}
 		name := strconv.Quote(text(v))
 		if v.ID != 0 {
@@ -822,7 +826,9 @@ func presenceText(v model.Value) string {
 // writeCompareJSON writes the result as writeJSON does, a field and an
 // object at a time, so that the document, which runs to hundreds of
 // megabytes for the whole of devicetype-library, is never held in memory
-// whole on top of the objects it is made of.
+// whole on top of the objects it is made of. It names compareJSON's fields
+// itself: TestCompareJSONIsWrittenAsWriteJSONWould fails when they differ
+// from what writeJSON writes, as a new field would.
 func writeCompareJSON(w io.Writer, r compareJSON) error {
 	bw := bufio.NewWriterSize(w, 1<<16)
 	var indented bytes.Buffer

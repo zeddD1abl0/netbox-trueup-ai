@@ -360,6 +360,10 @@ func TestReadComponentProblems(t *testing.T) {
 		{"a draw NetBox refuses", false, valid + "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n    maximum_draw: 3000000000\n", []format.Problem{
 			{Severity: format.Error, Line: 9, Column: 19, Field: "power-ports[0].maximum_draw", Reason: "3000000000 is more than 2147483647"},
 		}},
+		// The power port's own error, not the outlet's too.
+		{"an outlet's power port with an error of its own", true, valid + "power-ports:\n  - name: PSU1\n    type: bogus\n" + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n", []format.Problem{
+			{Severity: format.Error, Line: 8, Column: 11, Field: "power-ports[0].type", Reason: `"bogus" isn't one of its choices`},
+		}},
 		{"a list item that isn't a mapping", true, valid + "device-bays:\n  - Bay 1\n", []format.Problem{
 			{Severity: format.Error, Line: 7, Column: 5, Field: "device-bays[0]", Reason: "is text, but each of devicetype-library's device-bays is a mapping"},
 		}},

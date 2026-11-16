@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
@@ -819,6 +820,46 @@ func TestCompareJSONIsWrittenAsWriteJSONWould(t *testing.T) {
 		}
 		if diff := cmp.Diff(whole.String(), pieces.String()); diff != "" {
 			t.Errorf("writeCompareJSON (-writeJSON +got):\n%s", diff)
+		}
+	}
+}
+
+// TestCompareTemplatesNetBoxHoldsMoreThanOnce checks how compare reports a
+// device type NetBox holds a template of three times, which NetBox's rules
+// forbid.
+func TestCompareTemplatesNetBoxHoldsMoreThanOnce(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	const bays = "/api/dcim/module-bay-templates/"
+	ne8000 := nb.deviceTypes[1]
+	nb.templates[bays] = append(nb.templates[bays],
+		nbTemplate(bays, 300, ne8000, "LPU 1", map[string]any{"position": "1"}),
+		nbTemplate(bays, 301, ne8000, "LPU 1", map[string]any{"position": "1"}))
+	env, _, _, configure := compareEnv(t, nb)
+	r := runCLIApp(t, nil, configure, env, "compare", "--manufacturer", "Huawei")
+	want := `lib: device type Huawei "NE8000-X8" (device-types/Huawei/NE8000-X8.yaml): NetBox's #11 has module_bays["LPU 1"] 3 times, as #200, #300, #301, which NetBox should keep unique, so none is compared`
+	if r.code != exitOK || !strings.Contains(r.stdout, want) {
+		t.Errorf("exit code %d, stdout:\n%s\nwant it to hold %s", r.code, r.stdout, want)
+	}
+}
+
+func TestValueText(t *testing.T) {
+	t.Parallel()
+	port := model.Reference{Type: "dcim.powerporttemplate", ID: 7, Key: map[string]model.Value{"name": model.String("PSU1")}}
+	tests := []struct {
+		v    model.Value
+		want string
+	}{
+		{nil, "not set"},
+		{model.String("x"), `"x"`},
+		{port, `"PSU1" (#7)`},
+		{model.Reference{Type: "dcim.powerporttemplate", Key: port.Key}, `"PSU1"`},
+		// Another device type's, by its ID alone.
+		{model.Reference{Type: "dcim.powerporttemplate", ID: 9}, "#9"},
+	}
+	for _, tt := range tests {
+		if got := valueText(tt.v); got != tt.want {
+			t.Errorf("valueText(%v) = %q, want %q", tt.v, got, tt.want)
 		}
 	}
 }

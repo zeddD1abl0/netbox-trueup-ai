@@ -264,6 +264,12 @@ func TestChildrenRefused(t *testing.T) {
 		{"a child without its key", map[string]model.Children{"interfaces": {{Type: "dcim.interfacetemplate", Fields: map[string]model.Value{"type": model.Choice("1000base-t")}}}}, nil, "interfaces[0] hasn't got its key, name"},
 		{"two children with one key, once trimmed", map[string]model.Children{"interfaces": {iface("eth0"), iface("eth0 ")}}, nil, "interfaces[1] has the key of interfaces[0]"},
 		{"a reference to a child the definition hasn't got", map[string]model.Children{"power_outlets": {child("poweroutlet", "O1", map[string]model.Value{"power_port": powerPort("PSU1")})}}, nil, `power_outlets[0] power_port refers to dcim.powerporttemplate name="PSU1", which the definition hasn't got`},
+		// NetBox's import looks for the name as given, and stores names
+		// trimmed, so this names nothing NetBox could hold.
+		{"a reference by a key NetBox would store otherwise", map[string]model.Children{
+			"power_ports":   {child("powerport", "PSU1", nil)},
+			"power_outlets": {child("poweroutlet", "O1", map[string]model.Value{"power_port": powerPort(" PSU1")})},
+		}, nil, `power_outlets[0] power_port refers to dcim.powerporttemplate name=" PSU1", by a key NetBox would store otherwise`},
 		{"a child field of the wrong kind", map[string]model.Children{"interfaces": {child("interface", "eth0", map[string]model.Value{"type": model.String("1000base-t")})}}, nil, "interfaces[0] type is a string, not a choice"},
 		{"a NetBox child of a device type not listed", nil, []compare.Observed{nbChild(20, 99, "interface", "eth0", map[string]model.Value{"type": model.Choice("1000base-t")})}, "NetBox listed children of dcim.devicetype #99, but not the dcim.devicetype itself"},
 		{"a NetBox child of no device type", nil, []compare.Observed{nbChild(20, 10, "interface", "eth0", map[string]model.Value{"type": model.Choice("1000base-t"), "device_type": model.Null{}})}, "NetBox's dcim.interfacetemplate #20 belongs to none of the objects that hold its type"},
@@ -273,6 +279,24 @@ func TestChildrenRefused(t *testing.T) {
 		_, err := compare.Compare(dcim.Specs(), []compare.Definition{def}, append(nbR670(), tt.observed...))
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: Compare = %v, want an error holding %q", tt.name, err, tt.want)
+		}
+	}
+}
+
+// TestChildrenOfATypeWithoutASpec checks that a collection whose children
+// have no spec fails, rather than panics, whether the definition has
+// children there or not.
+func TestChildrenOfATypeWithoutASpec(t *testing.T) {
+	t.Parallel()
+	all := dcim.Specs()
+	specs := []*model.Spec{model.SpecOf(all, "dcim.manufacturer"), model.SpecOf(all, "dcim.devicetype")}
+	for _, def := range []compare.Definition{
+		deviceType("Dell", "R670", "r670", nil),
+		withChildren(map[string]model.Children{"device_bays": {child("devicebay", "Bay 1", nil)}}),
+	} {
+		_, err := compare.Compare(specs, []compare.Definition{def}, nbR670())
+		if err == nil || !strings.Contains(err.Error(), "has no spec") {
+			t.Errorf("Compare = %v, want an error saying a collection's type has no spec", err)
 		}
 	}
 }

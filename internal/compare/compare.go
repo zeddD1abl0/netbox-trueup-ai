@@ -475,7 +475,9 @@ func (ix *index) compare(d *Definition) (Result, error) {
 		r.addRow(row)
 	}
 	for i := range s.Children {
-		ix.compareChildren(&r, s, &s.Children[i], m.fields)
+		if err := ix.compareChildren(&r, s, &s.Children[i], m.fields); err != nil {
+			return Result{}, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
+		}
 	}
 	switch {
 	case len(r.Collisions) > 0 || m.ambiguous:

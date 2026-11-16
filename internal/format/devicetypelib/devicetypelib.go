@@ -342,6 +342,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 		problems = append(problems, format.Problem{Severity: severity, Path: p, Line: n.Line, Column: n.Column, Field: field, Reason: reason})
 	}
 	var refs []pendingRef
+	given := names{}
 	for _, pair := range root.Pairs {
 		key, n := pair.Key.Value, pair.Value
 		switch {
@@ -383,7 +384,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 			def.Metadata[key] = model.Boolean(n.Value == "true")
 		case componentListOf(key) != nil:
 			list := componentListOf(key)
-			if children, ok := r.components(list, n, at, &refs); ok {
+			if children, ok := r.components(list, n, at, &refs, given); ok {
 				def.Object.Fields[list.Collection] = children
 			}
 		case slices.Contains(unmappedKeys, key):
@@ -399,7 +400,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 			at(format.Warning, pair.Key, format.JoinField("", key), "isn't a key TrueUp reads from devicetype-library yet, so it is ignored")
 		}
 	}
-	r.references(&def, refs, at)
+	r.references(refs, given, at)
 	// The schema requires these, but it comes from the source, so check
 	// that the file gives what NetBox needs to create a device type, with
 	// its own import.

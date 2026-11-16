@@ -1,6 +1,7 @@
 package compare
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -26,9 +27,14 @@ import (
 
 // compareChildren adds the rows of collection col of a definition of type
 // s, whose fields are normalized, to r, and as collisions the NetBox
-// children whose keys are another's, which NetBox's rules forbid.
-func (ix *index) compareChildren(r *Result, s *model.Spec, col *model.Collection, fields map[string]model.Value) {
+// children whose keys are another's, which NetBox's rules forbid. It fails
+// if the collection's type has no spec, since its children, the
+// definition's or NetBox's, couldn't be compared.
+func (ix *index) compareChildren(r *Result, s *model.Spec, col *model.Collection, fields map[string]model.Value) error {
 	cs := ix.specs[col.Type]
+	if cs == nil {
+		return fmt.Errorf("the spec of %s has %s, whose type %s has no spec", s.Type, col.Name, col.Type)
+	}
 	defs, _ := fields[col.Name].(model.Children)
 	hasNetBox := r.NetBoxID != 0
 
@@ -119,6 +125,7 @@ func (ix *index) compareChildren(r *Result, s *model.Spec, col *model.Collection
 		}
 		r.addRow(row)
 	}
+	return nil
 }
 
 // keyOf returns a child's key in collection col, as a string that tells

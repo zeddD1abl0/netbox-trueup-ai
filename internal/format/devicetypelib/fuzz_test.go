@@ -116,3 +116,20 @@ func checkChildren(t *testing.T, r *reader, dt model.Object, col *model.Collecti
 		names[child.Fields["name"]] = true
 	}
 }
+
+// hasChild reports whether obj, of spec's type, holds a child that ref
+// names by its collection's key.
+func hasChild(obj model.Object, spec *model.Spec, ref model.Reference) bool {
+	for _, col := range spec.Children {
+		if col.Type != ref.Type {
+			continue
+		}
+		children, _ := obj.Fields[col.Name].(model.Children)
+		for _, c := range children {
+			if model.Equal(c.Fields["name"], ref.Key["name"]) {
+				return true
+			}
+		}
+	}
+	return false
+}
