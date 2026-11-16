@@ -218,13 +218,9 @@ func (r *reader) within(f *model.Field, n *format.Node) (model.Value, string) {
 		return model.Null{}, ""
 	}
 	target := r.specs[f.Ref.Types[0]]
-	name := target.Field("name")
-	v := model.String(n.Value)
-	if err := name.Validate(v); err != nil {
-		return nil, reason(err)
-	}
-	if name.Normalize(v) != v {
-		return nil, format.Quote(n.Value) + " has white space at an end: NetBox trims a template's name, but its import looks for the name as the file gives it, and wouldn't find it"
+	v, why := lookupName(target.Field("name"), n.Value, "template")
+	if why != "" {
+		return nil, why
 	}
 	return model.Reference{Type: target.Type, Key: map[string]model.Value{"name": v}}, ""
 }

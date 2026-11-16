@@ -425,18 +425,31 @@ func (r *reader) manufacturerOf(n *format.Node) (model.Reference, string) {
 	if n.Kind != format.Scalar || n.Tag != format.TagStr {
 		return model.Reference{}, "is " + format.Describe(n) + ", but a manufacturer is given by its name, as text"
 	}
-	v := model.String(n.Value)
-	if err := name.Validate(v); err != nil {
-		return model.Reference{}, reason(err)
-	}
-	if name.Normalize(v) != v {
-		return model.Reference{}, format.Quote(n.Value) + " has white space at an end: NetBox trims a manufacturer's name, but its import looks for the name as the file gives it, and wouldn't find it"
+	v, why := lookupName(name, n.Value, "manufacturer")
+	if why != "" {
+		return model.Reference{}, why
 	}
 	ref := model.Reference{Type: r.manufacturer.Type, Key: map[string]model.Value{"name": v}}
 	if err := r.deviceType.Field("manufacturer").Validate(ref); err != nil {
 		return model.Reference{}, reason(err)
 	}
 	return ref, ""
+}
+
+// lookupName checks a name NetBox's import looks an object up by, with a
+// ModelChoiceField whose to_field_name is name: the name must be one NetBox
+// could store, and as NetBox would store it, since the import looks for it
+// untrimmed. noun says what is looked up, such as manufacturer. It returns
+// why the name can't be, if it can't.
+func lookupName(name *model.Field, text, noun string) (model.String, string) {
+	v := model.String(text)
+	if err := name.Validate(v); err != nil {
+		return "", reason(err)
+	}
+	if name.Normalize(v) != v {
+		return "", format.Quote(text) + " has white space at an end: NetBox trims a " + noun + "'s name, but its import looks for the name as the file gives it, and wouldn't find it"
+	}
+	return v, ""
 }
 
 // reason is why a value fails Field.Validate, without the field's name in

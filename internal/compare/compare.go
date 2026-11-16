@@ -360,6 +360,12 @@ func (ix *index) add(o Observed) error {
 		return err
 	}
 	ix.objects[s.Type][o.ID] = o.Object
+	// An object of a type with no identity, such as a component template,
+	// is only ever a child, matched by its collection's key, so nothing
+	// looks it up by its rules.
+	if len(s.Identity) == 0 {
+		return nil
+	}
 	// NetBox's constraints compare what it stores, so the object's values
 	// count as NetBox returns them, not normalized.
 	for i, u := range s.Unique {
@@ -378,9 +384,13 @@ func (ix *index) addChild(s *model.Spec, o Observed) error {
 	if len(hs) == 0 {
 		return nil
 	}
+	nested := false
 	for _, h := range hs {
 		if h.col.Nested {
-			return fmt.Errorf("NetBox's %s #%d is held nested in its parent, which TrueUp doesn't compare yet", s.Type, o.ID)
+			// A parent carries such children itself; this one has a
+			// listing of its own, so it belongs to another holder.
+			nested = true
+			continue
 		}
 		ref, ok := o.Object.Fields[h.col.Parent].(model.Reference)
 		if !ok || ref.ID <= 0 || ref.Type != h.parent.Type {
@@ -396,6 +406,9 @@ func (ix *index) addChild(s *model.Spec, o Observed) error {
 		}
 		byParent[ref.ID][h.col.Name] = append(byParent[ref.ID][h.col.Name], o.ID)
 		return nil
+	}
+	if nested {
+		return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type, apart from those that carry it nested, which TrueUp doesn't compare yet", s.Type, o.ID)
 	}
 	return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type", s.Type, o.ID)
 }

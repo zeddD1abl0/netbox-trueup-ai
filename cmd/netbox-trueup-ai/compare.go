@@ -122,8 +122,8 @@ Exit codes:
 			if !result.OK {
 				return outcomeError{code: exitCompareProblems, err: errors.New(result.summary())}
 			}
-			if n := result.notInStep; signal && n > 0 {
-				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", n, result.compared)}
+			if compared, inStep := result.counts(); signal && compared > inStep {
+				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", compared-inStep, compared)}
 			}
 			return nil
 		},
@@ -152,14 +152,22 @@ type compareJSON struct {
 	Objects  []json.RawMessage `json:"objects"`
 	Warnings []warningJSON     `json:"warnings"`
 
-	// results are the Objects, kept for text output only, since they
-	// take more memory than their JSON; Objects are kept for JSON output
-	// only. compared and notInStep count the definitions compared, and
-	// those not in step with NetBox. unknown are the names given to
+	// results are the Objects, kept for text output only, with only the
+	// rows that differ, since they take more memory than their JSON;
+	// Objects are kept for JSON output only. unknown are the names given to
 	// --manufacturer that no source read defines.
-	results             []compare.Result
-	compared, notInStep int
-	unknown             []string
+	results []compare.Result
+	unknown []string
+}
+
+// counts returns how many definitions were compared, and how many of them
+// are in step with NetBox, from the sources' counts.
+func (r compareJSON) counts() (compared, inStep int) {
+	for _, s := range r.Sources {
+		compared += s.InStep + s.Differing + s.Absent + s.Conflicts
+		inStep += s.InStep
+	}
+	return compared, inStep
 }
 
 type compareNetBoxJSON struct {
@@ -353,11 +361,11 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		if results, err = compare.Compare(dcim.Specs(), defs, observed); err != nil {
 			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
 		}
-		// A device type whose templates weren't read would show every one
-		// of them as missing.
+		// An object whose children weren't read would show every one of
+		// them as missing.
 		for _, r := range results {
-			if r.Type == "dcim.devicetype" && r.NetBoxID != 0 && !childrenRead[r.NetBoxID] {
-				return compareJSON{}, fmt.Errorf("compare with NetBox: the templates of NetBox's device type #%d weren't read", r.NetBoxID)
+			if s := model.SpecOf(dcim.Specs(), r.Type); s != nil && len(s.Children) > 0 && r.NetBoxID != 0 && !childrenRead[r.Type][r.NetBoxID] {
+				return compareJSON{}, fmt.Errorf("compare with NetBox: the children of NetBox's %s #%d weren't read", typeName(r.Type), r.NetBoxID)
 			}
 		}
 	}
@@ -396,7 +404,15 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			}
 			written[i] = out
 			outcomes[i] = outcomeOf{outcome: mine[i].Outcome, netboxID: mine[i].NetBoxID, differences: mine[i].Differences, inStep: mine[i].InStep()}
-			if !forText {
+			switch o := outcomes[i].outcome; o {
+			case compare.Candidate, compare.Absent, compare.Conflict:
+			default:
+				// Before anything is recorded.
+				return compareJSON{}, fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", sc.chosenKeys[i], o)
+			}
+			if forText {
+				mine[i].Rows = differing(mine[i].Rows)
+			} else {
 				mine[i] = compare.Result{}
 			}
 		}
@@ -410,10 +426,6 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			a.failSource(sc.row, fmt.Sprintf("its comparisons were not recorded: %v; run 'netbox-trueup-ai source fetch', or use --fetch, and compare again", err))
 		}
 		for _, o := range outcomes {
-			result.compared++
-			if !o.inStep {
-				result.notInStep++
-			}
 			switch {
 			case o.inStep:
 				sc.row.InStep++
@@ -423,8 +435,6 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 				sc.row.Absent++
 			case o.outcome == compare.Conflict:
 				sc.row.Conflicts++
-			default:
-				return compareJSON{}, fmt.Errorf("compare with NetBox: a result of source %s has the outcome %q", sc.row.Name, o.outcome)
 			}
 		}
 		result.OK = result.OK && sc.row.OK
@@ -444,6 +454,18 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 func (a *app) failSource(row *compareSourceJSON, msg string) {
 	row.OK, row.Error = false, &msg
 	a.logger.Warn("can't compare source", "source", row.Name, "error", msg)
+}
+
+// differing returns the rows that differ, in a slice of their own, so that
+// the others can be let go: all that text output shows.
+func differing(rows []compare.Row) []compare.Row {
+	var out []compare.Row
+	for _, row := range rows {
+		if row.Differs {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // outcomeOf is what the counts and the database need of a result.
@@ -508,7 +530,7 @@ func manufacturerName(d format.Definition) (string, bool) {
 // templates of each device type a definition matches, collection by
 // collection. Each object is read through its spec, and one that can't be
 // is an error, since leaving it out would make what it is show as absent.
-func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) (observed []compare.Observed, childrenRead map[int64]bool, err error) {
+func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) (observed []compare.Observed, childrenRead map[string]map[int64]bool, err error) {
 	specs := dcim.Specs()
 	manufacturer, deviceType := model.SpecOf(specs, "dcim.manufacturer"), model.SpecOf(specs, "dcim.devicetype")
 	if manufacturer == nil || deviceType == nil {
@@ -546,9 +568,9 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 	if err != nil {
 		return nil, nil, fmt.Errorf("compare with NetBox: %w", err)
 	}
-	childrenRead = make(map[int64]bool, len(matched))
+	childrenRead = map[string]map[int64]bool{deviceType.Type: {}}
 	for _, id := range matched {
-		childrenRead[id] = true
+		childrenRead[deviceType.Type][id] = true
 	}
 	if len(matched) == 0 {
 		return observed, childrenRead, nil
