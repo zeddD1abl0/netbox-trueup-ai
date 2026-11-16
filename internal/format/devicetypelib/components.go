@@ -93,18 +93,36 @@ type pendingRef struct {
 
 // names holds, by template type, the names a file gives its templates, as
 // NetBox would store them, whether or not the template has an error.
-type names map[string]map[model.Value]bool
+type names struct {
+	given map[string]map[model.Value]bool
+	// unread holds the types of the lists some of whose names can't be
+	// read: a list that isn't one, or an item that isn't a mapping or has
+	// no name TrueUp can read. Each of those has its own error.
+	unread map[string]bool
+}
+
+func newNames() *names {
+	return &names{given: map[string]map[model.Value]bool{}, unread: map[string]bool{}}
+}
+
+func (ns *names) add(typ string, name model.Value) {
+	if ns.given[typ] == nil {
+		ns.given[typ] = map[model.Value]bool{}
+	}
+	ns.given[typ][name] = true
+}
 
 // components reads one of a device type's lists of component templates
 // into the children of the device type's collection, as NetBox's import
 // would create them, reporting each problem with at, and adding each name
 // to given and each reference to another template to refs. It returns
 // false, and no children, if the value isn't a list.
-func (r *reader) components(list *componentList, n *format.Node, at childAt, refs *[]pendingRef, given names) (model.Children, bool) {
+func (r *reader) components(list *componentList, n *format.Node, at childAt, refs *[]pendingRef, given *names) (model.Children, bool) {
 	col := r.deviceType.Collection(list.Collection)
 	spec := r.specs[col.Type]
 	if n.Kind != format.Sequence {
 		at(format.Error, n, list.Key, "isn't a list, which devicetype-library's "+list.Key+" is")
+		given.unread[spec.Type] = true
 		return nil, false
 	}
 	children := make(model.Children, 0, len(n.Items))
@@ -115,14 +133,14 @@ func (r *reader) components(list *componentList, n *format.Node, at childAt, ref
 		where := list.Key + "[" + strconv.Itoa(i) + "]"
 		if item.Kind != format.Mapping {
 			at(format.Error, item, where, "is "+format.Describe(item)+", but each of devicetype-library's "+list.Key+" is a mapping")
+			given.unread[spec.Type] = true
 			continue
 		}
 		child, ok := r.component(list, spec, col, item, where, at, refs)
 		if name, named := child.Fields["name"]; named {
-			if given[spec.Type] == nil {
-				given[spec.Type] = map[model.Value]bool{}
-			}
-			given[spec.Type][name] = true
+			given.add(spec.Type, name)
+		} else {
+			given.unread[spec.Type] = true
 		}
 		if !ok {
 			continue
@@ -233,10 +251,14 @@ func (r *reader) within(f *model.Field, n *format.Node) (model.Value, string) {
 // ports will do; a reference within one list, such as an interface's parent,
 // which TrueUp doesn't read, would have to name an earlier item. A template
 // the file gives with an error of its own counts, so that what refers to it
-// isn't blamed too.
-func (r *reader) references(refs []pendingRef, given names, at childAt) {
+// isn't blamed too; so does any name in a list some of whose names can't be
+// read, as the reference may name one of those.
+func (r *reader) references(refs []pendingRef, given *names, at childAt) {
 	for _, p := range refs {
-		if !given[p.ref.Type][p.ref.Key["name"]] {
+		if given.unread[p.ref.Type] {
+			continue
+		}
+		if !given.given[p.ref.Type][p.ref.Key["name"]] {
 			at(format.Error, p.node, p.field,
 				fmt.Sprintf("names %s, which isn't one of the device type's %s, so NetBox's import wouldn't find it", p.ref.Key["name"], collectionNoun(r.deviceType, p.ref.Type)))
 		}

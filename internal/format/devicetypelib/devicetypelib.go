@@ -342,7 +342,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 		problems = append(problems, format.Problem{Severity: severity, Path: p, Line: n.Line, Column: n.Column, Field: field, Reason: reason})
 	}
 	var refs []pendingRef
-	given := names{}
+	given := newNames()
 	for _, pair := range root.Pairs {
 		key, n := pair.Key.Value, pair.Value
 		list := componentListOf(key)

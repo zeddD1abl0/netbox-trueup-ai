@@ -336,6 +336,7 @@ func TestReadComponentProblems(t *testing.T) {
 	t.Parallel()
 	lenient := `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
 	ports := "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n"
+	outlet := "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n"
 	tests := []struct {
 		name    string
 		lenient bool
@@ -363,6 +364,23 @@ func TestReadComponentProblems(t *testing.T) {
 		// The power port's own error, not the outlet's too.
 		{"an outlet's power port with an error of its own", true, valid + "power-ports:\n  - name: PSU1\n    type: bogus\n" + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n", []format.Problem{
 			{Severity: format.Error, Line: 8, Column: 11, Field: "power-ports[0].type", Reason: `"bogus" isn't one of its choices`},
+		}},
+		// A power port with an error of its own still has a name, so an
+		// outlet naming another is blamed.
+		{"an outlet's missing power port beside one with an error", true, valid + "power-ports:\n  - name: PSU1\n    type: bogus\n" + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU9\n", []format.Problem{
+			{Severity: format.Error, Line: 8, Column: 11, Field: "power-ports[0].type", Reason: `"bogus" isn't one of its choices`},
+			{Severity: format.Error, Line: 12, Column: 17, Field: "power-outlets[0].power_port", Reason: `names "PSU9", which isn't one of the device type's power-ports, so NetBox's import wouldn't find it`},
+		}},
+		// The power ports' error, not the outlet's too, since the power
+		// port it names may be the one TrueUp can't read.
+		{"an outlet's power port in a list that isn't one", true, valid + "power-ports:\n  name: PSU1\n  type: iec-60320-c14\n" + outlet, []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 3, Field: "power-ports", Reason: "isn't a list, which devicetype-library's power-ports is"},
+		}},
+		{"an outlet's power port that isn't a mapping", true, valid + "power-ports:\n  - PSU1\n" + outlet, []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "power-ports[0]", Reason: "is text, but each of devicetype-library's power-ports is a mapping"},
+		}},
+		{"an outlet's power port without a name", true, valid + "power-ports:\n  - type: iec-60320-c14\n" + outlet, []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "power-ports[0]", Reason: "has no name, which NetBox needs to create one of a device type's power-ports"},
 		}},
 		{"a list item that isn't a mapping", true, valid + "device-bays:\n  - Bay 1\n", []format.Problem{
 			{Severity: format.Error, Line: 7, Column: 5, Field: "device-bays[0]", Reason: "is text, but each of devicetype-library's device-bays is a mapping"},

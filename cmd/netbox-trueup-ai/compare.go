@@ -358,13 +358,14 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		if err != nil {
 			return compareJSON{}, err
 		}
-		if results, err = compare.Compare(dcim.Specs(), defs, observed); err != nil {
+		specs := dcim.Specs()
+		if results, err = compare.Compare(specs, defs, observed); err != nil {
 			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
 		}
 		// An object whose children weren't read would show every one of
 		// them as missing.
 		for _, r := range results {
-			if s := model.SpecOf(dcim.Specs(), r.Type); s != nil && len(s.Children) > 0 && r.NetBoxID != 0 && !childrenRead[r.Type][r.NetBoxID] {
+			if s := model.SpecOf(specs, r.Type); s != nil && len(s.Children) > 0 && r.NetBoxID != 0 && !childrenRead[r.Type][r.NetBoxID] {
 				return compareJSON{}, fmt.Errorf("compare with NetBox: the children of NetBox's %s #%d weren't read", typeName(r.Type), r.NetBoxID)
 			}
 		}
