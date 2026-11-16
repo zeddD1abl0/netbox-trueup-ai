@@ -63,8 +63,10 @@ type Result struct {
 // same object as another, and NetBox may hold it already.
 type Definition struct {
 	// Object is the object's type and the fields the definition sets,
-	// normalized as the type's spec says. A field it doesn't set, it doesn't
-	// manage (docs/adr/0006-manage-only-linked-objects.md).
+	// normalized as the type's spec says, with each of its collections'
+	// children, such as a device type's interface templates, as
+	// model.Children. A field it doesn't set, it doesn't manage
+	// (docs/adr/0006-manage-only-linked-objects.md).
 	Object model.Object
 	// Identity holds the values of the spec's identity fields, which tell
 	// the object from others of its type: a device type's manufacturer and
@@ -88,9 +90,8 @@ type Definition struct {
 	// NetBox.
 	Metadata map[string]model.Value
 	// Unmapped counts, by key, the lists of children the file holds that
-	// TrueUp doesn't read as objects yet, such as a device type's 48
-	// interfaces: the specs of component templates come in roadmap steps 11
-	// and 12.
+	// TrueUp doesn't read as objects yet, such as a device type's 24 front
+	// ports, which roadmap step 12 reads.
 	Unmapped map[string]int
 }
 

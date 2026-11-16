@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -29,7 +30,9 @@ type compareNetBox struct {
 	srv           *httptest.Server
 	manufacturers []map[string]any
 	deviceTypes   []map[string]any
-	denied        []string
+	// templates are the component templates, by endpoint.
+	templates map[string][]map[string]any
+	denied    []string
 
 	mu      sync.Mutex
 	queries map[string][]url.Values // by path
@@ -73,6 +76,15 @@ func newCompareNetBox(t *testing.T, manufacturers, deviceTypes []map[string]any,
 			for _, o := range f.deviceTypes {
 				maker, _ := o["manufacturer"].(map[string]any)
 				id, _ := maker["id"].(int)
+				if len(ids) == 0 || slices.Contains(ids, strconv.Itoa(id)) {
+					objects = append(objects, o)
+				}
+			}
+		case strings.HasSuffix(r.URL.Path, "-templates/") && strings.HasPrefix(r.URL.Path, "/api/dcim/"):
+			ids := q["device_type_id"]
+			for _, o := range f.templates[r.URL.Path] {
+				dt, _ := o["device_type"].(map[string]any)
+				id, _ := dt["id"].(int)
 				if len(ids) == 0 || slices.Contains(ids, strconv.Itoa(id)) {
 					objects = append(objects, o)
 				}
@@ -124,13 +136,44 @@ func nbDeviceType(id int, maker map[string]any, modelName, slug string, fields m
 	return o
 }
 
+// templateFields are the fields of each kind of component template, by
+// endpoint, as NetBox's import leaves those a file doesn't set.
+var templateFields = map[string]map[string]any{
+	"/api/dcim/power-port-templates/": {"type": nil, "maximum_draw": nil, "allocated_draw": nil},
+	"/api/dcim/interface-templates/": {
+		"type": nil, "channels": nil, "channel_id": nil, "enabled": true, "mgmt_only": false,
+		"parent": nil, "bridge": nil, "poe_mode": nil, "poe_type": nil, "rf_role": nil,
+	},
+	"/api/dcim/module-bay-templates/": {"position": "", "enabled": true, "module_bay_types": []any{}},
+}
+
+// nbTemplate is a component template as NetBox's API gives it, from
+// endpoint, of device type dt, with fields replaced.
+func nbTemplate(endpoint string, id int, dt map[string]any, name string, fields map[string]any) map[string]any {
+	o := map[string]any{
+		"id": id, "display": name, "module_type": nil, "name": name, "label": "", "description": "",
+		"device_type": map[string]any{
+			"id": dt["id"], "display": dt["model"], "manufacturer": dt["manufacturer"], "model": dt["model"], "slug": dt["slug"], "description": "",
+		},
+	}
+	maps.Copy(o, templateFields[endpoint])
+	maps.Copy(o, fields)
+	return o
+}
+
+// choice is a choice field's value as NetBox's API gives it.
+func choice(value string) map[string]any {
+	return map[string]any{"value": value, "label": value}
+}
+
 // libraryNetBox holds what NetBox's import would make of the test library's
-// Netgear GS105 and Huawei NE8000-X8, with the NE8000-X8 changed since, and
-// a Netgear whose slug NETGEAR's would take.
+// Netgear GS105 and Huawei NE8000-X8, with the NE8000-X8 changed since: its
+// height, a module bay deleted and another added. And a Netgear whose slug
+// NETGEAR's would take.
 func libraryNetBox(t *testing.T, denied ...string) *compareNetBox {
 	t.Helper()
 	netgear, huawei := nbManufacturer(1, "Netgear", "netgear"), nbManufacturer(2, "Huawei", "huawei-technologies")
-	return newCompareNetBox(t, []map[string]any{netgear, huawei}, []map[string]any{
+	nb := newCompareNetBox(t, []map[string]any{netgear, huawei}, []map[string]any{
 		nbDeviceType(10, netgear, "GS105", "netgear-gs105", map[string]any{
 			"is_full_depth": false,
 			"comments":      "[Gigabit Unmanaged Switch Series GS105](https://www.netgear.com/business/wired/switches/unmanaged/gs105/)",
@@ -142,6 +185,29 @@ func libraryNetBox(t *testing.T, denied ...string) *compareNetBox {
 			"description": "edited in NetBox",
 		}),
 	}, denied...)
+	gs105, ne8000 := nb.deviceTypes[0], nb.deviceTypes[1]
+	const ports, ifaces, bays = "/api/dcim/power-port-templates/", "/api/dcim/interface-templates/", "/api/dcim/module-bay-templates/"
+	nb.templates = map[string][]map[string]any{
+		ports: {nbTemplate(ports, 100, gs105, "PSU0", map[string]any{"type": choice("dc-terminal")})},
+	}
+	for i := 1; i <= 5; i++ {
+		nb.templates[ifaces] = append(nb.templates[ifaces], nbTemplate(ifaces, 100+i, gs105, "GigabitEthernet/"+strconv.Itoa(i), map[string]any{"type": choice("1000base-t")}))
+	}
+	// The library's bays, but LPU 8, and Fan 1, which it hasn't got.
+	type bay struct{ name, position string }
+	var all []bay
+	for i := 1; i <= 7; i++ {
+		all = append(all, bay{"LPU " + strconv.Itoa(i), strconv.Itoa(i)})
+	}
+	all = append(all, bay{"MPU 9", "9"}, bay{"MPU 10", "10"})
+	for i := 1; i <= 8; i++ {
+		all = append(all, bay{"SFU " + strconv.Itoa(i), "SFU" + strconv.Itoa(i)})
+	}
+	all = append(all, bay{"Fan 1", ""})
+	for i, b := range all {
+		nb.templates[bays] = append(nb.templates[bays], nbTemplate(bays, 200+i, ne8000, b.name, map[string]any{"position": b.position}))
+	}
+	return nb
 }
 
 // compareEnv configures the test library as a source, fetched, and NetBox.
@@ -168,7 +234,7 @@ lib     master  ` + commit + `  6         3        1          1       1         
 
 SOURCE  OUTCOME    TYPE          MANUFACTURER  MODEL      NETBOX  DIFFERENCES  FROM
 lib     conflict   manufacturer  NETGEAR       -          -       -            1 file
-lib     candidate  device type   Huawei        NE8000-X8  #11     1            device-types/Huawei/NE8000-X8.yaml
+lib     candidate  device type   Huawei        NE8000-X8  #11     2            device-types/Huawei/NE8000-X8.yaml
 lib     absent     device type   NETGEAR       GS510TLP   -       -            device-types/Netgear/GS510TLP.yml
 
 Conflicts:
@@ -176,8 +242,12 @@ Conflicts:
 
 Differences:
   lib: device type Huawei "NE8000-X8" (device-types/Huawei/NE8000-X8.yaml), NetBox #11:
-    FIELD     DEFINITION  NETBOX
-    u_height  16          15.5
+    FIELD                 DEFINITION  NETBOX
+    u_height              16          15.5
+    module_bays["LPU 8"]  present     missing
+
+Only in NetBox, which TrueUp leaves as they are:
+  lib: device type Huawei "NE8000-X8" (device-types/Huawei/NE8000-X8.yaml), NetBox #11: module_bays["Fan 1"] (#217)
 
 Warnings:
   lib: manufacturers "NETGEAR" and "Netgear" would both get the slug "netgear", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source
@@ -195,6 +265,21 @@ Warnings:
 	if len(got) != 1 || !slices.Equal(got[0]["manufacturer_id"], []string{"1", "2"}) ||
 		got[0].Get("fields") != "id,manufacturer,model,slug,part_number,u_height,exclude_from_utilization,is_full_depth,subdevice_role,airflow,cooling_method,weight,weight_unit,end_of_life,description,comments" {
 		t.Errorf("device types listed with %v", got)
+	}
+	// The templates of the device types matched, with their specs' fields.
+	for endpoint, fields := range map[string]string{
+		"/api/dcim/console-port-templates/":        "id,device_type,name,label,type,description",
+		"/api/dcim/console-server-port-templates/": "id,device_type,name,label,type,description",
+		"/api/dcim/power-port-templates/":          "id,device_type,name,label,type,maximum_draw,allocated_draw,description",
+		"/api/dcim/power-outlet-templates/":        "id,device_type,name,label,type,color,power_port,feed_leg,description",
+		"/api/dcim/interface-templates/":           "id,device_type,name,label,type,channels,channel_id,enabled,mgmt_only,description,parent,bridge,poe_mode,poe_type,rf_role",
+		"/api/dcim/module-bay-templates/":          "id,device_type,name,label,position,enabled,description",
+		"/api/dcim/device-bay-templates/":          "id,device_type,name,label,enabled,description",
+	} {
+		got := nb.listed(endpoint)
+		if len(got) != 1 || !slices.Equal(got[0]["device_type_id"], []string{"10", "11"}) || got[0].Get("fields") != fields {
+			t.Errorf("%s listed with %v", endpoint, got)
+		}
 	}
 }
 
@@ -245,9 +330,11 @@ type objectJSON struct {
 		Path *string `json:"path"`
 	} `json:"columns"`
 	Rows []struct {
-		Path    []string `json:"path"`
-		Differs bool     `json:"differs"`
-		Managed bool     `json:"managed"`
+		// Path's steps are a field's name, or a child's key as an object.
+		Path     []any `json:"path"`
+		Differs  bool  `json:"differs"`
+		Managed  bool  `json:"managed"`
+		NetBoxID *int  `json:"netbox_id"`
 	} `json:"rows"`
 }
 
@@ -348,9 +435,35 @@ func TestCompareJSON(t *testing.T) {
 		src.InStep != 3 || src.Differing != 1 || src.Absent != 1 || src.Conflicts != 1 {
 		t.Errorf("the source = %+v", src)
 	}
-	want := []string{"candidate Huawei 0", "conflict NETGEAR 0", "candidate Netgear 0", "candidate NE8000-X8 1", "candidate GS105 0", "absent GS510TLP 0"}
+	want := []string{"candidate Huawei 0", "conflict NETGEAR 0", "candidate Netgear 0", "candidate NE8000-X8 2", "candidate GS105 0", "absent GS510TLP 0"}
 	if diff := cmp.Diff(want, outcomes(got)); diff != "" {
 		t.Errorf("objects (-want +got):\n%s", diff)
+	}
+	// A child's rows: whether each version has it, with NetBox's ID, and
+	// its fields, by a path through its key.
+	var printedRows struct {
+		Objects []struct {
+			Rows []json.RawMessage `json:"rows"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &printedRows); err != nil {
+		t.Fatal(err)
+	}
+	var gs105 []string
+	for _, row := range printedRows.Objects[4].Rows {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, row); err != nil {
+			t.Fatal(err)
+		}
+		gs105 = append(gs105, compact.String())
+	}
+	for _, want := range []string{
+		`{"path":["power_ports",{"name":"PSU0"}],"cells":[{"value":true},{"value":true}],"differs":false,"managed":true,"derived":false,"netbox_id":100}`,
+		`{"path":["power_ports",{"name":"PSU0"},"type"],"cells":[{"value":"dc-terminal"},{"value":"dc-terminal"}],"differs":false,"managed":true,"derived":false,"netbox_id":null}`,
+	} {
+		if !slices.Contains(gs105, want) {
+			t.Errorf("GS105's rows have no %s:\n%s", want, strings.Join(gs105, "\n"))
+		}
 	}
 	// The device type whose manufacturer isn't in NetBox says what its
 	// manufacturer's definition found.
@@ -389,8 +502,15 @@ func TestCompareInStep(t *testing.T) {
 	t.Parallel()
 	// Everything the source defines, as NetBox's import would make it.
 	netgear, huawei := nbManufacturer(1, "Netgear", "netgear"), nbManufacturer(2, "Huawei", "huawei")
-	nb := newCompareNetBox(t, []map[string]any{netgear, huawei}, libraryNetBox(t).deviceTypes)
+	lib := libraryNetBox(t)
+	nb := newCompareNetBox(t, []map[string]any{netgear, huawei}, lib.deviceTypes)
 	nb.deviceTypes[1]["u_height"] = 16
+	nb.templates = lib.templates
+	for _, bay := range nb.templates["/api/dcim/module-bay-templates/"] {
+		if bay["name"] == "Fan 1" {
+			bay["name"], bay["display"], bay["position"] = "LPU 8", "LPU 8", "8"
+		}
+	}
 	env, _, _, configure := compareEnv(t, nb)
 	r := runCLIApp(t, nil, configure, env, "compare", "--exit-code", "--manufacturer", "Huawei", "--manufacturer", "Netgear")
 	if r.code != exitOK || !strings.Contains(r.stdout, "lib     master") || strings.Contains(r.stdout, "OUTCOME") {
@@ -414,7 +534,7 @@ func TestCompareManufacturers(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
 	}
 	got := decodeCompare(t, r.stdout)
-	if diff := cmp.Diff([]string{"candidate Huawei 0", "candidate NE8000-X8 1"}, outcomes(got)); diff != "" {
+	if diff := cmp.Diff([]string{"candidate Huawei 0", "candidate NE8000-X8 2"}, outcomes(got)); diff != "" {
 		t.Errorf("objects (-want +got):\n%s", diff)
 	}
 	if src := got.Sources[0]; src.Definitions != 6 || src.Compared != 2 {
@@ -505,6 +625,10 @@ func TestCompareFailures(t *testing.T) {
 		{
 			name: "device types the token can't read", nb: libraryNetBox(t, "/api/dcim/device-types/"),
 			wantCode: exitFailure, wantStderr: "'netbox-trueup-ai netbox check' lists what it can read",
+		},
+		{
+			name: "templates the token can't read", nb: libraryNetBox(t, "/api/dcim/interface-templates/"),
+			wantCode: exitFailure, wantStderr: "the token can't read dcim.interfacetemplate (GET /api/dcim/interface-templates/: NetBox answered 403 Forbidden",
 		},
 		{
 			name: "an object NetBox sends that can't be read", nb: newCompareNetBox(t, []map[string]any{brokenManufacturer}, nil),
@@ -664,5 +788,37 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	r = runCLIApp(t, nil, trust(pool), env, "compare", "--manufacturer", "Nobody")
 	if !strings.Contains(r.stdout, `no source read defines the manufacturer "Nobody"; some files are invalid, and one of them may`) {
 		t.Errorf("compare --manufacturer with invalid files:\n%s", r.stdout)
+	}
+}
+
+// TestCompareJSONIsWrittenAsWriteJSONWould checks that writing compare's
+// result a piece at a time gives what writing it whole gives.
+func TestCompareJSONIsWrittenAsWriteJSONWould(t *testing.T) {
+	t.Parallel()
+	msg := "a <warning> & more"
+	for _, r := range []compareJSON{
+		{Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}},
+		{
+			OK:         true,
+			NetBox:     compareNetBoxJSON{URL: "https://netbox.example.com", Version: "4.7.2"},
+			ComparedAt: time.Date(2026, 11, 16, 1, 2, 3, 456000, time.UTC),
+			Sources:    []compareSourceJSON{{Name: "lib", Error: &msg, Problems: []problemJSON{{Severity: "warning", Reason: "<x>"}}}},
+			Objects: []json.RawMessage{
+				json.RawMessage(`{"type":"dcim.devicetype","rows":[{"path":["interfaces",{"name":"a\u003cb"}],"cells":[{},{"value":true}]}],"empty":{},"list":[]}`),
+				json.RawMessage(`{"b":1}`),
+			},
+			Warnings: []warningJSON{{Message: msg}},
+		},
+	} {
+		var whole, pieces bytes.Buffer
+		if err := writeJSON(&whole, r); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeCompareJSON(&pieces, r); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(whole.String(), pieces.String()); diff != "" {
+			t.Errorf("writeCompareJSON (-writeJSON +got):\n%s", diff)
+		}
 	}
 }

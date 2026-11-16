@@ -467,10 +467,10 @@ func TestJSON(t *testing.T) {
 	want := `{"type":"dcim.manufacturer","identity":{"name":"Dell"},"outcome":"candidate","in_step":true,"netbox_id":3,"differences":0,` +
 		`"collisions":[],"unresolved":[],` +
 		`"columns":[{"kind":"definition","source":"library","path":null,"derived_from":["device-types/Dell/a.yaml"],"unmapped":{}},{"kind":"netbox","netbox_id":3}],` +
-		`"rows":[{"path":["name"],"cells":[{"value":"Dell"},{"value":"Dell"}],"differs":false,"managed":true,"derived":false},` +
-		`{"path":["slug"],"cells":[{"value":"dell"},{"value":"dell-emc"}],"differs":true,"managed":false,"derived":true},` +
-		`{"path":["description"],"cells":[{},{"value":""}],"differs":false,"managed":false,"derived":false},` +
-		`{"path":["comments"],"cells":[{},{"value":""}],"differs":false,"managed":false,"derived":false}]}`
+		`"rows":[{"path":["name"],"cells":[{"value":"Dell"},{"value":"Dell"}],"differs":false,"managed":true,"derived":false,"netbox_id":null},` +
+		`{"path":["slug"],"cells":[{"value":"dell"},{"value":"dell-emc"}],"differs":true,"managed":false,"derived":true,"netbox_id":null},` +
+		`{"path":["description"],"cells":[{},{"value":""}],"differs":false,"managed":false,"derived":false,"netbox_id":null},` +
+		`{"path":["comments"],"cells":[{},{"value":""}],"differs":false,"managed":false,"derived":false,"netbox_id":null}]}`
 	if string(got) != want {
 		t.Errorf("JSON:\n got %s\nwant %s", got, want)
 	}
@@ -482,10 +482,10 @@ func TestJSON(t *testing.T) {
 	want = `{"type":"dcim.devicetype","identity":{"manufacturer":{"name":"Arista"},"model":"7050"},"outcome":"absent","in_step":false,"netbox_id":null,"differences":0,` +
 		`"collisions":[],"unresolved":[{"field":"manufacturer","type":"dcim.manufacturer","key":{"name":"Arista"},"netbox_ids":[],"outcome":null}],` +
 		`"columns":[{"kind":"definition","source":"library","path":"device-types/Arista/7050.yaml","derived_from":[],"unmapped":{"interfaces":2}}],` +
-		`"rows":[{"path":["manufacturer"],"cells":[{"value":{"name":"Arista"}}],"differs":false,"managed":true,"derived":false},` +
-		`{"path":["model"],"cells":[{"value":"7050"}],"differs":false,"managed":true,"derived":false},` +
-		`{"path":["slug"],"cells":[{"value":"7050"}],"differs":false,"managed":true,"derived":false},` +
-		`{"path":["u_height"],"cells":[{"value":1}],"differs":false,"managed":true,"derived":false}]}`
+		`"rows":[{"path":["manufacturer"],"cells":[{"value":{"name":"Arista"}}],"differs":false,"managed":true,"derived":false,"netbox_id":null},` +
+		`{"path":["model"],"cells":[{"value":"7050"}],"differs":false,"managed":true,"derived":false,"netbox_id":null},` +
+		`{"path":["slug"],"cells":[{"value":"7050"}],"differs":false,"managed":true,"derived":false,"netbox_id":null},` +
+		`{"path":["u_height"],"cells":[{"value":1}],"differs":false,"managed":true,"derived":false,"netbox_id":null}]}`
 	if string(got) != want {
 		t.Errorf("JSON:\n got %s\nwant %s", got, want)
 	}

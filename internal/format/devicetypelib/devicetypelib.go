@@ -2,9 +2,9 @@
 // types that NetBox's community keeps
 // (https://github.com/netbox-community/devicetype-library), into
 // definitions (docs/architecture.md, "Formats and validation"). It reads
-// device types, and derives a manufacturer from each name they give.
-// Component templates follow in roadmap steps 11 and 12, and module and rack
-// types in milestone 8.
+// device types with their console, power, interface and bay templates, and
+// derives a manufacturer from each name they give. Ports and inventory
+// items follow in roadmap step 12, and module and rack types in milestone 8.
 //
 // Each file is read as NetBox's own YAML import reads it, validated against
 // the library's JSON schemas from the same snapshot, mapped to the device
@@ -57,13 +57,10 @@ var (
 	// library's own tests, and front_image and rear_image say that the
 	// library has an elevation image. NetBox's import ignores them too.
 	metadataKeys = []string{"is_powered", "front_image", "rear_image"}
-	// componentKeys are the lists of component templates, which roadmap
-	// steps 11 and 12 read.
-	componentKeys = []string{
-		"console-ports", "console-server-ports", "power-ports", "power-outlets", "interfaces",
-		"front-ports", "rear-ports", "port-mappings", "module-bays", "device-bays", "inventory-items",
-	}
 )
+
+// The lists of component templates are read as componentLists says
+// (components.go), and the rest counted (unmappedKeys).
 
 // Format is devicetype-library's format.
 type Format struct{}
@@ -266,6 +263,7 @@ func compileSchema(ctx context.Context, snap *source.Snapshot) (*format.Schema, 
 // reader reads the device types of one snapshot.
 type reader struct {
 	schema                   *format.Schema
+	specs                    map[string]*model.Spec
 	deviceType, manufacturer *model.Spec
 	deviceTypes              []format.Definition
 	problems                 []format.Problem
@@ -273,8 +271,9 @@ type reader struct {
 }
 
 func newReader(schema *format.Schema) *reader {
-	r := &reader{schema: schema}
+	r := &reader{schema: schema, specs: map[string]*model.Spec{}}
 	for _, s := range dcim.Specs() {
+		r.specs[s.Type] = s
 		switch s.Type {
 		case "dcim.devicetype":
 			r.deviceType = s
@@ -342,6 +341,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 	at := func(severity format.Severity, n *format.Node, field, reason string) {
 		problems = append(problems, format.Problem{Severity: severity, Path: p, Line: n.Line, Column: n.Column, Field: field, Reason: reason})
 	}
+	var refs []pendingRef
 	for _, pair := range root.Pairs {
 		key, n := pair.Key.Value, pair.Value
 		switch {
@@ -381,7 +381,12 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 				def.Metadata = map[string]model.Value{}
 			}
 			def.Metadata[key] = model.Boolean(n.Value == "true")
-		case slices.Contains(componentKeys, key):
+		case componentListOf(key) != nil:
+			list := componentListOf(key)
+			if children, ok := r.components(list, n, at, &refs); ok {
+				def.Object.Fields[list.Collection] = children
+			}
+		case slices.Contains(unmappedKeys, key):
 			if n.Kind != format.Sequence {
 				at(format.Error, n, key, "isn't a list, which devicetype-library's "+key+" is")
 				continue
@@ -394,6 +399,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 			at(format.Warning, pair.Key, format.JoinField("", key), "isn't a key TrueUp reads from devicetype-library yet, so it is ignored")
 		}
 	}
+	r.references(&def, refs, at)
 	// The schema requires these, but it comes from the source, so check
 	// that the file gives what NetBox needs to create a device type, with
 	// its own import.

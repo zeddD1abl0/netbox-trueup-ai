@@ -30,6 +30,8 @@ type collisionJSON struct {
 	Rule     []string               `json:"rule"`
 	NetBoxID int64                  `json:"netbox_id"`
 	Identity map[string]model.Value `json:"identity"`
+	// Path is where a child is, or empty for the object itself.
+	Path Path `json:"path"`
 }
 
 type unresolvedJSON struct {
@@ -49,6 +51,9 @@ type rowJSON struct {
 	Differs bool       `json:"differs"`
 	Managed bool       `json:"managed"`
 	Derived bool       `json:"derived"`
+	// NetBoxID is, on a child's row, NetBox's child's ID, and null on a
+	// field's row, or where NetBox hasn't got the child, or has two.
+	NetBoxID *int64 `json:"netbox_id"`
 }
 
 // cellJSON is {"value": ...} for a version that sets the field, null
@@ -80,7 +85,11 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		out.Columns = []Column{}
 	}
 	for _, c := range r.Collisions {
-		out.Collisions = append(out.Collisions, collisionJSON{Rule: c.Rule, NetBoxID: c.ID, Identity: c.Identity})
+		j := collisionJSON{Rule: c.Rule, NetBoxID: c.ID, Identity: c.Identity, Path: c.Path}
+		if j.Identity == nil {
+			j.Identity = map[string]model.Value{}
+		}
+		out.Collisions = append(out.Collisions, j)
 	}
 	for _, u := range r.Unresolved {
 		j := unresolvedJSON{Field: u.Field, Type: u.Ref.Type, Key: u.Ref.Key, NetBoxIDs: u.Candidates}
@@ -94,6 +103,9 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	}
 	for _, row := range r.Rows {
 		j := rowJSON{Path: row.Path, Differs: row.Differs, Managed: row.Managed, Derived: row.Derived}
+		if row.NetBoxID != 0 {
+			j.NetBoxID = &row.NetBoxID
+		}
 		for _, v := range row.Cells {
 			j.Cells = append(j.Cells, cellJSON{Value: v})
 		}
@@ -131,12 +143,17 @@ func (c Column) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// MarshalJSON writes a path as a list of its steps: a field's name, for
-// now. Steps into child collections will be objects, a child's key.
+// MarshalJSON writes a path as a list of its steps: a field's or a
+// collection's name as a string, and a child's key as an object, such as
+// ["interfaces", {"name": "eth0"}, "type"].
 func (p Path) MarshalJSON() ([]byte, error) {
-	out := make([]string, len(p))
+	out := make([]any, len(p))
 	for i, s := range p {
-		out[i] = s.Field
+		if s.Key != nil {
+			out[i] = s.Key
+		} else {
+			out[i] = s.Field
+		}
 	}
 	return json.Marshal(out)
 }

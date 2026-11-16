@@ -179,9 +179,11 @@ func TestListJSON(t *testing.T) {
           ]`, `"derived": [
             "slug"
           ]`, `"derived": []`, `"metadata": {}`, `"metadata": {
-            "front_image": true,`, `"unmapped": {
-            "module-bays": 18
-          }`, `"unmapped": {}`, `"part_number": "02351930"`, `"u_height": 16,`, `"weight": 94,`,
+            "front_image": true,`, `"module_bays": [
+              {
+                "name": "LPU 1",
+                "position": "1"
+              },`, `"unmapped": {}`, `"part_number": "02351930"`, `"u_height": 16,`, `"weight": 94,`,
 		`"severity": "error"`, `"line": 6`, `"column": 10`, `"field": "airflow"`, `"line": null`, `"field": null`, `"reason": "`,
 	} {
 		if !strings.Contains(r.stdout, field) {

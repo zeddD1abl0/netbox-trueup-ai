@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,8 +39,9 @@ func newCompareCommand(a *app) *cobra.Command {
 		Short: "Compare the definitions in the configured sources with NetBox",
 		Long: `Compare the definitions in every configured source, or in those named,
 with what NetBox holds, read from the version of each source that was last
-fetched. For devicetype-library, that is its manufacturers and device types;
-their component templates aren't compared yet.
+fetched. For devicetype-library, that is its manufacturers and device types,
+with their console, power, interface and bay templates; their front and rear
+ports and inventory items aren't compared yet.
 
 Each definition is matched to NetBox's objects by NetBox's own uniqueness
 rules, exactly, case included: a manufacturer's name and slug, and a device
@@ -57,6 +60,11 @@ the fields a definition sets count: NetBox's other fields are shown, but
 aren't differences. A value the format derived rather than read, such as a
 manufacturer's slug, is used only to create the object, so it never differs
 from one NetBox has.
+
+A device type's component templates are matched with NetBox's by name, within
+the device type, exactly, and compared field by field in the same way. A
+template the definition has and NetBox hasn't is one difference. A template
+only NetBox has is listed, but isn't a difference: TrueUp never removes one.
 
 The comparison of each definition is recorded in TrueUp's database, as the
 latest, against the version of the source compared. NetBox is only read.
@@ -101,7 +109,7 @@ Exit codes:
 				return err
 			}
 			if out == outputJSON {
-				err = writeJSON(cmd.OutOrStdout(), result)
+				err = writeCompareJSON(cmd.OutOrStdout(), result)
 			} else {
 				err = writeCompareText(cmd.OutOrStdout(), result)
 			}
@@ -468,9 +476,10 @@ func manufacturerName(d format.Definition) (string, bool) {
 // with: every manufacturer, since a manufacturer's name and slug are each
 // unique among all of them, and the device types of the manufacturers that
 // the definitions name and NetBox has, since both of a device type's
-// uniqueness rules include its manufacturer. Each object is read through
-// its spec, and one that can't be is an error, since leaving it out would
-// make what it is show as absent.
+// uniqueness rules include its manufacturer; and then the component
+// templates of each device type a definition matches, collection by
+// collection. Each object is read through its spec, and one that can't be
+// is an error, since leaving it out would make what it is show as absent.
 func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) ([]compare.Observed, error) {
 	specs := dcim.Specs()
 	manufacturer, deviceType := model.SpecOf(specs, "dcim.manufacturer"), model.SpecOf(specs, "dcim.devicetype")
@@ -501,6 +510,25 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 	if len(ids) > 0 {
 		if err := c.ListByParent(ctx, deviceType.Endpoint, "manufacturer", ids, fieldsQuery(deviceType), decode(deviceType)); err != nil {
 			return nil, readError(deviceType, err)
+		}
+	}
+
+	// The children of the device types the definitions match, as the
+	// comparison will match them; of no others, which nothing compares.
+	matched, err := compare.Matched(specs, defs, observed, deviceType.Type)
+	if err != nil {
+		return nil, fmt.Errorf("compare with NetBox: %w", err)
+	}
+	if len(matched) == 0 {
+		return observed, nil
+	}
+	for _, col := range deviceType.Children {
+		s := model.SpecOf(specs, col.Type)
+		if s == nil || s.Endpoint == "" {
+			return nil, fmt.Errorf("TrueUp can't read the %s of device types from NetBox", col.Name)
+		}
+		if err := c.ListByParent(ctx, s.Endpoint, col.Parent, matched, fieldsQuery(s), decode(s)); err != nil {
+			return nil, readError(s, err)
 		}
 	}
 	return observed, nil
@@ -596,13 +624,27 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 			parts = append(parts, fmt.Sprintf("its %s, %s, could be any of NetBox's %ss %s, which NetBox should keep unique",
 				u.Field, strconv.Quote(text(u.Ref)), typeName(u.Ref.Type), strings.Join(ids, ", ")))
 		}
+		twice := map[string][]string{}
+		var where []string
 		for _, c := range o.Collisions {
+			if len(c.Path) > 0 {
+				p := c.Path.String()
+				if twice[p] == nil {
+					where = append(where, p)
+				}
+				twice[p] = append(twice[p], "#"+strconv.FormatInt(c.ID, 10))
+				continue
+			}
 			verb := "matches"
 			if len(c.Rule) > 1 {
 				verb = "match"
 			}
 			parts = append(parts, fmt.Sprintf("its %s %s NetBox's %s #%d, %s",
 				strings.Join(c.Rule, " and "), verb, typeName(o.Type), c.ID, identityText(o.Type, c.Identity)))
+		}
+		for _, p := range where {
+			parts = append(parts, fmt.Sprintf("NetBox's #%d has %s twice, as %s, which NetBox should keep unique, so neither is compared",
+				o.NetBoxID, p, strings.Join(twice[p], " and ")))
 		}
 		conflicts = append(conflicts, "  "+cell(objectText(o)+": "+strings.Join(parts, "; ")))
 	}
@@ -624,12 +666,36 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 		_, _ = fmt.Fprintln(tw, "    FIELD\tDEFINITION\tNETBOX")
 		for _, row := range o.Rows {
 			if row.Differs && row.Managed {
-				_, _ = fmt.Fprintf(tw, "    %s\t%s\t%s\n", cell(row.Path.String()), cell(valueText(row.Cells[0])), cell(valueText(row.Cells[1])))
+				mine, theirs := valueText(row.Cells[0]), valueText(row.Cells[1])
+				if isChildRow(row) {
+					mine, theirs = presenceText(row.Cells[0]), presenceText(row.Cells[1])
+				}
+				_, _ = fmt.Fprintf(tw, "    %s\t%s\t%s\n", cell(row.Path.String()), cell(mine), cell(theirs))
 			}
 		}
 		if err := tw.Flush(); err != nil {
 			return fmt.Errorf("write output: %w", err)
 		}
+	}
+
+	var onlyNetBox []string
+	for _, o := range r.results {
+		var children []string
+		for _, row := range o.Rows {
+			if isChildRow(row) && row.Differs && !row.Managed {
+				c := row.Path.String()
+				if row.NetBoxID != 0 {
+					c += " (#" + strconv.FormatInt(row.NetBoxID, 10) + ")"
+				}
+				children = append(children, c)
+			}
+		}
+		if len(children) > 0 {
+			onlyNetBox = append(onlyNetBox, fmt.Sprintf("  %s, NetBox #%d: %s", cell(objectText(o)), o.NetBoxID, cell(strings.Join(children, ", "))))
+		}
+	}
+	if len(onlyNetBox) > 0 {
+		b.WriteString("\nOnly in NetBox, which TrueUp leaves as they are:\n" + strings.Join(onlyNetBox, "\n") + "\n")
 	}
 
 	var warnings []string
@@ -724,6 +790,11 @@ func valueText(v model.Value) string {
 	case nil:
 		return "not set"
 	case model.Reference:
+		if len(v.Key) == 0 {
+			// Another template, by ID alone, which isn't one of the
+			// device type's.
+			return fmt.Sprintf("#%d, not one of the device type's", v.ID)
+		}
 		name := strconv.Quote(text(v))
 		if v.ID != 0 {
 			return fmt.Sprintf("%s (#%d)", name, v.ID)
@@ -731,4 +802,111 @@ func valueText(v model.Value) string {
 		return name
 	}
 	return v.String()
+}
+
+// isChildRow reports whether a row says which versions have a child, as its
+// path ends at the child's key, rather than holding a field.
+func isChildRow(row compare.Row) bool {
+	return len(row.Path) > 0 && row.Path[len(row.Path)-1].Key != nil
+}
+
+// presenceText writes a child row's cell: whether that version has the
+// child.
+func presenceText(v model.Value) string {
+	if b, ok := v.(model.Boolean); ok && bool(b) {
+		return "present"
+	}
+	return "missing"
+}
+
+// writeCompareJSON writes the result as writeJSON does, a field and an
+// object at a time, so that the document, which runs to hundreds of
+// megabytes for the whole of devicetype-library, is never held in memory
+// whole on top of the objects it is made of.
+func writeCompareJSON(w io.Writer, r compareJSON) error {
+	bw := bufio.NewWriterSize(w, 1<<16)
+	var indented bytes.Buffer
+	// value writes v's JSON as writeJSON would, at an indent of prefix.
+	value := func(v any, prefix string) error {
+		raw, ok := v.(json.RawMessage)
+		if !ok {
+			var b bytes.Buffer
+			enc := json.NewEncoder(&b)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(v); err != nil {
+				return err
+			}
+			raw = bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+		}
+		indented.Reset()
+		if err := json.Indent(&indented, raw, prefix, "  "); err != nil {
+			return err
+		}
+		_, err := bw.Write(indented.Bytes())
+		return err
+	}
+	text := func(s string) error {
+		_, err := bw.WriteString(s)
+		return err
+	}
+	err := func() error {
+		if err := text("{\n"); err != nil {
+			return err
+		}
+		for _, f := range []struct {
+			name  string
+			value any
+		}{{"ok", r.OK}, {"netbox", r.NetBox}, {"compared_at", r.ComparedAt}, {"sources", r.Sources}} {
+			if err := text("  " + strconv.Quote(f.name) + ": "); err != nil {
+				return err
+			}
+			if err := value(f.value, "  "); err != nil {
+				return err
+			}
+			if err := text(",\n"); err != nil {
+				return err
+			}
+		}
+		if len(r.Objects) == 0 {
+			if err := text("  \"objects\": [],\n"); err != nil {
+				return err
+			}
+		} else {
+			if err := text("  \"objects\": [\n"); err != nil {
+				return err
+			}
+			for i, o := range r.Objects {
+				if err := text("    "); err != nil {
+					return err
+				}
+				if err := value(o, "    "); err != nil {
+					return err
+				}
+				sep := ",\n"
+				if i == len(r.Objects)-1 {
+					sep = "\n"
+				}
+				if err := text(sep); err != nil {
+					return err
+				}
+			}
+			if err := text("  ],\n"); err != nil {
+				return err
+			}
+		}
+		if err := text("  \"warnings\": "); err != nil {
+			return err
+		}
+		if err := value(r.Warnings, "  "); err != nil {
+			return err
+		}
+		if err := text("\n}\n"); err != nil {
+			return err
+		}
+		return bw.Flush()
+	}()
+	if err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	return nil
 }

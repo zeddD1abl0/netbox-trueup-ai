@@ -34,6 +34,14 @@ func TestValuesAsJSON(t *testing.T) {
 			`{"manufacturer":{"name":"Dell"},"model":"R670"}`,
 		},
 		{Set{String("a"), NewDecimal(5, 1), Null{}}, `["a",0.5,null]`},
+		{
+			Children{
+				{Type: "dcim.powerporttemplate", Fields: map[string]Value{"name": String("PSU1"), "maximum_draw": Integer(500)}},
+				{Type: "dcim.powerporttemplate"},
+			},
+			`[{"maximum_draw":500,"name":"PSU1"},{}]`,
+		},
+		{Children{}, `[]`},
 	}
 	for _, tt := range tests {
 		got, err := json.Marshal(tt.v)

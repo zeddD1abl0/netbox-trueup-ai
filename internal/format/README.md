@@ -5,7 +5,7 @@ A format turns the files of a source's snapshot into definitions: objects of the
 | Package | What it holds |
 | --- | --- |
 | `format` | `Format`, `Definition` and `Problem`; `ParseYAML`, which reads a file as PyYAML's `SafeLoader` does, within limits; `CompileSchema` and `Schema.Validate`, for a source's own JSON schemas, with every reference outside them refused; and `Value`, which reads a scalar as a spec's field. |
-| `format/devicetypelib` | devicetype-library's format: device types, and a manufacturer derived from each name they give. Component templates follow in roadmap steps 11 and 12. |
+| `format/devicetypelib` | devicetype-library's format: device types with their console, power, interface and bay templates, and a manufacturer derived from each name they give. Front and rear ports and inventory items follow in roadmap step 12. |
 
 ## Reading YAML as NetBox does
 

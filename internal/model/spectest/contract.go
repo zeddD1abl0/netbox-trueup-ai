@@ -210,7 +210,14 @@ func (c *contract) checkAccess(where string, f *model.Field, resp, req, patch *o
 	if required := slices.Contains(req.Required, f.Name); required != f.Required {
 		c.fail(where, "its spec says required is %t, NetBox's API %t", f.Required, required)
 	}
-	if r.Nullable != f.Nullable || w.Schema != nil && w.Nullable != f.Nullable {
+	// NetBox's schema rebuilds a ChoiceField from the model for requests
+	// (NetBoxAutoSchema.get_writable_class in core/api/schema.py), so it
+	// says a field whose model column is nullable takes null, though the
+	// serializer's ChoiceField, without allow_null, stores null as blank
+	// (ChoiceField.validate_empty_values in netbox/api/fields.py). Such a
+	// field is blank, not nullable: it never holds a null NetBox gives back.
+	takesNullAsBlank := f.Kind == model.KindChoice && f.Blank && !f.Nullable && !r.Nullable
+	if r.Nullable != f.Nullable || w.Schema != nil && w.Nullable != f.Nullable && !takesNullAsBlank {
 		c.fail(where, "its spec says nullable is %t, NetBox's API %t when it gives it and %t when it takes it", f.Nullable, r.Nullable, w.Nullable)
 	}
 	return r, w, true
@@ -499,7 +506,17 @@ func (c *contract) checkRef(where string, f *model.Field, r, w openapi.Prop) {
 			c.fail(where, "its spec says it refers to a %s, which NetBox's API gives as %s, but it gives %s",
 				f.Ref.Types[0], "Brief"+target, gives)
 		}
-		if w.Schema != nil && !c.takesIDOrBrief(where, w.Schema, target) {
+		switch {
+		case w.Schema == nil:
+		case r.Component == "Nested"+target:
+			// A WritableNestedSerializer, which NetBox's schema rebuilds as
+			// the model's foreign key for requests
+			// (NetBoxAutoSchema.get_writable_class in core/api/schema.py):
+			// it takes the ID alone.
+			if w.Type != "integer" {
+				c.fail(where, "NetBox's API gives it as a nested %s, but doesn't take it as an ID", target)
+			}
+		case !c.takesIDOrBrief(where, w.Schema, target):
 			c.fail(where, "NetBox's API doesn't take it as an ID or a brief %s", target)
 		}
 	case model.ShapeTypeAndID:
