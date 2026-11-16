@@ -6,7 +6,7 @@
 # release has been public for at least 7 days, matching Dependabot's cooldown.
 
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 node = "24.22.1"
 golangci-lint = "2.14.0"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"
