@@ -18,6 +18,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/netbox"
@@ -878,6 +880,75 @@ func TestValueText(t *testing.T) {
 		if got := valueText(tt.v); got != tt.want {
 			t.Errorf("valueText(%v) = %q, want %q", tt.v, got, tt.want)
 		}
+	}
+}
+
+// TestCheckResults checks that results Compare shouldn't give are refused,
+// in any source, before any source's comparisons are recorded.
+func TestCheckResults(t *testing.T) {
+	t.Parallel()
+	const dt = "dcim.devicetype"
+	def := func(src, path string) compare.Definition {
+		return compare.Definition{Source: src, Definition: format.Definition{Object: model.Object{Type: dt}, Path: path}}
+	}
+	res := func(src, path string, o compare.Outcome) compare.Result {
+		return compare.Result{Type: dt, Outcome: o, Columns: []compare.Column{{Kind: compare.DefinitionColumn, Source: src, Path: path}}}
+	}
+	version := "v1"
+	source := func(name string, paths ...string) sourceCompared {
+		sc := sourceCompared{row: &compareSourceJSON{Name: name, Version: &version}}
+		for _, p := range paths {
+			sc.chosen = append(sc.chosen, def(name, p))
+			sc.chosenKeys = append(sc.chosenKeys, store.ComparisonKey{ObjectType: dt, Path: p})
+		}
+		return sc
+	}
+	unread := sourceCompared{row: &compareSourceJSON{Name: "c"}}
+	two := []sourceCompared{source("a", "a.yaml"), unread, source("b", "b1.yaml", "b2.yaml")}
+	tests := []struct {
+		name    string
+		results []compare.Result
+		want    string
+	}{
+		{"one for each definition", []compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b1.yaml", compare.Absent), res("b", "b2.yaml", compare.Conflict)}, ""},
+		// The first source's are fine; the second's aren't.
+		{
+			"an outcome Compare doesn't give",
+			[]compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b1.yaml", compare.Absent), res("b", "b2.yaml", "bogus")},
+			`compare with NetBox: the comparison of dcim.devicetype "b2.yaml" has the outcome "bogus"`,
+		},
+		{
+			"another definition's",
+			[]compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b2.yaml", compare.Absent), res("b", "b1.yaml", compare.Absent)},
+			"compare with NetBox: result 0 of source b is of another definition",
+		},
+		{
+			"no columns",
+			[]compare.Result{res("a", "a.yaml", compare.Candidate), {Type: dt, Outcome: compare.Absent}, res("b", "b2.yaml", compare.Absent)},
+			"compare with NetBox: result 0 of source b is of another definition",
+		},
+		{
+			"too few",
+			[]compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b1.yaml", compare.Absent)},
+			"compare with NetBox: 1 results for the 2 definitions of source b",
+		},
+		{
+			"too many",
+			[]compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b1.yaml", compare.Absent), res("b", "b2.yaml", compare.Absent), res("b", "b3.yaml", compare.Absent)},
+			"compare with NetBox: 1 results of no definition",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ""
+			if err := checkResults(two, tt.results); err != nil {
+				got = err.Error()
+			}
+			if got != tt.want {
+				t.Errorf("checkResults = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

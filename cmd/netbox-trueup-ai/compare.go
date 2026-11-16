@@ -375,23 +375,17 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	// To the microsecond, as the database records it.
 	result.ComparedAt = time.Now().UTC().Truncate(time.Microsecond)
 
+	if err := checkResults(compared, results); err != nil {
+		return compareJSON{}, err
+	}
 	for _, sc := range compared {
 		if sc.row.Version == nil {
 			result.OK = false
 			result.Sources = append(result.Sources, *sc.row)
 			continue
 		}
-		// Compare gives a result for each definition, in their order.
-		if len(results) < len(sc.chosen) {
-			return compareJSON{}, fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.chosen), sc.row.Name)
-		}
 		mine := results[:len(sc.chosen)]
 		results = results[len(sc.chosen):]
-		for i, r := range mine {
-			if d := sc.chosen[i]; r.Type != d.Object.Type || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
-				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of source %s is of another definition", i, sc.row.Name)
-			}
-		}
 		// Each result is written as JSON once, for the database and for
 		// the output alike. For JSON output, a result is let go once it is
 		// written, since it takes more memory than its JSON, keeping only
@@ -405,12 +399,6 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			}
 			written[i] = out
 			outcomes[i] = outcomeOf{outcome: mine[i].Outcome, netboxID: mine[i].NetBoxID, differences: mine[i].Differences, inStep: mine[i].InStep()}
-			switch o := outcomes[i].outcome; o {
-			case compare.Candidate, compare.Absent, compare.Conflict:
-			default:
-				// Before anything is recorded.
-				return compareJSON{}, fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", sc.chosenKeys[i], o)
-			}
 			if forText {
 				mine[i].Rows = differing(mine[i].Rows)
 			} else {
@@ -446,10 +434,37 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			result.Objects = append(result.Objects, written...)
 		}
 	}
-	if len(results) > 0 {
-		return compareJSON{}, fmt.Errorf("compare with NetBox: %d results of no definition", len(results))
-	}
 	return result, nil
+}
+
+// checkResults checks that Compare gave a result for each definition of
+// the sources compared, in their order, with an outcome it knows, before
+// any source's comparisons are recorded.
+func checkResults(compared []sourceCompared, results []compare.Result) error {
+	for _, sc := range compared {
+		if sc.row.Version == nil {
+			continue
+		}
+		if len(results) < len(sc.chosen) {
+			return fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.chosen), sc.row.Name)
+		}
+		for i, d := range sc.chosen {
+			r := results[i]
+			if r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
+				return fmt.Errorf("compare with NetBox: result %d of source %s is of another definition", i, sc.row.Name)
+			}
+			switch r.Outcome {
+			case compare.Candidate, compare.Absent, compare.Conflict:
+			default:
+				return fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", sc.chosenKeys[i], r.Outcome)
+			}
+		}
+		results = results[len(sc.chosen):]
+	}
+	if len(results) > 0 {
+		return fmt.Errorf("compare with NetBox: %d results of no definition", len(results))
+	}
+	return nil
 }
 
 func (a *app) failSource(row *compareSourceJSON, msg string) {
