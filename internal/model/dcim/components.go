@@ -372,7 +372,10 @@ var portTemplateMapping = &model.Spec{
 	}},
 	Fields: []model.Field{
 		{
-			Name: "position", Kind: model.KindInteger, Required: true, Min: model.Integer(1), Max: model.Integer(1024),
+			// NetBox's API requires it, but its import fills it from the
+			// model's default, 1, as the form's initial value.
+			Name: "position", Kind: model.KindInteger, Required: true, ImportDefault: model.Integer(1),
+			Min: model.Integer(1), Max: model.Integer(1024),
 			TighterBounds: model.Source{File: "dcim/models/base.py", Symbol: "PortMappingBase"},
 		},
 		{

@@ -114,6 +114,12 @@ func newNames() *names {
 	return &names{given: map[string]map[model.Value]bool{}, unread: map[string]bool{}}
 }
 
+// has reports whether the file gives a template of type typ that name
+// names, or might, where some of that type's names can't be read.
+func (ns *names) has(typ string, name model.Value) bool {
+	return ns.unread[typ] || ns.given[typ][name]
+}
+
 func (ns *names) add(typ string, name model.Value) {
 	if ns.given[typ] == nil {
 		ns.given[typ] = map[model.Value]bool{}
@@ -221,7 +227,7 @@ func (r *reader) component(list *componentList, spec *model.Spec, col *model.Col
 		if f.Name == col.Parent {
 			continue
 		}
-		if _, set := child.Fields[f.Name]; !set && (f.Required || f.ImportRequired) && ok {
+		if _, set := child.Fields[f.Name]; !set && f.ImportNeeds() && ok {
 			fail(item, where, "has no "+f.Name+", which NetBox needs to create one of a device type's "+list.Key)
 		}
 	}

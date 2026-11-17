@@ -43,7 +43,7 @@ Mappings only NetBox has, on a front port the definition has:
 
 Chosen options: "nested in their front port" and "reported, not managed".
 
-**Specs.** A front port template has a nested collection, `rear_ports`, of `dcim.porttemplatemapping` children, keyed by `position`, which NetBox keeps unique within a front port (`PortMappingBase.Meta`). A mapping's `rear_port` is a reference within the device type, which NetBox's API carries as an ID alone, and `rear_port_position` defaults to 1. A rear port template ignores its `front_ports`, the same mappings again. NetBox's model bounds both positions from 1 to 1024, and its import checks them; its API runs none of a mapping's model checks, since `ValidatedModelSerializer.validate` (`netbox/api/serializers/base.py`) leaves the nested mappings out before it runs `full_clean`, so `position`'s bounds cite `TighterBounds`.
+**Specs.** A front port template has a nested collection, `rear_ports`, of `dcim.porttemplatemapping` children, keyed by `position`, which NetBox keeps unique within a front port (`PortMappingBase.Meta`). A mapping's `rear_port` is a reference within the device type, which NetBox's API carries as an ID alone, and `rear_port_position` defaults to 1. NetBox's API requires `position`, but its import fills it with 1, the form's initial value, so the spec gives it an import default, which a field the API requires may now have. A rear port template ignores its `front_ports`, the same mappings again. NetBox's model bounds both positions from 1 to 1024, and its import checks them; its API runs none of a mapping's model checks, since `ValidatedModelSerializer.validate` (`netbox/api/serializers/base.py`) leaves the nested mappings out before it runs `full_clean`, so `position`'s bounds cite `TighterBounds`.
 
 **Paths.** A mapping's rows go on from its front port's, such as `["front_ports", {"name": "FP1"}, "rear_ports", {"position": 1}, "rear_port"]`, which text writes as `front_ports["FP1"].rear_ports[1].rear_port`. A mapping's row has a null `netbox_id`, since NetBox gives mappings no ID, and so does its collision.
 
@@ -62,8 +62,9 @@ Chosen options: "nested in their front port" and "reported, not managed".
 - Good, because the comparison has the shape milestone 2 writes: a front port and its `rear_ports`, in one request.
 - Good, because a missing front port is one difference, as importing would make one change.
 - Good, because ADR 0026's rows, paths and rules carry over: the engine compares nested collections at any depth, and a nested child's reference may name a child of any object above it.
-- Bad, because writing `rear_ports` replaces a front port's mappings, so milestone 2 must send the mappings only NetBox has back with the definition's, or leave `rear_ports` out when they already agree, to leave them as they are.
+- Bad, because writing `rear_ports` replaces a front port's mappings, so milestone 2 must send the mappings only NetBox has back with the definition's, and NetBox's value of any field a definition's mapping leaves out, or leave `rear_ports` out when they already agree, to leave them as they are.
 - Bad, because TrueUp, like NetBox's import, doesn't check that a NetBox mapping's position is in range: NetBox can hold a mapping its import would refuse, and it compares as it is.
+- Bad, because a collision's `netbox_id` in `compare --output json` was always a number, and is now null for a mapping, which has no ID. TrueUp has made no release, so no script relies on it yet; [usage.md](../usage.md#reading-the-json) says so.
 
 ## Pros and cons of the options
 

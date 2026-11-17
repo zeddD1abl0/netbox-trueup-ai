@@ -116,10 +116,6 @@ func (ix *index) compareCollection(r *Result, root *model.Spec, parent parentAt,
 		}
 		netbox[k] = append(netbox[k], i)
 	}
-	rule := slices.Clone(col.Key)
-	if !col.Nested {
-		rule = append([]string{col.Parent}, col.Key...)
-	}
 	for _, k := range slices.Sorted(maps.Keys(netbox)) {
 		if len(netbox[k]) < 2 {
 			continue
@@ -129,7 +125,7 @@ func (ix *index) compareCollection(r *Result, root *model.Spec, parent parentAt,
 		same := slices.SortedStableFunc(slices.Values(netbox[k]), func(a, b int) int { return cmp.Compare(observed[a].id, observed[b].id) })
 		for _, i := range same {
 			r.Collisions = append(r.Collisions, Collision{
-				Path: parent.childPath(col.Name, netboxKeys[k]), Rule: rule, ID: observed[i].id, Identity: netboxKeys[k],
+				Path: parent.childPath(col.Name, netboxKeys[k]), Rule: collisionRule(col), ID: observed[i].id, Identity: netboxKeys[k],
 			})
 		}
 	}
@@ -209,6 +205,16 @@ func (ix *index) compareCollection(r *Result, root *model.Spec, parent parentAt,
 		r.addRow(row)
 	}
 	return nil
+}
+
+// collisionRule is the rule two of a collection's children break by sharing
+// a key: the parent field and the key, or for a nested collection, whose
+// children have no parent field, the key alone.
+func collisionRule(col *model.Collection) []string {
+	if col.Nested {
+		return slices.Clone(col.Key)
+	}
+	return append([]string{col.Parent}, col.Key...)
 }
 
 // childPath is the path of a child of the parent, in its collection.

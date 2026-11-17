@@ -2,6 +2,7 @@ package compare_test
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -348,6 +349,31 @@ func TestNestedCollectionsBelowTheRoot(t *testing.T) {
 	})
 	_, err := compare.Compare(specs, []compare.Definition{def}, nbR670())
 	want := "has front_ports[0].rear_ports, a collection of a dcim.frontporttemplate's with an endpoint of its own, which TrueUp doesn't compare"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Compare = %v, want an error holding %q", err, want)
+	}
+}
+
+// TestCollectionsBelowTheRootOfItsOwnType checks that a child of the same
+// type as the object compared may hold only nested collections too: a tree,
+// such as locations, whose children are of their parent's type.
+func TestCollectionsBelowTheRootOfItsOwnType(t *testing.T) {
+	t.Parallel()
+	specs := dcim.Specs()
+	for i, s := range specs {
+		if s.Type == "dcim.devicetype" {
+			dt := *s
+			dt.Children = append(slices.Clone(s.Children), model.Collection{
+				Name: "subtypes", Type: "dcim.devicetype", Parent: "manufacturer", Key: []string{"model"},
+			})
+			specs[i] = &dt
+		}
+	}
+	def := withChildren(map[string]model.Children{
+		"subtypes": {{Type: "dcim.devicetype", Fields: map[string]model.Value{"subtypes": model.Children{}}}},
+	})
+	_, err := compare.Compare(specs, []compare.Definition{def}, []compare.Observed{nbManufacturer(1, "Dell", "dell")})
+	want := "has subtypes[0].subtypes, a collection of a dcim.devicetype's with an endpoint of its own, which TrueUp doesn't compare"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("Compare = %v, want an error holding %q", err, want)
 	}

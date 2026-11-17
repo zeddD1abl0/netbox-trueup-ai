@@ -158,7 +158,7 @@ func (ix *index) checkChildren(root, parent *model.Spec, col *model.Collection, 
 		return nil, fmt.Errorf("sets %s to %s, not children", name, describe(v))
 	case cs == nil:
 		return nil, fmt.Errorf("has %s, whose type %s has no spec", name, col.Type)
-	case parent != root && !col.Nested:
+	case at != "" && !col.Nested:
 		return nil, fmt.Errorf("has %s, a collection of a %s's with an endpoint of its own, which TrueUp doesn't compare", name, parent.Type)
 	}
 	keys := map[string]int{}

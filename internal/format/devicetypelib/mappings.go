@@ -28,13 +28,6 @@ const (
 	mappingRearPortPosition  = "rear_port_position"
 )
 
-// frontPortPositionDefault is the front port position NetBox's import gives
-// a mapping whose file leaves it out: the form's initial value, from the
-// model's default (PortMappingBase.front_port_position in
-// dcim/models/base.py). The spec can't say so, since NetBox's REST API
-// requires the position.
-var frontPortPositionDefault = model.Integer(1)
-
 // inventoryItemsKey is devicetype-library's list of inventory item
 // templates, which TrueUp doesn't support: NetBox has deprecated them in
 // favour of modules (docs/adr/0028-no-inventory-item-templates.md).
@@ -123,16 +116,16 @@ func (r *reader) portMappings(n *format.Node, at childAt, refs *[]pendingRef) []
 		}
 		// NetBox's import requires the ports, and fills a position left
 		// out with its form's initial value, the model's default, though
-		// the library's schema requires both. A rear port position left
-		// out is left unset, as any field a file leaves out is, which
-		// NetBox's REST API gives the same default.
+		// the library's schema requires both. A front port position left
+		// out is the key, so it takes that value; a rear port position
+		// left out is left unset, as any field a file leaves out is.
 		for _, key := range []string{mappingFrontPort, mappingRearPort} {
-			if _, given := m.nodes[key]; !given && ok {
+			if _, given := m.nodes[key]; !given {
 				fail(item, where, "has no "+key+", which NetBox needs to map a front port")
 			}
 		}
 		if _, given := m.nodes[mappingFrontPortPosition]; !given {
-			m.mapping.Fields["position"] = frontPortPositionDefault
+			m.mapping.Fields["position"] = spec.Field("position").ImportedDefault()
 		}
 		if ok {
 			out = append(out, m)
@@ -163,7 +156,7 @@ func (r *reader) portName(typ string, n *format.Node) (model.String, string) {
 // NetBox. A mapping whose port the file hasn't got is reported by
 // references; one whose port has an error of its own isn't checked against
 // it.
-func (r *reader) foldMappings(def *format.Definition, mappings []portMapping, at childAt) {
+func (r *reader) foldMappings(def *format.Definition, mappings []portMapping, given *names, at childAt) {
 	fronts, _ := def.Object.Fields["front_ports"].(model.Children)
 	byName := map[model.Value]model.Object{}
 	for _, fp := range fronts {
@@ -171,7 +164,7 @@ func (r *reader) foldMappings(def *format.Definition, mappings []portMapping, at
 	}
 	// Each rear port's positions, as NetBox's import gives them where the
 	// file leaves them out.
-	defaultPositions, _ := importDefault(r.specs["dcim.rearporttemplate"].Field("positions")).(model.Integer)
+	defaultPositions, _ := r.specs["dcim.rearporttemplate"].Field("positions").ImportedDefault().(model.Integer)
 	rears, _ := def.Object.Fields["rear_ports"].(model.Children)
 	positions := map[model.Value]model.Integer{}
 	for _, rp := range rears {
@@ -181,7 +174,7 @@ func (r *reader) foldMappings(def *format.Definition, mappings []portMapping, at
 		}
 		positions[rp.Fields["name"]] = n
 	}
-	defaultRearPosition := importDefault(r.specs["dcim.porttemplatemapping"].Field("rear_port_position"))
+	defaultRearPosition := r.specs["dcim.porttemplatemapping"].Field("rear_port_position").ImportedDefault()
 
 	type slot struct {
 		port     model.Value
@@ -195,35 +188,39 @@ func (r *reader) foldMappings(def *format.Definition, mappings []portMapping, at
 		}
 		rear, _ := m.mapping.Fields["rear_port"].(model.Reference)
 		rearName := rear.Key["name"]
-		frontNode, rearNode := m.node(mappingFrontPortPosition), m.node(mappingRearPortPosition)
-		ok := true
-		if n, known := positions[rearName]; known {
-			if p, _ := rearPosition.(model.Integer); p > n {
-				at(format.Error, rearNode, format.JoinField(m.where, mappingRearPortPosition),
-					fmt.Sprintf("is %s, but rear-ports %s has only %d positions, so NetBox's import would refuse it", rearPosition, rearName, n))
-				ok = false
-			}
-		}
-		if first, taken := frontSlots[slot{m.front, position}]; taken {
-			at(format.Error, frontNode, format.JoinField(m.where, mappingFrontPortPosition),
-				fmt.Sprintf("maps position %s of front-ports %s, as %s does, but NetBox maps each position of a front port once", position, m.front, first))
-			ok = false
-		} else {
-			frontSlots[slot{m.front, position}] = m.where
-		}
-		if first, taken := rearSlots[slot{rearName, rearPosition}]; taken {
-			at(format.Error, rearNode, format.JoinField(m.where, mappingRearPortPosition),
-				fmt.Sprintf("maps to position %s of rear-ports %s, as %s does, but NetBox maps each position of a rear port once", rearPosition, rearName, first))
-			ok = false
-		} else {
-			rearSlots[slot{rearName, rearPosition}] = m.where
-		}
-		fp, found := byName[m.front]
-		if !ok || !found {
+		// A mapping that names a port the file hasn't got has that error
+		// of its own, which references reports.
+		if !given.has("dcim.frontporttemplate", m.front) || !given.has("dcim.rearporttemplate", rearName) {
 			continue
 		}
-		nested, _ := fp.Fields["rear_ports"].(model.Children)
-		fp.Fields["rear_ports"] = append(nested, m.mapping)
+		frontSlot, rearSlot := slot{m.front, position}, slot{rearName, rearPosition}
+		if n, known := positions[rearName]; known {
+			if p, _ := rearPosition.(model.Integer); p > n {
+				at(format.Error, m.node(mappingRearPortPosition), format.JoinField(m.where, mappingRearPortPosition),
+					fmt.Sprintf("is %s, but rear-ports %s has only %d positions, so NetBox's import would refuse it", rearPosition, rearName, n))
+				continue
+			}
+		}
+		if first, taken := frontSlots[frontSlot]; taken {
+			at(format.Error, m.node(mappingFrontPortPosition), format.JoinField(m.where, mappingFrontPortPosition),
+				fmt.Sprintf("maps position %s of front-ports %s, as %s does, but NetBox maps each position of a front port once", position, m.front, first))
+			continue
+		}
+		if first, taken := rearSlots[rearSlot]; taken {
+			at(format.Error, m.node(mappingRearPortPosition), format.JoinField(m.where, mappingRearPortPosition),
+				fmt.Sprintf("maps to position %s of rear-ports %s, as %s does, but NetBox maps each position of a rear port once", rearPosition, rearName, first))
+			continue
+		}
+		// Only a mapping without an error of its own takes its positions,
+		// as only a template without one takes its name: NetBox's import
+		// stops at the first mapping it refuses, so it never blames a
+		// later one for a position that one took. A port with an error of
+		// its own is no error of the mapping's.
+		frontSlots[frontSlot], rearSlots[rearSlot] = m.where, m.where
+		if fp, found := byName[m.front]; found {
+			nested, _ := fp.Fields["rear_ports"].(model.Children)
+			fp.Fields["rear_ports"] = append(nested, m.mapping)
+		}
 	}
 }
 
@@ -234,13 +231,4 @@ func (m *portMapping) node(key string) *format.Node {
 		return n
 	}
 	return m.item
-}
-
-// importDefault is what NetBox's import gives field f where a file leaves
-// it out: its ImportDefault, or its REST default, where the two agree.
-func importDefault(f *model.Field) model.Value {
-	if f.ImportDefault != nil {
-		return f.ImportDefault
-	}
-	return f.Default
 }

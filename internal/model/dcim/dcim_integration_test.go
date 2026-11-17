@@ -359,7 +359,8 @@ port-mappings:
 			}
 		}
 		// A mapping left at the import's initial values: both positions 1,
-		// which for the rear port's position is the REST default too.
+		// the spec's import default for the front port's, which the REST
+		// API requires, and the REST default for the rear port's.
 		if col.Name == "front_ports" {
 			var mappings []map[string]json.RawMessage
 			if err := json.Unmarshal(obj["rear_ports"], &mappings); err != nil || len(mappings) != 1 {
@@ -367,8 +368,8 @@ port-mappings:
 			}
 			for _, name := range []string{"position", "rear_port_position"} {
 				f := portTemplateMapping.Field(name)
-				if got := observe(t, f, mappings[0][name]); !model.Equal(got, model.Integer(1)) {
-					t.Errorf("%s.%s: NetBox's import gives %s, want 1", portTemplateMapping.Type, name, got)
+				if got := observe(t, f, mappings[0][name]); !model.Equal(got, f.ImportedDefault()) {
+					t.Errorf("%s.%s: NetBox's import gives %s, the spec %s", portTemplateMapping.Type, name, got, f.ImportedDefault())
 				}
 			}
 		}

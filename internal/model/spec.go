@@ -82,8 +82,10 @@ type Field struct {
 	// required has one.
 	Default Value
 	// ImportDefault is what NetBox's own CSV and YAML import gives the field
-	// when a record leaves it out, where that differs from Default. The
-	// import fills a form, and a form takes a missing checkbox as false.
+	// when a record leaves it out, where that differs from Default: a form
+	// takes a missing checkbox as false, and fills a field from its initial
+	// value, even one the REST API requires, such as a port mapping's
+	// position.
 	ImportDefault Value
 	// ImportRequired says NetBox's import refuses a record that leaves the
 	// field out, though the REST API gives it a default.
@@ -224,6 +226,23 @@ type Source struct {
 	// name in File, such as DeviceType, DeviceType.clean or
 	// MODULAR_COMPONENT_TEMPLATE_MODELS.
 	Symbol string
+}
+
+// ImportedDefault is what NetBox's own import gives the field when a record
+// leaves it out: its ImportDefault, if it has one, or else its Default,
+// which is nil for a field NetBox requires.
+func (f *Field) ImportedDefault() Value {
+	if f.ImportDefault != nil {
+		return f.ImportDefault
+	}
+	return f.Default
+}
+
+// ImportNeeds says NetBox's own import refuses a record that leaves the
+// field out: the REST API requires it, and the import fills it with no
+// default, or the import requires it alone.
+func (f *Field) ImportNeeds() bool {
+	return f.Required && f.ImportDefault == nil || f.ImportRequired
 }
 
 // Field returns the field called name, or nil if the spec has none.

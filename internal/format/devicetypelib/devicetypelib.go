@@ -396,19 +396,19 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 			case n.Kind != format.Sequence:
 				at(format.Error, n, key, "isn't a list, which devicetype-library's "+key+" is")
 			case len(n.Items) > 0:
-				at(format.Warning, pair.Key, key, "holds inventory items, which TrueUp ignores: NetBox has deprecated inventory item templates in favour of modules, so TrueUp doesn't compare them")
+				at(format.Warning, pair.Key, key, "holds inventory items, which TrueUp neither checks nor compares: NetBox has deprecated inventory item templates in favour of modules, and TrueUp doesn't support them")
 			}
 		default:
 			at(format.Warning, pair.Key, format.JoinField("", key), "isn't a key TrueUp reads from devicetype-library yet, so it is ignored")
 		}
 	}
 	r.references(refs, given, at)
-	r.foldMappings(&def, mappings, at)
+	r.foldMappings(&def, mappings, given, at)
 	// The schema requires these, but it comes from the source, so check
 	// that the file gives what NetBox needs to create a device type, with
 	// its own import.
 	for _, f := range r.deviceType.Fields {
-		if _, ok := def.Object.Fields[f.Name]; !ok && (f.Required || f.ImportRequired) && !slices.ContainsFunc(problems, func(p format.Problem) bool { return p.Field == f.Name }) {
+		if _, ok := def.Object.Fields[f.Name]; !ok && f.ImportNeeds() && !slices.ContainsFunc(problems, func(p format.Problem) bool { return p.Field == f.Name }) {
 			at(format.Error, root, "", "has no "+f.Name+", which NetBox needs to create a device type")
 		}
 	}

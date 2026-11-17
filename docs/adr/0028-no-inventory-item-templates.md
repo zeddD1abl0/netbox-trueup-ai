@@ -28,7 +28,7 @@ Should TrueUp compare them, and later sync them?
 Chosen option: "don't support them", because NetBox has deprecated them in favour of modules, which milestone 8 brings.
 
 - TrueUp has no spec of `dcim.inventoryitemtemplate`, reads no endpoint of them, and doesn't ask `netbox check` about them.
-- devicetype-library's format reads a file's `inventory-items` and ignores them, with a warning that NetBox has deprecated them. The file stays valid, as NetBox's import still takes it.
+- devicetype-library's format ignores a file's `inventory-items`, with a warning that NetBox has deprecated them and TrueUp neither checks nor compares them. The file stays valid: NetBox's import still takes inventory items, though it may refuse one TrueUp hasn't checked, such as an item without a name.
 - The object model keeps what only the step 8 prototype of inventory item templates used: generic references (`ShapeTypeAndID`), fields children share with their parent (`Shared`), and trees, with their tests. Later object types need them: an IP address's assigned object is a generic reference, and locations are a tree.
 
 ### Consequences
