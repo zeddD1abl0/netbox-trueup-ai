@@ -17,7 +17,7 @@ func TestSpecs(t *testing.T) {
 	if err := model.Check(Specs()); err != nil {
 		t.Errorf("the package's specs aren't consistent on their own:\n%v", err)
 	}
-	spectest.Run(t, withPrototypes(), snapshot)
+	spectest.Run(t, Specs(), snapshot)
 }
 
 func TestSpecsInDependencyOrder(t *testing.T) {

@@ -21,8 +21,6 @@ import (
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
-	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
-	"github.com/zeddD1abl0/netbox-trueup-ai/internal/netbox"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
@@ -284,8 +282,11 @@ Warnings:
 		"/api/dcim/power-port-templates/":          "id,device_type,name,label,type,maximum_draw,allocated_draw,description",
 		"/api/dcim/power-outlet-templates/":        "id,device_type,name,label,type,color,power_port,feed_leg,description",
 		"/api/dcim/interface-templates/":           "id,device_type,name,label,type,channels,channel_id,enabled,mgmt_only,description,parent,bridge,poe_mode,poe_type,rf_role",
-		"/api/dcim/module-bay-templates/":          "id,device_type,name,label,position,enabled,description",
-		"/api/dcim/device-bay-templates/":          "id,device_type,name,label,enabled,description",
+		"/api/dcim/rear-port-templates/":           "id,device_type,name,label,type,color,positions,description",
+		// A front port's mappings, nested in it.
+		"/api/dcim/front-port-templates/": "id,device_type,name,label,type,color,positions,description,rear_ports",
+		"/api/dcim/module-bay-templates/": "id,device_type,name,label,position,enabled,description",
+		"/api/dcim/device-bay-templates/": "id,device_type,name,label,enabled,description",
 	} {
 		got := nb.listed(endpoint)
 		if len(got) != 1 || !slices.Equal(got[0]["device_type_id"], []string{"10", "11"}) || got[0].Get("fields") != fields {
@@ -952,18 +953,77 @@ func TestCheckResults(t *testing.T) {
 	}
 }
 
-// TestReadTypesCoverTheSpecs checks that netbox check looks at every object
-// type compare reads, at the endpoint compare reads it from.
-func TestReadTypesCoverTheSpecs(t *testing.T) {
+// TestComparePortMappings checks that compare reads each front port's
+// mappings from NetBox, nested in it, and compares them by position: the
+// library's wall box maps its front port's position 1 to its rear port's
+// position 1, and NetBox maps it to position 2, and has a mapping at
+// position 2 that the library hasn't got.
+func TestComparePortMappings(t *testing.T) {
 	t.Parallel()
-	for _, s := range dcim.Specs() {
-		if s.Endpoint == "" {
-			continue
-		}
-		if !slices.Contains(netbox.ReadTypes(), netbox.ObjectType{Name: s.Type, Endpoint: s.Endpoint}) {
-			t.Errorf("netbox check doesn't look at %s at %s, which compare reads", s.Type, s.Endpoint)
+	const wallBox = "device-types/Generic/wall-box-1-utp-plug.yaml"
+	data, err := os.ReadFile(filepath.Join("../../internal/format/devicetypelib/testdata/library", filepath.FromSlash(wallBox)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generic := nbManufacturer(3, "Generic", "generic")
+	nb := newCompareNetBox(t, []map[string]any{generic}, []map[string]any{
+		nbDeviceType(12, generic, "Wall box, 1 UTP plug", "generic-wall-box-1-utp-plug", map[string]any{"u_height": 0.0, "is_full_depth": false}),
+	})
+	dt := nb.deviceTypes[0]
+	const rears, fronts = "/api/dcim/rear-port-templates/", "/api/dcim/front-port-templates/"
+	nb.templates = map[string][]map[string]any{
+		rears: {nbTemplate(rears, 300, dt, "Port 1", map[string]any{"type": choice("8p8c"), "color": "", "positions": 2})},
+		fronts: {nbTemplate(fronts, 400, dt, "Port 1", map[string]any{
+			"type": choice("8p8c"), "color": "", "positions": 1,
+			"rear_ports": []any{
+				map[string]any{"position": 1, "rear_port": 300, "rear_port_position": 2},
+				map[string]any{"position": 2, "rear_port": 300, "rear_port_position": 1},
+			},
+		})},
+	}
+	repo, pool, _ := libraryRepo(t, map[string]string{wallBox: string(data)})
+	env, _ := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repo+`","format":"devicetype-library"}]`)
+	fetched(t, pool, env)
+	env = append(env, checkEnv(t, nb.srv, checkToken)...)
+
+	r := runCLIApp(t, nil, trust(pool), env, "compare")
+	if r.code != exitOK || r.stderr != "" {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	for _, want := range []string{
+		"\n    FIELD                                                   DEFINITION  NETBOX\n" +
+			"    rear_ports[\"Port 1\"].positions                          1           2\n" +
+			"    front_ports[\"Port 1\"].rear_ports[1].rear_port_position  1           2\n",
+		// No NetBox ID: NetBox gives a mapping none.
+		`NetBox #12: front_ports["Port 1"].rear_ports[2]` + "\n",
+	} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("compare printed\n%s\nwant it to hold\n%s", r.stdout, want)
 		}
 	}
+	r = runCLIApp(t, nil, trust(pool), env, "compare", "-o", "json")
+	var got compareResult
+	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+		t.Fatalf("compare -o json printed %q: %v", r.stdout, err)
+	}
+	for _, want := range []string{
+		`{"path":["front_ports",{"name":"Port 1"},"rear_ports",{"position":1},"rear_port"],"cells":[{"value":{"name":"Port 1"}},{"value":{"id":300,"name":"Port 1"}}],"differs":false,"managed":true,"derived":false,"netbox_id":null}`,
+		`{"path":["front_ports",{"name":"Port 1"},"rear_ports",{"position":2}],"cells":[{"value":false},{"value":true}],"differs":true,"managed":false,"derived":false,"netbox_id":null}`,
+	} {
+		if !strings.Contains(compactJSON(t, r.stdout), want) {
+			t.Errorf("compare -o json printed\n%s\nwant it to hold\n%s", r.stdout, want)
+		}
+	}
+}
+
+// compactJSON is JSON without white space between tokens.
+func compactJSON(t *testing.T, s string) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := json.Compact(&b, []byte(s)); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
 }
 
 // refusing makes nb refuse to list endpoint.

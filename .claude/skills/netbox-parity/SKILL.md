@@ -15,7 +15,7 @@ TrueUp follows NetBox's rules, not its own ([architecture.md](../../../docs/arch
 | `internal/model/spec.go` | What a spec can say: `Spec`, `Field`, `Ref`, `Collection`, `Unique`, `Source`. |
 | `internal/model/check.go` | `model.Check`, the consistency rules every set of specs must pass. |
 | `internal/model/normalize.go` | `Field.Normalize` and `Field.Validate`, which follow what a spec says. |
-| `internal/model/dcim/` | dcim's specs, the generated `choices_gen.go`, the schema snapshot in `testdata/openapi.json`, and the tests. `prototypes_test.go` shows children, nested collections, trees and generic references. |
+| `internal/model/dcim/` | dcim's specs, the generated `choices_gen.go`, the schema snapshot in `testdata/openapi.json`, and the tests. `components.go` shows children, references within a device type, and a nested collection, a front port's mappings. |
 | `internal/model/spectest/` | The contract with the schema, and the check of citations against NetBox's source. |
 | `internal/model/openapi/` | Reads the schema, trims snapshots, lists choices; `cmd/netbox-choices` generates them. |
 

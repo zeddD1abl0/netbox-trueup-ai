@@ -2,7 +2,7 @@
 
 This guide takes you from a configuration file to a comparison of [devicetype-library](https://github.com/netbox-community/devicetype-library) with your NetBox: which of the library's manufacturers and device types NetBox already has, which it lacks, and how those it has differ, field by field and component by component.
 
-So far TrueUp only reads. It fetches the library, reads its device types as NetBox's own YAML import would, and compares them with what NetBox holds. Nothing writes to NetBox yet: importing and syncing come in milestone 2 ([roadmap](roadmap.md)). Of a device type's component templates, its console ports, console server ports, power ports, power outlets, interfaces, module bays and device bays are compared; front and rear ports and inventory items aren't yet.
+So far TrueUp only reads. It fetches the library, reads its device types as NetBox's own YAML import would, and compares them with what NetBox holds. Nothing writes to NetBox yet: importing and syncing come in milestone 2 ([roadmap](roadmap.md)). Of a device type's component templates, its console ports, console server ports, power ports, power outlets, interfaces, rear ports, front ports with their mappings to rear ports, module bays and device bays are compared. Inventory items aren't: NetBox has deprecated them in favour of modules, and `list` and `compare` warn about a file that has any ([ADR 0028](adr/0028-no-inventory-item-templates.md)).
 
 Every setting mentioned here is described in [configuration.md](configuration.md), and every command's `--help` lists its flags and exit codes.
 
@@ -116,8 +116,9 @@ A device type's component templates are matched with NetBox's by name, within th
 - A template only NetBox has, such as one added by hand, is listed under "Only in NetBox", but isn't a difference: TrueUp never removes one, so the device type can still be in step.
 - A field the library leaves out, such as an interface's `enabled`, isn't managed, as for a device type.
 - A power outlet's `power_port` compares by the name of the power port it refers to.
+- A front port's mappings, which the library lists apart as `port-mappings`, are compared within the front port, each by its position on it, as NetBox keeps them ([ADR 0027](adr/0027-nest-port-mappings-in-their-front-port.md)). A mapping's rear port compares by its name, and its `rear_port_position` as a field. A front port NetBox hasn't got is one difference, its mappings and all; a mapping only NetBox has, on a front port the library lists, is listed under "Only in NetBox", but isn't a difference.
 
-A difference names its template by its list and name, such as `interfaces["eth0"].type`. TrueUp reads the library's lists as NetBox's own import does: an interface's `bridge`, which NetBox's import ignores, isn't compared, and neither is a console port's `_is_power_source`, which is for the library's own tests. A file that names a template twice, or a power outlet whose power port the device type hasn't got, is invalid, since NetBox's import would refuse it.
+A difference names its template by its list and name, such as `interfaces["eth0"].type`, and a mapping by its front port and position, such as `front_ports["FP1"].rear_ports[1].rear_port`. TrueUp reads the library's lists as NetBox's own import does: an interface's `bridge`, which NetBox's import ignores, isn't compared, and neither is a console or rear port's `_is_power_source`, which is for the library's own tests. A file is invalid, since NetBox's import would refuse it, if it names a template twice, has a power outlet whose power port the device type hasn't got, or a port mapping whose front or rear port it hasn't got, maps to a rear port position beyond the rear port's positions, or maps a front or rear port's position that another mapping maps too. A front port position beyond the front port's positions is no error, to NetBox's import or to TrueUp.
 
 ### Choosing what to compare
 
@@ -160,12 +161,12 @@ Each object has:
 
 - `type` and `identity`, such as `{"manufacturer": {"name": "Dell"}, "model": "PowerEdge R640"}`;
 - `outcome`, `in_step`, `netbox_id` (null unless the identity matches) and `differences`, the count;
-- `collisions`, each with its `rule`, such as `["manufacturer", "slug"]`, and the NetBox object's `netbox_id` and `identity`, and its `path`: empty for an object such as a device type, and the template's path, such as `["interfaces", {"name": "eth0"}]`, for one of two templates NetBox holds under one name;
+- `collisions`, each with its `rule`, such as `["manufacturer", "slug"]`, and the NetBox object's `netbox_id` and `identity`, and its `path`: empty for an object such as a device type, and the template's path, such as `["interfaces", {"name": "eth0"}]`, for one of two templates NetBox holds under one name. A port mapping's collision has a null `netbox_id`, since NetBox gives mappings no ID;
 - `unresolved`: references to objects NetBox lacks, each with its `field`, `type`, `key`, `netbox_ids`, the objects that all have the key when NetBox holds more than one, and the `outcome` of that object's own definition, or null;
-- `columns`: the versions compared, the definition first, with its `source`, `path` (null for a derived manufacturer), `derived_from` and `unmapped`, the component lists not compared yet, then NetBox's object, with its `netbox_id`, when there is one;
-- `rows`: each field any version sets, with its `path`, a list of steps, one `cell` per column, `{"value": ...}` or `{}` where that version doesn't set the field, `differs`, `managed` and `derived`, and `netbox_id`, which is null but on a template's row.
+- `columns`: the versions compared, the definition first, with its `source`, `path` (null for a derived manufacturer), `derived_from` and `unmapped`, the lists of children the file holds that TrueUp doesn't read, which for devicetype-library is always empty, then NetBox's object, with its `netbox_id`, when there is one;
+- `rows`: each field any version sets, with its `path`, a list of steps, one `cell` per column, `{"value": ...}` or `{}` where that version doesn't set the field, `differs`, `managed` and `derived`, and `netbox_id`, which is null but on a template's row. A port mapping's row has none, since NetBox gives mappings no ID.
 
-A path is a list of steps: a field's or a list's name, as a string, and a template's key, as an object. So a device type's own field is `["u_height"]`, an interface is `["interfaces", {"name": "eth0"}]`, and its type `["interfaces", {"name": "eth0"}, "type"]`. A template's own row, whose path ends at its key, says whether each version has it, as `true` or `false`, with NetBox's template's `netbox_id`; it is managed when the library lists the template. Rows for a template's fields follow it, for each field the library sets or NetBox holds something other than its default.
+A path is a list of steps: a field's or a list's name, as a string, and a template's key, as an object. So a device type's own field is `["u_height"]`, an interface is `["interfaces", {"name": "eth0"}]`, and its type `["interfaces", {"name": "eth0"}, "type"]`. A front port's mapping at position 1 is `["front_ports", {"name": "FP1"}, "rear_ports", {"position": 1}]`, and its rear port `["front_ports", {"name": "FP1"}, "rear_ports", {"position": 1}, "rear_port"]`. A template's own row, whose path ends at its key, says whether each version has it, as `true` or `false`, with NetBox's template's `netbox_id`; it is managed when the library lists the template. Rows for a template's fields follow it, for each field the library sets or NetBox holds something other than its default, and then its mappings' rows, if it is a front port. Where NetBox hasn't got the front port, its mappings' rows leave NetBox's cell `{}`.
 
 Some questions it answers, with [jq](https://jqlang.org):
 
@@ -177,20 +178,23 @@ netbox-trueup-ai compare -o json | jq -r '.objects[]
 
 # Every field and template that differs, with both values, a template's
 # path written as interfaces[eth0].type.
-netbox-trueup-ai compare -o json | jq -c '.objects[] | select(.differences > 0)
+netbox-trueup-ai compare -o json | jq -c 'def text: map(if type == "object" then "[\([.[] | tostring] | join(","))]" else . end) | join(".") | gsub("\\.\\["; "[");
+  .objects[] | select(.differences > 0)
   | {model: .identity.model, netbox_id, fields: [.rows[] | select(.differs and .managed)
-  | {field: (.path | map(if type == "object" then "[\([.[] | tostring] | join(","))]" else . end) | join(".") | gsub("\\.\\["; "[")),
-     library: .cells[0].value, netbox: .cells[1].value}]}'
+  | {field: (.path | text), library: .cells[0].value, netbox: .cells[1].value}]}'
 
-# The templates NetBox lacks, by device type.
-netbox-trueup-ai compare -o json | jq -c '.objects[] | select(.netbox_id != null)
+# The templates and port mappings NetBox lacks, by device type.
+netbox-trueup-ai compare -o json | jq -c 'def text: map(if type == "object" then "[\([.[] | tostring] | join(","))]" else . end) | join(".") | gsub("\\.\\["; "[");
+  .objects[] | select(.netbox_id != null)
   | {model: .identity.model, missing: [.rows[] | select(.path[-1] | type == "object")
-  | select(.managed and .differs) | "\(.path[0]) \(.path[1].name)"]} | select(.missing != [])'
+  | select(.managed and .differs) | .path | text]} | select(.missing != [])'
 
-# The templates only NetBox has, which TrueUp leaves alone, with their IDs.
-netbox-trueup-ai compare -o json | jq -c '.objects[] | .identity.model as $model | .rows[]
+# The templates and port mappings only NetBox has, which TrueUp leaves
+# alone, with templates' IDs.
+netbox-trueup-ai compare -o json | jq -c 'def text: map(if type == "object" then "[\([.[] | tostring] | join(","))]" else . end) | join(".") | gsub("\\.\\["; "[");
+  .objects[] | .identity.model as $model | .rows[]
   | select((.path[-1] | type == "object") and .differs and (.managed | not))
-  | {model: $model, list: .path[0], name: .path[1].name, netbox_id}'
+  | {model: $model, path: (.path | text), netbox_id}'
 
 # The conflicts, with what each collides with.
 netbox-trueup-ai compare -o json | jq -c '.objects[] | select(.outcome == "conflict")

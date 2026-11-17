@@ -144,14 +144,15 @@ type Choices struct {
 // Ref describes a reference field.
 type Ref struct {
 	// Types lists the object types the field can refer to: one, or several
-	// for a generic reference such as an inventory item template's
-	// component.
+	// for a generic reference such as an IP address's assigned object.
 	Types []string
-	// Within is set for a reference to another child of the same parent,
-	// such as a power outlet template's power port: it names the parent's
-	// object type, and the reference names the object by its key in the
-	// parent's collection. It is empty for a reference to an object that
-	// stands on its own, which names the object by its identity.
+	// Within is set for a reference to another child of an object that
+	// holds this one, directly or further up, such as a power outlet
+	// template's power port, or a front port mapping's rear port, both
+	// within their device type: it names that object's type, and the
+	// reference names the object by its key in that object's collection. It
+	// is empty for a reference to an object that stands on its own, which
+	// names the object by its identity.
 	Within string
 	// Shape is how NetBox's API carries the reference.
 	Shape Shape
@@ -168,12 +169,12 @@ const (
 	// ShapeNested reads as a brief object, with the ID and the natural key,
 	// and writes as the ID. Most references are like this.
 	ShapeNested Shape = iota
-	// ShapeID reads and writes as the ID alone, such as an inventory item
-	// template's parent.
+	// ShapeID reads and writes as the ID alone, such as a front port
+	// mapping's rear port.
 	ShapeID
 	// ShapeTypeAndID reads and writes as two fields, Ref.TypeField and
-	// Ref.IDField, such as an inventory item template's component_type and
-	// component_id.
+	// Ref.IDField, such as an IP address's assigned_object_type and
+	// assigned_object_id.
 	ShapeTypeAndID
 )
 
@@ -191,8 +192,7 @@ type Collection struct {
 	// collection has none, since the parent carries its children.
 	Parent string
 	// Shared lists fields children have the same value in as their parent,
-	// such as the device type of an inventory item template nested in
-	// another.
+	// such as the site of a location nested in another.
 	Shared []string
 	// Key lists the children's fields that tell one parent's children apart.
 	Key []string

@@ -23,14 +23,19 @@ func child(typ, name string, fields map[string]model.Value) model.Object {
 }
 
 // nbChild is a component template of device type dt as NetBox's API gives
-// it: each field the spec's default, as DecodeAPI reads it, unless fields
-// replaces it.
+// it: each field the spec's default, as DecodeAPI reads it, and each nested
+// collection empty, unless fields replaces it.
 func nbChild(id, dt int64, typ, name string, fields map[string]model.Value) compare.Observed {
 	s := model.SpecOf(dcim.Specs(), "dcim."+typ+"template")
 	o := compare.Observed{ID: id, Object: model.Object{Type: s.Type, Fields: map[string]model.Value{}}}
 	for _, f := range s.Fields {
 		if f.Default != nil {
 			o.Object.Fields[f.Name] = f.Default
+		}
+	}
+	for _, col := range s.Children {
+		if col.Nested {
+			o.Object.Fields[col.Name] = model.Children{}
 		}
 	}
 	o.Object.Fields["device_type"] = model.Reference{Type: "dcim.devicetype", ID: dt}

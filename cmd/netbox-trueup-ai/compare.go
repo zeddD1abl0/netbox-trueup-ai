@@ -41,8 +41,9 @@ func newCompareCommand(a *app) *cobra.Command {
 		Long: `Compare the definitions in every configured source, or in those named,
 with what NetBox holds, read from the version of each source that was last
 fetched. For devicetype-library, that is its manufacturers and device types,
-with their console, power, interface and bay templates; their front and rear
-ports and inventory items aren't compared yet.
+with their console, power, interface, port and bay templates, and each front
+port's mappings to rear ports. Inventory items, which NetBox has deprecated,
+aren't compared.
 
 Each definition is matched to NetBox's objects by NetBox's own uniqueness
 rules, exactly, case included: a manufacturer's name and slug, and a device
@@ -649,9 +650,11 @@ func readChildren(ctx context.Context, c *netbox.Client, specs []*model.Spec, pa
 	return slices.Concat(read...), nil
 }
 
-// fieldsQuery asks NetBox for an object's ID and the fields its spec
-// describes, and nothing else. NetBox leaves out a name it doesn't know,
-// which DecodeAPI then reports.
+// fieldsQuery asks NetBox for an object's ID, the fields its spec
+// describes and its nested collections, such as a front port template's
+// mappings, and nothing else. NetBox leaves out a name it doesn't know,
+// which DecodeAPI then reports, and gives a nested collection's children
+// whole, which DecodeAPI reads as the children's spec says.
 func fieldsQuery(s *model.Spec) url.Values {
 	names := []string{"id"}
 	for _, f := range s.Fields {
@@ -660,6 +663,11 @@ func fieldsQuery(s *model.Spec) url.Values {
 			continue
 		}
 		names = append(names, f.Name)
+	}
+	for _, col := range s.Children {
+		if col.Nested {
+			names = append(names, col.Name)
+		}
 	}
 	return url.Values{"fields": {strings.Join(names, ",")}}
 }
@@ -760,7 +768,13 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 				if twice[p] == nil {
 					where = append(where, p)
 				}
-				twice[p] = append(twice[p], "#"+strconv.FormatInt(c.ID, 10))
+				// A nested child, such as a front port's mapping, has no
+				// NetBox ID.
+				id := ""
+				if c.ID != 0 {
+					id = "#" + strconv.FormatInt(c.ID, 10)
+				}
+				twice[p] = append(twice[p], id)
 				continue
 			}
 			verb := "matches"
@@ -775,8 +789,12 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 			if n := len(twice[p]); n > 2 {
 				times, none = strconv.Itoa(n)+" times", "none"
 			}
-			parts = append(parts, fmt.Sprintf("NetBox's #%d has %s %s, as %s, which NetBox should keep unique, so %s is compared",
-				o.NetBoxID, p, times, strings.Join(twice[p], ", "), none))
+			as := ""
+			if ids := slices.DeleteFunc(twice[p], func(id string) bool { return id == "" }); len(ids) > 0 {
+				as = ", as " + strings.Join(ids, ", ")
+			}
+			parts = append(parts, fmt.Sprintf("NetBox's #%d has %s %s%s, which NetBox should keep unique, so %s is compared",
+				o.NetBoxID, p, times, as, none))
 		}
 		conflicts = append(conflicts, "  "+cell(objectText(o)+": "+strings.Join(parts, "; ")))
 	}

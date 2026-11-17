@@ -5,7 +5,7 @@ TrueUp handles NetBox objects generically: an object is an object type and the v
 | Package | What it holds |
 | --- | --- |
 | `model` | `Object` and its values (`String`, `Integer`, `Decimal`, `Boolean`, `Date`, `Choice`, `Reference`, `Set`, `Children`, `Null`), which encode as JSON the way NetBox's API writes them, `Spec`, `Field.Normalize` and `Field.Validate`, `Spec.DecodeAPI`, which reads an object from NetBox's API as NetBox 4.7 writes each kind of field and checks its shape, `Check`, which checks that specs are consistent, and `Slugify`, which makes a slug from a name as NetBox's web UI does. |
-| `model/dcim` | The specs of dcim's object types: manufacturers, device types, and their console port, console server port, power port, power outlet, interface, module bay and device bay templates. Front and rear ports and inventory items follow in roadmap step 12; `prototypes_test.go` sketches them. |
+| `model/dcim` | The specs of dcim's object types: manufacturers, device types, and their console port, console server port, power port, power outlet, interface, rear port, front port, module bay and device bay templates, with a front port's mappings to rear ports nested in it ([ADR 0027](../../docs/adr/0027-nest-port-mappings-in-their-front-port.md)). TrueUp doesn't support inventory item templates ([ADR 0028](../../docs/adr/0028-no-inventory-item-templates.md)). |
 | `model/openapi` | Reads NetBox's OpenAPI schema, trims it to a snapshot, and lists its choice values. `cmd/netbox-choices` generates a spec package's `choices_gen.go` from its snapshot. |
 | `model/spectest` | The tests every spec package runs: consistency, the contract with the schema, and citations of NetBox's source ([ADR 0023](../../docs/adr/0023-check-specs-against-the-schema-with-plain-json.md)). |
 
@@ -18,7 +18,7 @@ Each spec package keeps a snapshot of NetBox's schema in `testdata/openapi.json`
 - `make schema` rewrites the snapshots from a disposable NetBox, then runs `make generate`. Run it after adding an endpoint, or when the target NetBox changes, and review the diff: it is how NetBox's API changed.
 - `make generate` regenerates the choice values, and `make generate-check` checks them. Never edit `choices_gen.go` by hand.
 
-To write or change a spec, follow the `netbox-parity` project skill in [`.claude/skills/netbox-parity/SKILL.md`](../../.claude/skills/netbox-parity/SKILL.md): it says where NetBox's source holds each rule, and how to check it.
+To write or change a spec, follow the `netbox-parity` project skill in [`.claude/skills/netbox-parity/SKILL.md`](../../.claude/skills/netbox-parity/SKILL.md): it says where NetBox's source holds each rule, and how to check it. To add a whole object type or child collection, follow the `add-netbox-object` skill in [`.claude/skills/add-netbox-object/SKILL.md`](../../.claude/skills/add-netbox-object/SKILL.md).
 
 ## Slugs as NetBox's UI makes them
 

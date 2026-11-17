@@ -22,8 +22,11 @@ import (
 // port's allocated draw is at most its maximum (PowerPortTemplate.clean),
 // an interface's PoE type needs a PoE mode, only wireless interfaces have a
 // wireless role, and channels need a channelized parent
-// (InterfaceValidationMixin.clean), and a device type with device bays is a
-// parent (DeviceBayTemplate.clean).
+// (InterfaceValidationMixin.clean), a device type with device bays is a
+// parent (DeviceBayTemplate.clean), a mapping's rear port position is one
+// of its rear port's (PortMappingBase.clean), and once a port is saved, its
+// positions can't drop below the number of its mappings
+// (FrontPortTemplate.clean, RearPortTemplate.clean).
 
 // templateDeviceType is the device type a modular component template
 // belongs to. A module type's templates have none, so it is nullable, but a
@@ -272,6 +275,126 @@ var moduleBayTemplate = &model.Spec{
 	},
 }
 
+// portFields are the fields of a front or rear port template, whose type
+// is from choices for component, such as FrontPortTemplate. Its positions
+// are how many connections the port carries, such as the 12 fibres of an
+// MPO rear port: a PositiveSmallIntegerField between PORT_POSITION_MIN and
+// PORT_POSITION_MAX.
+func portFields(component string) []model.Field {
+	return []model.Field{
+		templateDeviceType, templateName, templateLabel,
+		{
+			Name: "type", Kind: model.KindChoice, Required: true, Choices: &model.Choices{Values: choices(component, "type")},
+			Source: model.Source{File: "dcim/choices.py", Symbol: "PortTypeChoices"},
+		},
+		{
+			// A ColorField: six lowercase hexadecimal digits, or blank
+			// (ColorValidator in utilities/validators.py).
+			Name: "color", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 6, Pattern: "[0-9a-f]{6}", Trim: true,
+			Source: model.Source{File: "utilities/fields.py", Symbol: "ColorField"},
+		},
+		{
+			Name: "positions", Kind: model.KindInteger, Min: model.Integer(1), Max: model.Integer(1024), Default: model.Integer(1),
+			Source: model.Source{File: "dcim/constants.py", Symbol: "PORT_POSITION_MAX"},
+		},
+		templateDesc,
+	}
+}
+
+// rearPortTemplate is a port on the back of a device that passes through to
+// front ports. Its front_ports are the mappings again, seen from the rear
+// port, which the front port templates carry.
+var rearPortTemplate = &model.Spec{
+	Type:      "dcim.rearporttemplate",
+	Endpoint:  "/api/dcim/rear-port-templates/",
+	DependsOn: []string{"dcim.devicetype"},
+	Unique:    []model.Unique{templateUnique},
+	Fields:    portFields("RearPortTemplate"),
+	Ignored: slices.Concat(ignoredTemplate, []model.Ignored{
+		ignoredModuleType,
+		{Name: "front_ports", Reason: "the mappings again, seen from the rear port, which the front port templates carry"},
+	}),
+	Sources: []model.Source{
+		{File: "dcim/models/device_component_templates.py", Symbol: "RearPortTemplate"},
+		{File: "dcim/api/serializers_/devicetype_components.py", Symbol: "RearPortTemplateSerializer"},
+		{File: "dcim/forms/object_import.py", Symbol: "RearPortTemplateImportForm"},
+	},
+}
+
+// frontPortTemplate is a port on the front of a device, with its mappings
+// to rear ports nested in rear_ports: they have no endpoint of their own
+// (PortMappingBase._netbox_private), and NetBox replaces the whole set
+// whenever rear_ports is written, leaving it alone when it isn't
+// (PortSerializer.update).
+var frontPortTemplate = &model.Spec{
+	Type:      "dcim.frontporttemplate",
+	Endpoint:  "/api/dcim/front-port-templates/",
+	DependsOn: []string{"dcim.devicetype"},
+	Unique:    []model.Unique{templateUnique},
+	Fields:    portFields("FrontPortTemplate"),
+	Children: []model.Collection{{
+		// A mapping's front port position tells it from the front port's
+		// others: NetBox keeps it unique among them, and takes it as the
+		// mapping's identity when it writes the set (reconcile_port_mappings
+		// in dcim/utils.py).
+		Name: "rear_ports", Type: "dcim.porttemplatemapping", Key: []string{"position"}, Nested: true,
+		Source: model.Source{File: "dcim/models/base.py", Symbol: "PortMappingBase.Meta"},
+	}},
+	Ignored: slices.Concat(ignoredTemplate, []model.Ignored{ignoredModuleType}),
+	Sources: []model.Source{
+		{File: "dcim/models/device_component_templates.py", Symbol: "FrontPortTemplate"},
+		{File: "dcim/api/serializers_/devicetype_components.py", Symbol: "FrontPortTemplateSerializer"},
+		{File: "dcim/api/serializers_/base.py", Symbol: "PortSerializer.update"},
+		{File: "dcim/forms/object_import.py", Symbol: "FrontPortTemplateImportForm"},
+	},
+}
+
+// portTemplateMapping maps one position of a front port template to one
+// position of a rear port template of the same device type
+// (PortTemplateMapping.clean). NetBox's API gives it within its front port,
+// with the front port's position as position and the rear port by its ID
+// alone (FrontPortTemplateMappingSerializer).
+//
+// NetBox's model bounds both positions by PORT_POSITION_MIN and
+// PORT_POSITION_MAX, and its import checks them, but its API's position is a
+// plain IntegerField, and its API runs none of a mapping's model checks:
+// ValidatedModelSerializer.validate (netbox/api/serializers/base.py) leaves
+// out the nested mappings before it runs full_clean. So NetBox can hold a
+// mapping its import would refuse, such as one at position 0, which TrueUp
+// compares as it is. A rear port position must be one of the rear port's
+// (PortMappingBase.clean); a front port position beyond the front port's
+// positions is no error to NetBox, even to its import.
+var portTemplateMapping = &model.Spec{
+	Type: "dcim.porttemplatemapping",
+	Unique: []model.Unique{{
+		Fields: []string{"rear_port", "rear_port_position"},
+		Source: model.Source{File: "dcim/models/base.py", Symbol: "PortMappingBase.Meta"},
+	}},
+	Fields: []model.Field{
+		{
+			Name: "position", Kind: model.KindInteger, Required: true, Min: model.Integer(1), Max: model.Integer(1024),
+			TighterBounds: model.Source{File: "dcim/models/base.py", Symbol: "PortMappingBase"},
+		},
+		{
+			// NetBox's import finds it by name among the device type's rear
+			// ports (PortTemplateMappingImportForm.clean_device_type).
+			Name: "rear_port", Kind: model.KindReference, Required: true,
+			Ref:    &model.Ref{Types: []string{"dcim.rearporttemplate"}, Within: "dcim.devicetype", Shape: model.ShapeID},
+			Source: model.Source{File: "dcim/models/device_component_templates.py", Symbol: "PortTemplateMapping.clean"},
+		},
+		{
+			Name: "rear_port_position", Kind: model.KindInteger, Min: model.Integer(1), Max: model.Integer(1024), Default: model.Integer(1),
+			Source: model.Source{File: "dcim/models/base.py", Symbol: "PortMappingBase.clean"},
+		},
+	},
+	Sources: []model.Source{
+		{File: "dcim/models/device_component_templates.py", Symbol: "PortTemplateMapping"},
+		{File: "dcim/api/serializers_/devicetype_components.py", Symbol: "FrontPortTemplateMappingSerializer"},
+		{File: "dcim/forms/object_import.py", Symbol: "PortTemplateMappingImportForm"},
+		{File: "dcim/utils.py", Symbol: "reconcile_port_mappings"},
+	},
+}
+
 // deviceBayTemplate isn't modular: only a device type has device bays, so
 // its device type is never null.
 var deviceBayTemplate = &model.Spec{
@@ -301,15 +424,19 @@ var deviceBayTemplate = &model.Spec{
 }
 
 // deviceTypeComponents are the device type's collections of component
-// templates, in the order of devicetype-library's lists and NetBox's import
-// (DeviceTypeImportView.related_object_forms in dcim/views.py). Roadmap
-// step 12 adds front and rear ports and inventory items.
+// templates, in the order of NetBox's import, which creates rear ports
+// before the front ports that map to them
+// (DeviceTypeImportView.related_object_forms in dcim/views.py). TrueUp
+// doesn't support inventory item templates, which NetBox has deprecated
+// (docs/adr/0028-no-inventory-item-templates.md).
 var deviceTypeComponents = []model.Collection{
 	{Name: "console_ports", Type: "dcim.consoleporttemplate", Parent: "device_type", Key: []string{"name"}},
 	{Name: "console_server_ports", Type: "dcim.consoleserverporttemplate", Parent: "device_type", Key: []string{"name"}},
 	{Name: "power_ports", Type: "dcim.powerporttemplate", Parent: "device_type", Key: []string{"name"}},
 	{Name: "power_outlets", Type: "dcim.poweroutlettemplate", Parent: "device_type", Key: []string{"name"}},
 	{Name: "interfaces", Type: "dcim.interfacetemplate", Parent: "device_type", Key: []string{"name"}},
+	{Name: "rear_ports", Type: "dcim.rearporttemplate", Parent: "device_type", Key: []string{"name"}},
+	{Name: "front_ports", Type: "dcim.frontporttemplate", Parent: "device_type", Key: []string{"name"}},
 	{Name: "module_bays", Type: "dcim.modulebaytemplate", Parent: "device_type", Key: []string{"name"}},
 	{Name: "device_bays", Type: "dcim.devicebaytemplate", Parent: "device_type", Key: []string{"name"}},
 }

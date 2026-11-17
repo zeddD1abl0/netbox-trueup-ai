@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-
-	"github.com/zeddD1abl0/netbox-trueup-ai/internal/netbox"
 )
 
 // checkToken is a fake token that the fake NetBox below accepts.
@@ -81,11 +79,10 @@ dcim.consoleserverporttemplate  /api/dcim/console-server-port-templates/  yes
 dcim.powerporttemplate          /api/dcim/power-port-templates/           yes
 dcim.poweroutlettemplate        /api/dcim/power-outlet-templates/         yes
 dcim.interfacetemplate          /api/dcim/interface-templates/            yes
-dcim.frontporttemplate          /api/dcim/front-port-templates/           yes
 dcim.rearporttemplate           /api/dcim/rear-port-templates/            yes
+dcim.frontporttemplate          /api/dcim/front-port-templates/           yes
 dcim.modulebaytemplate          /api/dcim/module-bay-templates/           yes
 dcim.devicebaytemplate          /api/dcim/device-bay-templates/           yes
-dcim.inventoryitemtemplate      /api/dcim/inventory-item-templates/       yes
 
 The token can read every object type TrueUp reads. Constraints on its permissions
 aren't checked: where they apply, TrueUp sees only the objects they allow.
@@ -97,13 +94,13 @@ aren't checked: where they apply, TrueUp sees only the objects they allow.
 
 func TestNetBoxCheckJSON(t *testing.T) {
 	t.Parallel()
-	denied := []string{"/api/dcim/device-types/", "/api/dcim/inventory-item-templates/"}
+	denied := []string{"/api/dcim/device-types/", "/api/dcim/front-port-templates/"}
 	srv := fakeNetBox(t, "4.7.0", "Bearer "+checkToken, denied...)
 	r := runCLI(t, nil, checkEnv(t, srv, checkToken), "netbox", "check", "-o", "json")
 	if r.code != exitCannotRead {
 		t.Errorf("exit code = %d, want %d\nstderr: %s", r.code, exitCannotRead, r.stderr)
 	}
-	wantErr := "Error: the token can't read 2 of the 12 object types TrueUp reads: grant its user the view permission on dcim.devicetype, dcim.inventoryitemtemplate\n"
+	wantErr := "Error: the token can't read 2 of the 11 object types TrueUp reads: grant its user the view permission on dcim.devicetype, dcim.frontporttemplate\n"
 	if r.stderr != wantErr {
 		t.Errorf("stderr = %q, want %q", r.stderr, wantErr)
 	}
@@ -116,7 +113,7 @@ func TestNetBoxCheckJSON(t *testing.T) {
 		URL: srv.URL, NetBoxVersion: "4.7.0", APIVersion: "4.7", User: "trueup", TokenVersion: 2,
 		Warnings: []warningJSON{},
 	}
-	for _, rt := range netbox.ReadTypes() {
+	for _, rt := range readTypes() {
 		want.ObjectTypes = append(want.ObjectTypes, objectTypeJSON{
 			ObjectType: rt.Name, Endpoint: rt.Endpoint, Readable: !slices.Contains(denied, rt.Endpoint),
 		})

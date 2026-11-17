@@ -1,8 +1,8 @@
 // Package dcim holds the specs of NetBox's dcim object types that TrueUp
 // handles (docs/adr/0008-describe-object-types-with-specs.md): manufacturers,
-// device types, and the component templates that roadmap step 11 compares,
-// with ports and inventory items to follow in step 12. Each spec follows NetBox 4.7.2's source, which it cites,
-// and agrees with its OpenAPI schema, a snapshot of which is in
+// device types, and the component templates devicetype-library uses, front
+// port mappings included. Each spec follows NetBox 4.7.2's source, which it
+// cites, and agrees with its OpenAPI schema, a snapshot of which is in
 // testdata/openapi.json. The choice values in choices_gen.go are generated
 // from that snapshot by `make generate`.
 //
@@ -24,7 +24,8 @@ func Specs() []*model.Spec {
 	return []*model.Spec{
 		manufacturer, deviceType,
 		consolePortTemplate, consoleServerPortTemplate, powerPortTemplate, powerOutletTemplate,
-		interfaceTemplate, moduleBayTemplate, deviceBayTemplate,
+		interfaceTemplate, rearPortTemplate, frontPortTemplate, portTemplateMapping,
+		moduleBayTemplate, deviceBayTemplate,
 	}
 }
 

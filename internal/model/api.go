@@ -12,9 +12,12 @@ import (
 // DecodeAPI reads an object as NetBox's REST API returns it, such as one of
 // a listing's results, into its NetBox ID and the values of its fields: every
 // field s describes, which the answer must hold, read as NetBox 4.7 writes it
-// (docs/architecture.md, "Normalization"). Other fields of the answer are
-// left out. specs are the specs of every type, from which a reference takes
-// the identity of the object it refers to.
+// (docs/architecture.md, "Normalization"), and every nested collection, as
+// Children, each child read the same way but without an ID, since NetBox
+// gives it none. Other fields of the answer are left out, the children of a
+// collection with an endpoint of its own among them. specs are the specs of
+// every type, from which a reference takes the identity of the object it
+// refers to.
 //
 // What NetBox sends is untrusted (boundary B2 in docs/architecture.md), so
 // DecodeAPI checks the shape of every value, and fails on the first that
@@ -29,16 +32,68 @@ func (s *Spec) DecodeAPI(specs []*Spec, raw []byte) (int64, Object, error) {
 	if err != nil {
 		return 0, Object{}, fmt.Errorf("%s: id: %w", s.Type, err)
 	}
-	obj := Object{Type: s.Type, Fields: make(map[string]Value, len(s.Fields))}
+	fields, err := s.decodeFields(specs, answer)
+	if err != nil {
+		return 0, Object{}, fmt.Errorf("%s #%d: %w", s.Type, id, err)
+	}
+	return id, Object{Type: s.Type, Fields: fields}, nil
+}
+
+// decodeFields reads the fields and nested collections of an object of
+// spec s's type from an answer.
+func (s *Spec) decodeFields(specs []*Spec, answer map[string]json.RawMessage) (map[string]Value, error) {
+	fields := make(map[string]Value, len(s.Fields))
 	for i := range s.Fields {
 		f := &s.Fields[i]
 		v, err := f.decodeAPI(specs, answer)
 		if err != nil {
-			return 0, Object{}, fmt.Errorf("%s #%d: %s: %w", s.Type, id, f.Name, err)
+			return nil, fmt.Errorf("%s: %w", f.Name, err)
 		}
-		obj.Fields[f.Name] = v
+		fields[f.Name] = v
 	}
-	return id, obj, nil
+	for i := range s.Children {
+		col := &s.Children[i]
+		if !col.Nested {
+			continue
+		}
+		v, err := decodeNested(specs, col, answer)
+		if err != nil {
+			return nil, err
+		}
+		fields[col.Name] = v
+	}
+	return fields, nil
+}
+
+// decodeNested reads a nested collection from an answer: a list of the
+// children's objects, as the parent's serializer gives them, such as a
+// front port template's mappings.
+func decodeNested(specs []*Spec, col *Collection, answer map[string]json.RawMessage) (Children, error) {
+	raw, ok := answer[col.Name]
+	if !ok {
+		return nil, fmt.Errorf("%s: isn't in the answer", col.Name)
+	}
+	cs := SpecOf(specs, col.Type)
+	if cs == nil {
+		return nil, fmt.Errorf("%s: holds a %s, which has no spec", col.Name, col.Type)
+	}
+	var items []json.RawMessage
+	if kind := jsonKind(raw); kind != '[' || json.Unmarshal(raw, &items) != nil {
+		return nil, fmt.Errorf("%s: is %s, not a list", col.Name, describeJSON(kind))
+	}
+	children := make(Children, 0, len(items))
+	for i, item := range items {
+		var child map[string]json.RawMessage
+		if kind := jsonKind(item); kind != '{' || json.Unmarshal(item, &child) != nil {
+			return nil, fmt.Errorf("%s[%d]: is %s, not a %s", col.Name, i, describeJSON(kind), col.Type)
+		}
+		fields, err := cs.decodeFields(specs, child)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", col.Name, i, err)
+		}
+		children = append(children, Object{Type: cs.Type, Fields: fields})
+	}
+	return children, nil
 }
 
 // decodeAPI reads field f from an answer.
@@ -129,7 +184,8 @@ func (f *Field) decodeValue(specs []*Spec, raw json.RawMessage) (Value, error) {
 		return set, nil
 	case KindChildren, KindNull:
 		// A collection's children have endpoints of their own, or come in
-		// their parent's field, and no field is of Null's kind.
+		// their parent's field, which decodeNested reads, and no field is
+		// of Null's kind.
 	}
 	return nil, fmt.Errorf("is %s, which TrueUp doesn't read from NetBox", f.Kind.withArticle())
 }
@@ -175,7 +231,7 @@ func (f *Field) decodeReference(specs []*Spec, raw json.RawMessage, kind byte) (
 }
 
 // decodeTypeAndID reads a generic reference from the two fields that carry
-// it, such as an inventory item template's component_type and component_id:
+// it, such as an IP address's assigned_object_type and assigned_object_id:
 // both null, or an object type the reference can refer to and an ID.
 func (f *Field) decodeTypeAndID(answer map[string]json.RawMessage) (Value, error) {
 	rawType, okType := answer[f.Ref.TypeField]

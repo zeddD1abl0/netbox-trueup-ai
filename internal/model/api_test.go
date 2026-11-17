@@ -1,12 +1,14 @@
 package model
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
 
-// apiSpecs are specs with a field of every kind and a reference of every
-// shape, for DecodeAPI.
+// apiSpecs are specs with a field of every kind, a reference of every
+// shape, a nested collection whose children have one of their own, and a
+// collection with an endpoint of its own, for DecodeAPI.
 func apiSpecs() (thing *Spec, all []*Spec) {
 	maker := &Spec{
 		Type: "test.maker", Endpoint: "/api/test/makers/", Identity: []string{"name"},
@@ -32,8 +34,28 @@ func apiSpecs() (thing *Spec, all []*Spec) {
 			},
 			{Name: "tags", Kind: KindSet, Elem: &Field{Kind: KindString}},
 		},
+		Children: []Collection{
+			{Name: "links", Type: "test.link", Key: []string{"position"}, Nested: true},
+			{Name: "parts", Type: "test.part", Parent: "thing", Key: []string{"name"}},
+		},
 	}
-	return thing, []*Spec{maker, thing}
+	link := &Spec{
+		Type: "test.link",
+		Fields: []Field{
+			{Name: "position", Kind: KindInteger},
+			{Name: "target", Kind: KindReference, Ref: &Ref{Types: []string{"test.thing"}, Shape: ShapeID}},
+		},
+		Children: []Collection{{Name: "notes", Type: "test.note", Key: []string{"text"}, Nested: true}},
+	}
+	note := &Spec{Type: "test.note", Fields: []Field{{Name: "text", Kind: KindString}}}
+	part := &Spec{
+		Type: "test.part", Endpoint: "/api/test/parts/",
+		Fields: []Field{
+			{Name: "thing", Kind: KindReference, Ref: &Ref{Types: []string{"test.thing"}}},
+			{Name: "name", Kind: KindString},
+		},
+	}
+	return thing, []*Spec{maker, thing, link, note, part}
 }
 
 // thingAnswer is an answer for apiSpecs' thing, with fields replaced or,
@@ -55,6 +77,7 @@ func thingAnswer(replace map[string]string) string {
 		{"component_type", `"test.b"`},
 		{"component_id", `4`},
 		{"tags", `["a", "b"]`},
+		{"links", `[{"position": 1, "target": 9, "url": "x", "notes": [{"text": "a"}]}, {"position": 2, "target": 4, "notes": []}]`},
 	}
 	var parts []string
 	for _, f := range fields {
@@ -92,6 +115,16 @@ func TestDecodeAPI(t *testing.T) {
 		"parent":    Reference{Type: "test.thing", ID: 9},
 		"component": Reference{Type: "test.b", ID: 4},
 		"tags":      Set{String("b"), String("a")},
+		// The children of a nested collection, in any order, without IDs or
+		// the fields their spec leaves out; those of a collection with an
+		// endpoint of its own come from there.
+		"links": Children{
+			{Type: "test.link", Fields: map[string]Value{"position": Integer(2), "target": Reference{Type: "test.thing", ID: 4}, "notes": Children{}}},
+			{Type: "test.link", Fields: map[string]Value{
+				"position": Integer(1), "target": Reference{Type: "test.thing", ID: 9},
+				"notes": Children{{Type: "test.note", Fields: map[string]Value{"text": String("a")}}},
+			}},
+		},
 	}}
 	if !obj.Equal(want) {
 		t.Errorf("DecodeAPI = %v, want %v", obj.Fields, want.Fields)
@@ -99,13 +132,14 @@ func TestDecodeAPI(t *testing.T) {
 
 	_, obj, err = thing.DecodeAPI(specs, []byte(thingAnswer(map[string]string{
 		"airflow": `null`, "eol": `null`, "parent": `null`, "component_type": `null`, "component_id": `null`,
-		"size": `1.5e1`, "tags": `[]`,
+		"size": `1.5e1`, "tags": `[]`, "links": `[]`,
 	})))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, v := range map[string]Value{
 		"airflow": Null{}, "eol": Null{}, "parent": Null{}, "component": Null{}, "size": NewDecimal(15, 0), "tags": Set{},
+		"links": Children{},
 	} {
 		if !Equal(obj.Fields[name], v) {
 			t.Errorf("%s = %s, want %s", name, describe(obj.Fields[name]), v)
@@ -153,6 +187,16 @@ func TestDecodeAPIRefuses(t *testing.T) {
 		{"generic reference missing", thingAnswer(map[string]string{"component_type": ""}), "component: component_type or component_id isn't in the answer"},
 		{"set not a list", thingAnswer(map[string]string{"tags": `"a"`}), "tags: is text, not a list"},
 		{"set element", thingAnswer(map[string]string{"tags": `["a", 1]`}), "tags: element 1 is a number, not text"},
+		{"nested collection missing", thingAnswer(map[string]string{"links": ""}), "test.thing #17: links: isn't in the answer"},
+		{"nested collection null", thingAnswer(map[string]string{"links": `null`}), "links: is null, not a list"},
+		{"nested collection an object", thingAnswer(map[string]string{"links": `{"position": 1, "target": 9, "notes": []}`}), "links: is an object, not a list"},
+		{"nested child not an object", thingAnswer(map[string]string{"links": `[1]`}), "links[0]: is a number, not a test.link"},
+		{"nested child null", thingAnswer(map[string]string{"links": `[null]`}), "links[0]: is null, not a test.link"},
+		{"nested child's field", thingAnswer(map[string]string{"links": `[{"position": "1", "target": 9, "notes": []}]`}), "test.thing #17: links[0]: position: is text, not a number"},
+		{"nested child's field missing", thingAnswer(map[string]string{"links": `[{"target": 9, "notes": []}]`}), "links[0]: position: isn't in the answer"},
+		{"nested child's reference", thingAnswer(map[string]string{"links": `[{"position": 1, "target": 0, "notes": []}]`}), `links[0]: target: "0" isn't an ID`},
+		{"nested child's collection missing", thingAnswer(map[string]string{"links": `[{"position": 1, "target": 9}]`}), "links[0]: notes: isn't in the answer"},
+		{"nested in nested", thingAnswer(map[string]string{"links": `[{"position": 1, "target": 9, "notes": [{"text": 1}]}]`}), "links[0]: notes[0]: text: is a number, not text"},
 	}
 	for _, tt := range tests {
 		_, _, err := thing.DecodeAPI(specs, []byte(tt.answer))
@@ -168,6 +212,10 @@ func TestDecodeAPIReferenceToATypeWithoutASpec(t *testing.T) {
 	_, _, err := thing.DecodeAPI(specs[1:], []byte(thingAnswer(nil)))
 	if err == nil || !strings.Contains(err.Error(), "maker: refers to a test.maker, which has no spec") {
 		t.Errorf("DecodeAPI without the maker's spec = %v", err)
+	}
+	_, _, err = thing.DecodeAPI(slices.Concat(specs[:2], specs[3:]), []byte(thingAnswer(nil)))
+	if err == nil || !strings.Contains(err.Error(), "links: holds a test.link, which has no spec") {
+		t.Errorf("DecodeAPI without the link's spec = %v", err)
 	}
 }
 

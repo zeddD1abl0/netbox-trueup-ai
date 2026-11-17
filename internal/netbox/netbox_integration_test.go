@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/netboxtest"
 )
 
@@ -294,13 +295,13 @@ func TestCheckReadInNetBox(t *testing.T) {
 		token    config.Secret
 		readable []string
 	}{
-		{name: "the superuser", token: nb.Token, readable: names(ReadTypes())},
+		{name: "the superuser", token: nb.Token, readable: names(specTypes())},
 		{name: "a user who may view manufacturers", token: readerToken, readable: []string{"dcim.manufacturer"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			checks, err := connect(t, tt.token, nil).CheckRead(t.Context(), ReadTypes())
+			checks, err := connect(t, tt.token, nil).CheckRead(t.Context(), specTypes())
 			if err != nil {
 				t.Fatalf("CheckRead: %v", err)
 			}
@@ -315,6 +316,18 @@ func TestCheckReadInNetBox(t *testing.T) {
 			}
 		})
 	}
+}
+
+// specTypes are the object types with a spec and an endpoint, which netbox
+// check reads.
+func specTypes() []ObjectType {
+	var out []ObjectType
+	for _, s := range dcim.Specs() {
+		if s.Endpoint != "" {
+			out = append(out, ObjectType{Name: s.Type, Endpoint: s.Endpoint})
+		}
+	}
+	return out
 }
 
 func names(types []ObjectType) []string {

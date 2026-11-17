@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +23,8 @@ var (
 	fuzzIfaces     = []string{"eth0", "eth0 ", "ETH0", "eth1"}
 	fuzzIfaceTypes = []string{"1000base-t", "10gbase-t"}
 	fuzzPorts      = []string{"PSU1", "PSU2"}
+	fuzzRears      = []string{"RP1", "RP1 ", "RP2"}
+	fuzzFronts     = []string{"FP1", "FP2", "FP1"}
 )
 
 // fuzzInput reads a fuzzer's bytes as definitions and NetBox objects.
@@ -89,6 +92,29 @@ func (in *fuzzInput) build() ([]compare.Definition, []compare.Observed) {
 			observed = append(observed, nbChild(id, dt, "poweroutlet", "O1", map[string]model.Value{"power_port": port}))
 			id++
 		}
+		for range in.next(3) {
+			observed = append(observed, nbChild(id, dt, "rearport", fuzzRears[in.next(len(fuzzRears))], lc))
+			id++
+		}
+		for range in.next(3) {
+			// Its mappings, at positions that may repeat, to any rear port
+			// observed so far, of this device type or another.
+			var rears []int64
+			for _, o := range observed {
+				if o.Object.Type == "dcim.rearporttemplate" {
+					rears = append(rears, o.ID)
+				}
+			}
+			var mappings []model.Object
+			for range in.next(3) {
+				if len(rears) == 0 {
+					break
+				}
+				mappings = append(mappings, nbMapping(int64(1+in.next(2)), rears[in.next(len(rears))], int64(1+in.next(2))))
+			}
+			observed = append(observed, nbFrontPort(id, dt, fuzzFronts[in.next(len(fuzzFronts))], 1, mappings...))
+			id++
+		}
 	}
 	var defs []compare.Definition
 	for range in.next(4) {
@@ -128,6 +154,44 @@ func (in *fuzzInput) build() ([]compare.Definition, []compare.Observed) {
 				fields["power_outlets"] = model.Children{child("poweroutlet", "O1", map[string]model.Value{"power_port": powerPort(port)})}
 			}
 		}
+		var rears model.Children
+		rearNamed := map[string]bool{}
+		for range in.next(3) {
+			name := strings.TrimSpace(fuzzRears[in.next(len(fuzzRears))])
+			if !rearNamed[name] {
+				rearNamed[name] = true
+				rears = append(rears, child("rearport", name, lc))
+			}
+		}
+		if rears != nil {
+			fields["rear_ports"] = rears
+		}
+		var fronts model.Children
+		frontNamed := map[string]bool{}
+		for range in.next(3) {
+			name := fuzzFronts[in.next(len(fuzzFronts))]
+			if frontNamed[name] {
+				continue
+			}
+			frontNamed[name] = true
+			// Mappings at different positions, to the definition's rear
+			// ports.
+			var mappings []model.Object
+			at := map[int64]bool{}
+			for range in.next(3) {
+				position := int64(1 + in.next(2))
+				if len(rears) == 0 || at[position] {
+					continue
+				}
+				at[position] = true
+				rear, _ := rears[in.next(len(rears))].Fields["name"].(model.String)
+				mappings = append(mappings, mapping(position, string(rear), int64(1+in.next(2))))
+			}
+			fronts = append(fronts, frontPort(name, 1, mappings...))
+		}
+		if fronts != nil {
+			fields["front_ports"] = fronts
+		}
 		// The format refuses a manufacturer's name with white space at an
 		// end, which NetBox's import wouldn't find, and Compare does too.
 		maker := strings.TrimSpace(fuzzNames[in.next(len(fuzzNames))])
@@ -153,8 +217,18 @@ func FuzzCompare(f *testing.F) {
 		defs, observed := in.build()
 		results := run(t, defs, observed)
 
+		// NetBox's objects, and each front port's mappings, in reverse.
 		reversed := slices.Clone(observed)
 		slices.Reverse(reversed)
+		for i, o := range reversed {
+			if mappings, ok := o.Object.Fields["rear_ports"].(model.Children); ok {
+				backwards := slices.Clone(mappings)
+				slices.Reverse(backwards)
+				o.Object.Fields = maps.Clone(o.Object.Fields)
+				o.Object.Fields["rear_ports"] = backwards
+				reversed[i] = o
+			}
+		}
 		again := run(t, defs, reversed)
 		for i := range results {
 			a, _ := json.Marshal(results[i])
@@ -251,7 +325,8 @@ type expectedChildren struct {
 // childOracle works out the plain way how a definition's children compare
 // with those of NetBox's device type #match: by name, exactly, and a power
 // outlet's power port by the name of the power port of the same device type
-// NetBox's ID refers to.
+// NetBox's ID refers to; and a front port's mappings, where NetBox has the
+// front port once, by position, with their rear ports as power ports.
 func childOracle(d compare.Definition, observed []compare.Observed, match int64) expectedChildren {
 	var e expectedChildren
 	if match == 0 {
@@ -273,6 +348,8 @@ func childOracle(d compare.Definition, observed []compare.Observed, match int64)
 		{"power_ports", "dcim.powerporttemplate"},
 		{"power_outlets", "dcim.poweroutlettemplate"},
 		{"interfaces", "dcim.interfacetemplate"},
+		{"rear_ports", "dcim.rearporttemplate"},
+		{"front_ports", "dcim.frontporttemplate"},
 	} {
 		netbox := map[string][]compare.Observed{}
 		for _, o := range observed {
@@ -303,6 +380,12 @@ func childOracle(d compare.Definition, observed []compare.Observed, match int64)
 					e.differ = append(e.differ, where(name)+".power_port")
 				}
 			}
+			if col.name == "front_ports" {
+				e.mappings(where(name), c, theirs[0], func(id int64) (string, bool) {
+					port, found := byID[id]
+					return nameOf(port.Object.Fields), found && parent(port) == match
+				})
+			}
 		}
 		for name, theirs := range netbox {
 			if !defined[name] {
@@ -319,6 +402,53 @@ func childOracle(d compare.Definition, observed []compare.Observed, match int64)
 	slices.Sort(e.onlyNetBox)
 	slices.Sort(e.twice)
 	return e
+}
+
+// mappings works out how a definition's front port's mappings compare with
+// those of NetBox's front port, at path: by position, the rear port by the
+// name rearName gives the ID NetBox refers to, or false if it isn't one of
+// the device type's rear ports, and the rear port's position.
+func (e *expectedChildren) mappings(path string, mine model.Object, theirs compare.Observed, rearName func(int64) (string, bool)) {
+	position := func(m model.Object) int64 { p, _ := m.Fields["position"].(model.Integer); return int64(p) }
+	at := func(p int64) string { return path + ".rear_ports[" + strconv.FormatInt(p, 10) + "]" }
+	netbox := map[int64][]model.Object{}
+	nb, _ := theirs.Object.Fields["rear_ports"].(model.Children)
+	for _, m := range nb {
+		netbox[position(m)] = append(netbox[position(m)], m)
+	}
+	defined := map[int64]bool{}
+	defs, _ := mine.Fields["rear_ports"].(model.Children)
+	for _, m := range defs {
+		p := position(m)
+		defined[p] = true
+		same := netbox[p]
+		if len(same) == 0 {
+			e.differ = append(e.differ, at(p))
+		}
+		if len(same) != 1 {
+			continue
+		}
+		ref, _ := same[0].Fields["rear_port"].(model.Reference)
+		mineRef, _ := m.Fields["rear_port"].(model.Reference)
+		name, ok := rearName(ref.ID)
+		if wanted, _ := mineRef.Key["name"].(model.String); !ok || name != string(wanted) {
+			e.differ = append(e.differ, at(p)+".rear_port")
+		}
+		if !model.Equal(m.Fields["rear_port_position"], same[0].Fields["rear_port_position"]) {
+			e.differ = append(e.differ, at(p)+".rear_port_position")
+		}
+	}
+	for p, same := range netbox {
+		if !defined[p] {
+			e.onlyNetBox = append(e.onlyNetBox, at(p))
+		}
+		if len(same) > 1 {
+			// Nested children have no NetBox IDs.
+			for range same {
+				e.twice = append(e.twice, 0)
+			}
+		}
+	}
 }
 
 type expected struct {
@@ -456,6 +586,9 @@ func FuzzCompareWithItself(f *testing.F) {
 			nbChild(4, 2, "interface", "eth1", map[string]model.Value{"type": model.Choice("10gbase-t")}),
 			nbChild(5, 2, "powerport", "PSU1", map[string]model.Value{"type": model.Choice("iec-60320-c14"), "maximum_draw": model.Integer(500)}),
 			nbChild(6, 2, "poweroutlet", "O1", map[string]model.Value{"power_port": model.Reference{Type: "dcim.powerporttemplate", ID: 5}}),
+			nbChild(7, 2, "rearport", "RP1", map[string]model.Value{"type": model.Choice("lc"), "positions": model.Integer(2)}),
+			nbChild(8, 2, "rearport", "RP2", lc),
+			nbFrontPort(9, 2, "FP1", 1, nbMapping(1, 7, 2)),
 		}
 		mine := map[string]model.Children{
 			"interfaces": {
@@ -464,6 +597,11 @@ func FuzzCompareWithItself(f *testing.F) {
 			},
 			"power_ports":   {child("powerport", "PSU1", map[string]model.Value{"type": model.Choice("iec-60320-c14"), "maximum_draw": model.Integer(500)})},
 			"power_outlets": {child("poweroutlet", "O1", map[string]model.Value{"power_port": powerPort("PSU1")})},
+			"rear_ports": {
+				child("rearport", "RP1", map[string]model.Value{"type": model.Choice("lc"), "positions": model.Integer(2)}),
+				child("rearport", "RP2", lc),
+			},
+			"front_ports": {frontPort("FP1", 1, mapping(1, "RP1", 2))},
 		}
 		for name, c := range mine {
 			def.Object.Fields[name] = c
@@ -489,6 +627,16 @@ func FuzzCompareWithItself(f *testing.F) {
 				d.Object.Fields[collection] = c
 			}
 		}
+		// withMappings changes FP1's mappings.
+		withMappings := func(change func(model.Children) model.Children) func(compare.Definition) {
+			return func(d compare.Definition) {
+				fronts, _ := d.Object.Fields["front_ports"].(model.Children)
+				fp := model.Object{Type: fronts[0].Type, Fields: maps.Clone(fronts[0].Fields)}
+				mappings, _ := fp.Fields["rear_ports"].(model.Children)
+				fp.Fields["rear_ports"] = change(slices.Clone(mappings))
+				d.Object.Fields["front_ports"] = model.Children{fp}
+			}
+		}
 		setField := func(field string, v model.Value) func(compare.Definition) {
 			return func(d compare.Definition) { d.Object.Fields[field] = v }
 		}
@@ -510,6 +658,21 @@ func FuzzCompareWithItself(f *testing.F) {
 			{`power_ports["PSU1"].maximum_draw`, withChild("power_ports", 0, "maximum_draw", model.Null{})},
 			{`power_outlets["O1"].power_port`, withChild("power_outlets", 0, "power_port", model.Null{})},
 			{`device_bays["Bay 1"]`, setField("device_bays", model.Children{child("devicebay", "Bay 1", nil)})},
+			{`rear_ports["RP1"].positions`, withChild("rear_ports", 0, "positions", model.Integer(4))},
+			{`front_ports["FP1"].positions`, withChild("front_ports", 0, "positions", model.Integer(2))},
+			{`front_ports["FP1"].rear_ports[1].rear_port_position`, withMappings(func(m model.Children) model.Children {
+				return model.Children{mapping(1, "RP1", 1)}
+			})},
+			{`front_ports["FP1"].rear_ports[1].rear_port`, withMappings(func(m model.Children) model.Children {
+				return model.Children{mapping(1, "RP2", 2)}
+			})},
+			{`front_ports["FP1"].rear_ports[2]`, withMappings(func(m model.Children) model.Children {
+				return append(m, mapping(2, "RP1", 1))
+			})},
+			{`front_ports["FP2"]`, func(d compare.Definition) {
+				fronts, _ := d.Object.Fields["front_ports"].(model.Children)
+				d.Object.Fields["front_ports"] = append(slices.Clone(fronts), frontPort("FP2", 1, mapping(1, "RP2", 1)))
+			}},
 		}
 		c := changes[int(change)%len(changes)]
 		changed := cloneDefinition(def)
