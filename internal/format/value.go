@@ -1,6 +1,7 @@
 package format
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -77,11 +78,12 @@ func wholeFloat(f *model.Field, v string) (model.Value, error) {
 	switch {
 	case err != nil:
 		// resolvePlain gives only values that read back.
-		return nil, fmt.Errorf("%s isn't a number TrueUp can read", v)
+		return nil, fmt.Errorf("%s isn't a number TrueUp can read: %w", v, err)
 	case x != math.Trunc(x):
 		return nil, fmt.Errorf("is %s, but NetBox's %s is a whole number", v, f.Name)
 	case math.Abs(x) >= pyReprExponent:
-		return nil, fmt.Errorf("is %s written with a decimal point, which NetBox's import refuses for a whole number as large as this: write it without one", v)
+		// Not v, which Python's form makes 1e+16, as the file doesn't give it.
+		return nil, errors.New("is a whole number written with a decimal point, which NetBox's import refuses once it is 1e16 or more, or -1e16 or less: write it without the decimal point")
 	}
 	return model.Integer(int64(x)), nil
 }

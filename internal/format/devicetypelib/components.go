@@ -29,7 +29,9 @@ type componentList struct {
 
 // componentLists are the lists of component templates TrueUp reads, in the
 // order NetBox's import creates them (DeviceTypeImportView in dcim/views.py),
-// so that a power outlet's power port is read before the outlet.
+// whatever the order of the file's keys. TrueUp reads them in the file's
+// order, and checks each reference to another template once it has read
+// them all (references).
 var componentLists = []componentList{
 	{
 		Key: "console-ports", Collection: "console_ports",

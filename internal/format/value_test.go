@@ -1,6 +1,8 @@
 package format
 
 import (
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -46,7 +48,9 @@ func TestValue(t *testing.T) {
 		{model.KindInteger, "2.0000000000000001", model.Integer(2), ""}, // the float is 2.0
 		{model.KindInteger, "9999999999999998.0", model.Integer(9999999999999998), ""},
 		{model.KindInteger, "2.5", nil, "is 2.5, but NetBox's f is a whole number"},
-		{model.KindInteger, "1.0e+16", nil, "NetBox's import refuses"}, // str() gives 1e+16
+		// str() gives 1e+16, which the message doesn't show, as the file
+		// doesn't give it.
+		{model.KindInteger, "1.0e+16", nil, "is a whole number written with a decimal point, which NetBox's import refuses once it is 1e16 or more, or -1e16 or less: write it without the decimal point"},
 		{model.KindInteger, "-1.0e+16", nil, "NetBox's import refuses"},
 		{model.KindInteger, "'2'", nil, "is text, but NetBox's f is a whole number"},
 		{model.KindString, "~", model.Null{}, ""},
@@ -67,5 +71,15 @@ func TestValue(t *testing.T) {
 		case err != nil || !model.Equal(got, tt.want):
 			t.Errorf("Value(%s, %s) = %v, %v; want %v", tt.kind, tt.yaml, got, err, tt.want)
 		}
+	}
+}
+
+// TestWholeFloatKeepsWhyItCantRead checks that a number strconv can't read,
+// which resolvePlain doesn't give, keeps strconv's reason.
+func TestWholeFloatKeepsWhyItCantRead(t *testing.T) {
+	t.Parallel()
+	_, err := wholeFloat(&model.Field{Name: "f", Kind: model.KindInteger}, "1.0x")
+	if !errors.Is(err, strconv.ErrSyntax) {
+		t.Errorf("wholeFloat(1.0x) = %v, want strconv.ErrSyntax", err)
 	}
 }
