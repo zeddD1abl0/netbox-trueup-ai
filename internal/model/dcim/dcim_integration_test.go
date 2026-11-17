@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -88,12 +91,34 @@ func newManufacturer(t *testing.T) int64 {
 	return id
 }
 
+// newDeviceType creates a device type that can have device bays, and
+// returns its ID.
+func newDeviceType(t *testing.T) int64 {
+	t.Helper()
+	name := unique("type")
+	out, err := create(t, "/api/dcim/device-types/", map[string]any{
+		"manufacturer": newManufacturer(t), "model": name, "slug": name, "subdevice_role": "parent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := json.Unmarshal(out["id"], &id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 // observe reads a field as NetBox's API gives it, as a value of the field's
-// kind: null, or a boolean, number, string or choice. It doesn't read
-// references, which the defaults here don't include.
+// kind: null, or a boolean, number, string or choice, as DecodeAPI reads
+// them. It doesn't read references, which the defaults here don't include.
 func observe(t *testing.T, f *model.Field, raw json.RawMessage) model.Value {
 	t.Helper()
 	if bytes.Equal(raw, []byte("null")) {
+		if f.Kind == model.KindChoice && f.Blank && !f.Nullable {
+			// NetBox's ChoiceField gives the blank choice as null.
+			return model.Choice("")
+		}
 		return model.Null{}
 	}
 	var v model.Value
@@ -108,6 +133,10 @@ func observe(t *testing.T, f *model.Field, raw json.RawMessage) model.Value {
 		if err = json.Unmarshal(raw, &n); err == nil {
 			v, err = model.ParseDecimal(n.String())
 		}
+	case model.KindInteger:
+		var i int64
+		err = json.Unmarshal(raw, &i)
+		v = model.Integer(i)
 	case model.KindString:
 		var s string
 		err = json.Unmarshal(raw, &s)
@@ -136,6 +165,23 @@ var factories = map[string]func(t *testing.T) map[string]any{
 		name := unique("defaults")
 		return map[string]any{"manufacturer": newManufacturer(t), "model": name, "slug": name}
 	},
+	"dcim.consoleporttemplate":       template(nil),
+	"dcim.consoleserverporttemplate": template(nil),
+	"dcim.powerporttemplate":         template(nil),
+	"dcim.poweroutlettemplate":       template(nil),
+	"dcim.interfacetemplate":         template(map[string]any{"type": "1000base-t"}),
+	"dcim.modulebaytemplate":         template(nil),
+	"dcim.devicebaytemplate":         template(nil),
+}
+
+// template is the factory of a component template of a new device type,
+// with fields.
+func template(fields map[string]any) func(t *testing.T) map[string]any {
+	return func(t *testing.T) map[string]any {
+		body := map[string]any{"device_type": newDeviceType(t), "name": unique("defaults")}
+		maps.Copy(body, fields)
+		return body
+	}
 }
 
 // TestDefaults creates an object of each type the package has a spec of,
@@ -151,13 +197,16 @@ func TestDefaults(t *testing.T) {
 			t.Errorf("%s: TestDefaults has no way to create one; add it to factories", spec.Type)
 			continue
 		}
-		obj, err := create(t, spec.Endpoint, factory(t))
+		body := factory(t)
+		obj, err := create(t, spec.Endpoint, body)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for i := range spec.Fields {
 			f := &spec.Fields[i]
-			if f.Required || f.ReadOnly {
+			// A template's device type is optional only for a module
+			// type's templates.
+			if _, set := body[f.Name]; f.Required || f.ReadOnly || set {
 				continue
 			}
 			raw, ok := obj[f.Name]
@@ -167,6 +216,88 @@ func TestDefaults(t *testing.T) {
 			}
 			if got := observe(t, f, raw); !model.Equal(got, f.Default) {
 				t.Errorf("%s.%s: NetBox's default is %s, the spec's %s", spec.Type, f.Name, got, f.Default)
+			}
+		}
+	}
+}
+
+// TestImportDefaults imports a device type through NetBox's own YAML import,
+// with one of each component template it reads, each with no more than
+// NetBox needs, and checks that NetBox gives every other field of each the
+// default its spec says for the import: ImportDefault, or Default where the
+// import gives the REST API's. NetBox's import fills each field a list item
+// leaves out from its form's initial value (BulkImportView._save_object in
+// netbox/views/generic/bulk_views.py).
+func TestImportDefaults(t *testing.T) {
+	t.Parallel()
+	maker := unique("maker")
+	if _, err := create(t, "/api/dcim/manufacturers/", map[string]any{"name": maker, "slug": maker}); err != nil {
+		t.Fatal(err)
+	}
+	name := unique("imported")
+	file := "manufacturer: " + maker + "\nmodel: " + name + "\nslug: " + name + "\nu_height: 1\nsubdevice_role: parent\n" + `console-ports:
+  - name: c1
+console-server-ports:
+  - name: s1
+power-ports:
+  - name: p1
+    maximum_draw: 2.0
+power-outlets:
+  - name: o1
+interfaces:
+  - name: i1
+    type: 1000base-t
+module-bays:
+  - name: m1
+device-bays:
+  - name: d1
+`
+	if err := nb.Import(t.Context(), "/dcim/device-types/import/", file); err != nil {
+		t.Fatal(err)
+	}
+	var types struct {
+		Results []struct {
+			ID int64 `json:"id"`
+		} `json:"results"`
+	}
+	if err := nb.Get(t.Context(), "/api/dcim/device-types/", url.Values{"slug": {name}}, &types); err != nil {
+		t.Fatal(err)
+	}
+	if len(types.Results) != 1 {
+		t.Fatalf("NetBox has %d device types with the slug %s", len(types.Results), name)
+	}
+	query := url.Values{"device_type_id": {strconv.FormatInt(types.Results[0].ID, 10)}}
+	for _, col := range deviceType.Children {
+		spec := model.SpecOf(Specs(), col.Type)
+		var list struct {
+			Results []map[string]json.RawMessage `json:"results"`
+		}
+		if err := nb.Get(t.Context(), spec.Endpoint, query, &list); err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Results) != 1 {
+			t.Errorf("%s: NetBox's import made %d, want 1", col.Name, len(list.Results))
+			continue
+		}
+		obj := list.Results[0]
+		for i := range spec.Fields {
+			f := &spec.Fields[i]
+			switch f.Name {
+			case col.Parent, "name", "type", "maximum_draw":
+				continue
+			}
+			want := f.ImportDefault
+			if want == nil {
+				want = f.Default
+			}
+			if got := f.Normalize(observe(t, f, obj[f.Name])); !model.Equal(got, f.Normalize(want)) {
+				t.Errorf("%s.%s: NetBox's import gives %s, the spec %s", spec.Type, f.Name, got, want)
+			}
+		}
+		// The import reads 2.0 as a whole number, as the format does.
+		if col.Name == "power_ports" {
+			if got := observe(t, spec.Field("maximum_draw"), obj["maximum_draw"]); !model.Equal(got, model.Integer(2)) {
+				t.Errorf("maximum_draw: 2.0 imported as %s, want 2", got)
 			}
 		}
 	}
@@ -263,6 +394,46 @@ func TestValidationAgainstNetBox(t *testing.T) {
 		err := f.Validate(f.Normalize(tt.value))
 		if (nbErr == nil) != (err == nil) {
 			t.Errorf("%s = %v: NetBox says %v, Validate %v", tt.field, tt.json, nbErr, err)
+		}
+	}
+	// Component templates' bounds and choices.
+	dt := newDeviceType(t)
+	for _, tt := range []struct {
+		endpoint string
+		field    string
+		json     any
+		value    model.Value
+	}{
+		{"/api/dcim/power-port-templates/", "maximum_draw", 1, model.Integer(1)},
+		{"/api/dcim/power-port-templates/", "maximum_draw", 0, model.Integer(0)},
+		{"/api/dcim/power-port-templates/", "allocated_draw", 2147483647, model.Integer(2147483647)},
+		{"/api/dcim/power-port-templates/", "allocated_draw", 2147483648, model.Integer(2147483648)},
+		{"/api/dcim/interface-templates/", "channels", 1024, model.Integer(1024)},
+		{"/api/dcim/interface-templates/", "channels", 1025, model.Integer(1025)},
+		{"/api/dcim/interface-templates/", "poe_mode", "pd", model.Choice("pd")},
+		{"/api/dcim/interface-templates/", "poe_mode", "pse+", model.Choice("pse+")},
+		{"/api/dcim/console-port-templates/", "type", "", model.Choice("")},
+		{"/api/dcim/console-port-templates/", "type", "rs-232", model.Choice("rs-232")},
+		{"/api/dcim/module-bay-templates/", "position", strings.Repeat("p", 30), model.String(strings.Repeat("p", 30))},
+		{"/api/dcim/module-bay-templates/", "position", strings.Repeat("p", 31), model.String(strings.Repeat("p", 31))},
+		{"/api/dcim/power-outlet-templates/", "color", "ff00ff", model.String("ff00ff")},
+		{"/api/dcim/power-outlet-templates/", "color", "FF00FF", model.String("FF00FF")},
+	} {
+		body := map[string]any{"device_type": dt, "name": unique("valid"), tt.field: tt.json}
+		if tt.endpoint == "/api/dcim/interface-templates/" {
+			body["type"] = "1000base-t"
+		}
+		_, nbErr := create(t, tt.endpoint, body)
+		var spec *model.Spec
+		for _, s := range Specs() {
+			if s.Endpoint == tt.endpoint {
+				spec = s
+			}
+		}
+		f := spec.Field(tt.field)
+		err := f.Validate(f.Normalize(tt.value))
+		if (nbErr == nil) != (err == nil) {
+			t.Errorf("%s %s = %v: NetBox says %v, Validate %v", spec.Type, tt.field, tt.json, nbErr, err)
 		}
 	}
 	for _, slug := range []string{"Upper_and-lower-1", "has space", "dotted.slug", "ünï"} {

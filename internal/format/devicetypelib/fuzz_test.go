@@ -27,6 +27,10 @@ func FuzzReadDeviceType(f *testing.F) {
 	}
 	f.Add([]byte(valid + "airflow: front-to-rear\nweight: 1.5\nweight_unit: kg\ncomments: \"\\u202e\"\n"))
 	f.Add([]byte("manufacturer: \" Acme\"\nmodel: 010\nslug: yes\nu_height: 1:30\nis_full_depth: on\n"))
+	f.Add([]byte(valid + "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n    maximum_draw: 2.0\n" +
+		"power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n  - name: O2\n    type: iec-60320-c13\n    power_port: ' PSU1'\n" +
+		"interfaces:\n  - name: eth0\n    type: 1000base-t\n    bridge: eth1\n  - name: 'eth0 '\n    type: 1000base-t\n" +
+		"console-ports:\n  - name: con\n    type: rj-45\n    _is_power_source: 'yes'\n"))
 	snap := sourcetest.Snapshot(f, "lib", librarySchemas(f))
 	schema, err := compileSchema(f.Context(), snap)
 	if err != nil {
@@ -47,6 +51,10 @@ func FuzzReadDeviceType(f *testing.F) {
 			return
 		}
 		for name, v := range def.Object.Fields {
+			if col := r.deviceType.Collection(name); col != nil {
+				checkChildren(t, r, def.Object, col, v)
+				continue
+			}
 			field := r.deviceType.Field(name)
 			if field == nil {
 				t.Fatalf("a valid file gives %s, which isn't a field", name)
@@ -65,4 +73,63 @@ func FuzzReadDeviceType(f *testing.F) {
 			}
 		}
 	})
+}
+
+// checkChildren checks that the children a valid file gives in a collection
+// are as NetBox's import would create them: fields of their spec, valid and
+// normalized, with every field NetBox needs, names unique, and references
+// to other templates naming ones the device type has.
+func checkChildren(t *testing.T, r *reader, dt model.Object, col *model.Collection, v model.Value) {
+	t.Helper()
+	children, ok := v.(model.Children)
+	if !ok {
+		t.Fatalf("a valid file gives %s as %s, not children", col.Name, v.Kind())
+	}
+	spec := r.specs[col.Type]
+	names := map[model.Value]bool{}
+	for _, child := range children {
+		if child.Type != col.Type {
+			t.Fatalf("a valid file gives a %s in %s", child.Type, col.Name)
+		}
+		for name, v := range child.Fields {
+			f := spec.Field(name)
+			switch {
+			case f == nil || name == col.Parent:
+				t.Fatalf("a valid file gives %s's %s, which isn't a field it sets", col.Name, name)
+			case f.Validate(v) != nil:
+				t.Fatalf("a valid file gives %s's %s %s, which NetBox refuses: %v", col.Name, name, v, f.Validate(v))
+			case !model.Equal(f.Normalize(v), v):
+				t.Fatalf("a valid file gives %s's %s %s, not normalized", col.Name, name, v)
+			}
+			if ref, isRef := v.(model.Reference); isRef && !hasChild(dt, r.deviceType, ref) {
+				t.Fatalf("a valid file's %s refers to %s, which the device type hasn't got", col.Name, ref)
+			}
+		}
+		for _, f := range spec.Fields {
+			if _, set := child.Fields[f.Name]; !set && f.Name != col.Parent && (f.Required || f.ImportRequired) {
+				t.Fatalf("a valid file gives one of %s without %s", col.Name, f.Name)
+			}
+		}
+		if names[child.Fields["name"]] {
+			t.Fatalf("a valid file gives two of %s named %s", col.Name, child.Fields["name"])
+		}
+		names[child.Fields["name"]] = true
+	}
+}
+
+// hasChild reports whether obj, of spec's type, holds a child that ref
+// names by its collection's key.
+func hasChild(obj model.Object, spec *model.Spec, ref model.Reference) bool {
+	for _, col := range spec.Children {
+		if col.Type != ref.Type {
+			continue
+		}
+		children, _ := obj.Fields[col.Name].(model.Children)
+		for _, c := range children {
+			if model.Equal(c.Fields["name"], ref.Key["name"]) {
+				return true
+			}
+		}
+	}
+	return false
 }

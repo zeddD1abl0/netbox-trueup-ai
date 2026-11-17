@@ -121,8 +121,15 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - [ADR 0025](adr/0025-match-by-netbox-uniqueness-rules.md): match by NetBox's uniqueness rules, compare side by side, and record each comparison as `compare` prints it.
     - No new dependency.
 
-11. **`feat(compare): compare console, power, interface and bay templates`.**
-    - Specs, mapping and child differences for console port, console server port, power port, power outlet (with its power port reference), interface, module bay and device bay templates.
+11. **`feat(compare): compare console, power, interface and bay templates`.** Done in #24.
+    - `internal/model/dcim`: specs of the console port, console server port, power port, power outlet, interface, module bay and device bay templates, as the device type's collections, keyed by name, with a power outlet's power port and an interface's parent and bridge as references within the device type. NetBox's own import fills each field a component leaves out from its form's initial value, which for these templates is the REST API's default, as `TestImportDefaults` checks. The contract test learns that NetBox's schema rebuilds choice fields and nested serializers from the model for requests.
+    - `internal/format`: a float such as `maximum_draw: 2.0` reads as a whole number, as Django's `IntegerField` reads it. devicetype-library's lists map to the collections, with the keys NetBox's import form takes; an interface's `bridge` and a console port's `_is_power_source`, which NetBox's import ignores, are read and dropped. A name given twice, or an outlet whose power port the file hasn't got, makes the file invalid, as NetBox's import refuses it. The whole library, 13,187 files, still reads with none invalid.
+    - `internal/compare`: children matched by their key within the parent, exactly. A row for each child, its path ending at its key, with NetBox's ID; rows for the fields the definition sets or NetBox holds at other than their defaults. A child NetBox lacks is one difference; one only NetBox has is reported, not managed. Two NetBox children with one key make the device type a conflict. `Matched` lists the device types whose children to read. Fuzzed against a plain reading of the rules, children included.
+    - `compare` reads the templates of the device types matched, a collection at a time, all at once, lists templates only NetBox has apart, and streams `--output json`. The whole library against an almost empty NetBox writes 205 MB of JSON, peaking at 634 MB of memory.
+    - The parity test also changes an interface's type, an outlet's power port, adds an interface and deletes a console port, each making exactly its difference. Run by hand on 400 device types sampled from the whole library, it finds all 527 definitions in step, templates included.
+    - `netboxtest.Get`, for tests that check what NetBox itself made.
+    - [ADR 0026](adr/0026-compare-children-by-their-key.md): compare children by their key, with a row for each child, and leave children only NetBox has unmanaged.
+    - No new dependency.
 
 12. **`feat(compare): compare ports, port mappings and inventory items`.**
     - Rear and front port templates, with mappings folded into front ports, and inventory item templates as a tree with their component references.

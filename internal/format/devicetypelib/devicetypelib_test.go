@@ -93,8 +93,8 @@ func TestReadLibraryAsNetBoxReadsIt(t *testing.T) {
 			t.Errorf("NE8000-X8's %s = %v, want %v", field, got, want)
 		}
 	}
-	if huawei.Unmapped["module-bays"] != 18 || huawei.Metadata != nil {
-		t.Errorf("NE8000-X8 has %v unmapped and metadata %v, want 18 module bays and none", huawei.Unmapped, huawei.Metadata)
+	if bays, _ := huawei.Object.Fields["module_bays"].(model.Children); len(bays) != 18 || huawei.Unmapped != nil || huawei.Metadata != nil {
+		t.Errorf("NE8000-X8 has %d module bays, %v unmapped and metadata %v, want 18 module bays and neither", len(bays), huawei.Unmapped, huawei.Metadata)
 	}
 	wallBox := defs["device-types/Generic/wall-box-1-utp-plug.yaml"]
 	if !model.Equal(wallBox.Object.Fields["u_height"], model.NewDecimal(0, 0)) ||
@@ -218,6 +218,203 @@ func TestReadProblems(t *testing.T) {
 			}
 			if len(res.Definitions) != wantDefs || res.Files != 1 || res.Invalid != 1-wantDefs/2 {
 				t.Errorf("%d definitions, %d files, %d invalid; want %d, 1 and %d", len(res.Definitions), res.Files, res.Invalid, wantDefs, 1-wantDefs/2)
+			}
+		})
+	}
+}
+
+// components is a file with one of each list TrueUp reads.
+const components = valid + `subdevice_role: parent
+console-ports:
+  - name: Console
+    type: rj-45
+    _is_power_source: true
+console-server-ports:
+  - name: Port 1
+    type: rj-45
+    label: P1
+power-ports:
+  - name: PSU1
+    type: iec-60320-c14
+    maximum_draw: 500
+    allocated_draw: 2.0
+  - name: " PSU2 "
+    type: iec-60320-c14
+power-outlets:
+  - name: Outlet 1
+    type: iec-60320-c13
+    power_port: PSU2
+    feed_leg: A
+  - name: Outlet 2
+    type: iec-60320-c13
+    power_port: ""
+interfaces:
+  - name: eth0
+    type: 1000base-t
+    mgmt_only: true
+    enabled: false
+    poe_mode: pse
+    poe_type: type2-ieee802.3at
+  - name: br0
+    type: bridge
+    bridge: eth0
+module-bays:
+  - name: Slot 1
+    position: "1"
+device-bays:
+  - name: Bay 1
+    description: left
+front-ports:
+  - name: F1
+    type: 8p8c
+    positions: 1
+`
+
+// TestReadComponents checks the component templates read from each list:
+// their fields as NetBox's import takes them, keys TrueUp drops, and lists it
+// doesn't read yet counted.
+func TestReadComponents(t *testing.T) {
+	t.Parallel()
+	const p = "device-types/Acme/box.yaml"
+	res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", withFiles(t, map[string]string{p: components})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) > 0 || len(res.Definitions) != 2 {
+		t.Fatalf("problems %v, %d definitions; want none and 2", res.Problems, len(res.Definitions))
+	}
+	dt := res.Definitions[1]
+	child := func(typ string, fields map[string]model.Value) model.Object {
+		return model.Object{Type: "dcim." + typ + "template", Fields: fields}
+	}
+	s := func(v string) model.Value { return model.String(v) }
+	c := func(v string) model.Value { return model.Choice(v) }
+	want := map[string]model.Children{
+		"console_ports":        {child("consoleport", map[string]model.Value{"name": s("Console"), "type": c("rj-45")})},
+		"console_server_ports": {child("consoleserverport", map[string]model.Value{"name": s("Port 1"), "type": c("rj-45"), "label": s("P1")})},
+		"power_ports": {
+			child("powerport", map[string]model.Value{"name": s("PSU1"), "type": c("iec-60320-c14"), "maximum_draw": model.Integer(500), "allocated_draw": model.Integer(2)}),
+			// Trimmed, as NetBox stores it, so an outlet finds it by
+			// PSU2.
+			child("powerport", map[string]model.Value{"name": s("PSU2"), "type": c("iec-60320-c14")}),
+		},
+		"power_outlets": {
+			child("poweroutlet", map[string]model.Value{
+				"name": s("Outlet 1"), "type": c("iec-60320-c13"), "feed_leg": c("A"),
+				"power_port": model.Reference{Type: "dcim.powerporttemplate", Key: map[string]model.Value{"name": s("PSU2")}},
+			}),
+			// NetBox's import takes a blank power port as none.
+			child("poweroutlet", map[string]model.Value{"name": s("Outlet 2"), "type": c("iec-60320-c13"), "power_port": model.Null{}}),
+		},
+		"interfaces": {
+			child("interface", map[string]model.Value{
+				"name": s("eth0"), "type": c("1000base-t"), "mgmt_only": model.Boolean(true), "enabled": model.Boolean(false),
+				"poe_mode": c("pse"), "poe_type": c("type2-ieee802.3at"),
+			}),
+			// No bridge: NetBox's import ignores it.
+			child("interface", map[string]model.Value{"name": s("br0"), "type": c("bridge")}),
+		},
+		"module_bays": {child("modulebay", map[string]model.Value{"name": s("Slot 1"), "position": s("1")})},
+		"device_bays": {child("devicebay", map[string]model.Value{"name": s("Bay 1"), "description": s("left")})},
+	}
+	for name, children := range want {
+		if got := dt.Object.Fields[name]; !model.Equal(got, children) {
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(children)
+			t.Errorf("%s = %s, want %s", name, gotJSON, wantJSON)
+		}
+	}
+	if !cmp.Equal(dt.Unmapped, map[string]int{"front-ports": 1}) {
+		t.Errorf("unmapped = %v, want one front port", dt.Unmapped)
+	}
+}
+
+// TestReadComponentProblems checks what is wrong with component lists that
+// break one rule each, with the library's schema and with one that lets
+// anything through.
+func TestReadComponentProblems(t *testing.T) {
+	t.Parallel()
+	lenient := `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
+	ports := "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n"
+	outlet := "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n"
+	tests := []struct {
+		name    string
+		lenient bool
+		file    string
+		want    []format.Problem
+	}{
+		{"an outlet's power port the device type hasn't got", false, valid + ports + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU9\n", []format.Problem{
+			{Severity: format.Error, Line: 12, Column: 17, Field: "power-outlets[0].power_port", Reason: `names "PSU9", which isn't one of the device type's power-ports, so NetBox's import wouldn't find it`},
+		}},
+		// NetBox creates power ports before outlets, whatever the order of
+		// the file's keys.
+		{"outlets before their power ports", false, valid + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n" + ports, nil},
+		{"an outlet's power port with white space", false, valid + ports + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: \" PSU1\"\n", []format.Problem{
+			{Severity: format.Error, Line: 12, Column: 17, Field: "power-outlets[0].power_port", Reason: `" PSU1" has white space at an end: NetBox trims a template's name, but its import looks for the name as the file gives it, and wouldn't find it`},
+		}},
+		{"a name given twice once trimmed", false, valid + "interfaces:\n  - name: eth0\n    type: 1000base-t\n  - name: \"eth0 \"\n    type: 1000base-t\n", []format.Problem{
+			{Severity: format.Error, Line: 9, Column: 5, Field: "interfaces[1].name", Reason: `is "eth0", as interfaces[0]'s is, but NetBox keeps a name unique among a device type's interfaces`},
+		}},
+		{"a draw that isn't whole", false, valid + "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n    maximum_draw: 2.5\n", []format.Problem{
+			{Severity: format.Error, Line: 9, Column: 19, Field: "power-ports[0].maximum_draw", Reason: "is a number, but the schema wants a whole number"},
+		}},
+		{"a draw NetBox refuses", false, valid + "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n    maximum_draw: 3000000000\n", []format.Problem{
+			{Severity: format.Error, Line: 9, Column: 19, Field: "power-ports[0].maximum_draw", Reason: "3000000000 is more than 2147483647"},
+		}},
+		// The power port's own error, not the outlet's too.
+		{"an outlet's power port with an error of its own", true, valid + "power-ports:\n  - name: PSU1\n    type: bogus\n" + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n", []format.Problem{
+			{Severity: format.Error, Line: 8, Column: 11, Field: "power-ports[0].type", Reason: `"bogus" isn't one of its choices`},
+		}},
+		// A power port with an error of its own still has a name, so an
+		// outlet naming another is blamed.
+		{"an outlet's missing power port beside one with an error", true, valid + "power-ports:\n  - name: PSU1\n    type: bogus\n" + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU9\n", []format.Problem{
+			{Severity: format.Error, Line: 8, Column: 11, Field: "power-ports[0].type", Reason: `"bogus" isn't one of its choices`},
+			{Severity: format.Error, Line: 12, Column: 17, Field: "power-outlets[0].power_port", Reason: `names "PSU9", which isn't one of the device type's power-ports, so NetBox's import wouldn't find it`},
+		}},
+		// The power ports' error, not the outlet's too, since the power
+		// port it names may be the one TrueUp can't read.
+		{"an outlet's power port in a list that isn't one", true, valid + "power-ports:\n  name: PSU1\n  type: iec-60320-c14\n" + outlet, []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 3, Field: "power-ports", Reason: "isn't a list, which devicetype-library's power-ports is"},
+		}},
+		{"an outlet's power port that isn't a mapping", true, valid + "power-ports:\n  - PSU1\n" + outlet, []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "power-ports[0]", Reason: "is text, but each of devicetype-library's power-ports is a mapping"},
+		}},
+		{"an outlet's power port without a name", true, valid + "power-ports:\n  - type: iec-60320-c14\n" + outlet, []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "power-ports[0]", Reason: "has no name, which NetBox needs to create one of a device type's power-ports"},
+		}},
+		{"a list item that isn't a mapping", true, valid + "device-bays:\n  - Bay 1\n", []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "device-bays[0]", Reason: "is text, but each of devicetype-library's device-bays is a mapping"},
+		}},
+		{"a list item without what NetBox needs", true, valid + "interfaces:\n  - name: eth0\n", []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "interfaces[0]", Reason: "has no type, which NetBox needs to create one of a device type's interfaces"},
+		}},
+		{"a key TrueUp doesn't read", true, valid + "interfaces:\n  - name: eth0\n    type: 1000base-t\n    parent: eth1\n", []format.Problem{
+			{Severity: format.Warning, Line: 9, Column: 5, Field: "interfaces[0].parent", Reason: "isn't a key TrueUp reads from devicetype-library's interfaces yet, so it is ignored"},
+		}},
+		{"a dropped key of the wrong kind", true, valid + "console-ports:\n  - name: con\n    type: rj-45\n    _is_power_source: \"yes\"\n", []format.Problem{
+			{Severity: format.Error, Line: 9, Column: 23, Field: "console-ports[0]._is_power_source", Reason: "is text, but devicetype-library's _is_power_source is true or false"},
+		}},
+		{"a power port named by a number", true, valid + ports + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: 1\n", []format.Problem{
+			{Severity: format.Error, Line: 12, Column: 17, Field: "power-outlets[0].power_port", Reason: "is a whole number, but it names another of the device type's templates, as text"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			const p = "device-types/Acme/box.yaml"
+			fsys := withFiles(t, map[string]string{p: tt.file})
+			if tt.lenient {
+				fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenient)}
+			}
+			res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range tt.want {
+				tt.want[i].Path = p
+			}
+			if diff := cmp.Diff(tt.want, res.Problems); diff != "" {
+				t.Errorf("problems (-want +got):\n%s", diff)
 			}
 		})
 	}

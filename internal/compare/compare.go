@@ -63,8 +63,9 @@ type Result struct {
 	// if it matches none, or more than one.
 	NetBoxID int64
 	// Collisions are the NetBox objects, other than the match, that the
-	// definition collides with, sorted by rule and ID. A conflict has at
-	// least one, or a reference with Candidates.
+	// definition collides with, and the NetBox children of the match that
+	// share a key, the object's own first, then by path, rule and ID. A
+	// conflict has at least one, or a reference with Candidates.
 	Collisions []Collision
 	// Unresolved lists the definition's references to objects that NetBox
 	// doesn't have, such as a device type's manufacturer.
@@ -73,7 +74,9 @@ type Result struct {
 	// NetBox's object if the identity matches one.
 	Columns []Column
 	// Rows hold every field that any version sets, in the order of the
-	// type's spec, with a cell for each column.
+	// type's spec, with a cell for each column; then, collection by
+	// collection, each child's row and the rows of its fields (see
+	// compareChildren).
 	Rows []Row
 	// Differences counts the rows that differ and are managed.
 	Differences int
@@ -86,11 +89,16 @@ func (r Result) InStep() bool {
 }
 
 // Collision is a NetBox object that a definition collides with under one of
-// NetBox's uniqueness rules.
+// NetBox's uniqueness rules, or a child of the object the definition
+// matches that shares its key with another, which NetBox's rules forbid.
 type Collision struct {
-	// Rule is the uniqueness rule's fields, such as manufacturer and slug.
+	// Path is where the child is, such as interfaces["eth0"], or empty for
+	// an object that stands on its own.
+	Path Path
+	// Rule is the uniqueness rule's fields, such as manufacturer and slug,
+	// or a child's parent and key fields.
 	Rule []string
-	// ID and Identity are the NetBox object's.
+	// ID and Identity are the NetBox object's: for a child, its key.
 	ID       int64
 	Identity map[string]model.Value
 }
@@ -137,36 +145,75 @@ type Column struct {
 	ID int64
 }
 
-// Step is one step of a row's path: for now, a field of the object. Steps 11
-// and 12 of the roadmap add steps into child collections, by a child's key.
+// Step is one step of a row's path: a field, or a collection, or a child
+// in the collection the step before names, by its key.
 type Step struct {
+	// Field is a field's or a collection's name, or "" for a child.
 	Field string
+	// Key is a child's key, such as {"name": "eth0"}, or nil for a field.
+	Key map[string]model.Value
 }
 
-// Path says which field a row holds.
+// Path says which field a row holds, or which child: a field of the
+// object, such as model; a child, such as interfaces["eth0"]; or a field
+// of a child, such as interfaces["eth0"].type.
 type Path []Step
 
-// String writes the path as its fields joined by dots.
+// String writes the path as its fields joined by dots, with each child's
+// key in brackets: its value, or for a key of several fields, each as
+// name=value.
 func (p Path) String() string {
-	parts := make([]string, len(p))
+	var b strings.Builder
 	for i, s := range p {
-		parts[i] = s.Field
+		if s.Key == nil {
+			if i > 0 {
+				b.WriteByte('.')
+			}
+			b.WriteString(s.Field)
+			continue
+		}
+		b.WriteByte('[')
+		names := slices.Sorted(maps.Keys(s.Key))
+		for j, name := range names {
+			if j > 0 {
+				b.WriteString(", ")
+			}
+			if len(names) > 1 {
+				b.WriteString(name)
+				b.WriteByte('=')
+			}
+			b.WriteString(describe(s.Key[name]))
+		}
+		b.WriteByte(']')
 	}
-	return strings.Join(parts, ".")
+	return b.String()
 }
 
-// Row is one field of an object, side by side in each version.
+// childPath is the path of a child in a collection.
+func childPath(collection string, key map[string]model.Value) Path {
+	return Path{{Field: collection}, {Key: key}}
+}
+
+// Row is one field of an object, side by side in each version, or whether
+// each version has one of its children.
 type Row struct {
 	Path Path
 	// Cells hold the field's value in each column, normalized as the
-	// type's spec says, or nil where that version doesn't set it.
+	// type's spec says, or nil where that version doesn't set it. A child's
+	// row, whose path ends at its key, holds true or false in each: whether
+	// that version has the child.
 	Cells []model.Value
+	// NetBoxID is, on a child's row, the ID of NetBox's child, or 0 if
+	// NetBox has none, or more than one.
+	NetBoxID int64
 	// Differs says that two of the versions that set the field hold
 	// different values.
 	Differs bool
 	// Managed says the definition manages the field: it sets it, and the
 	// field isn't one the format derived, which is used only to create the
-	// object (docs/adr/0009-source-kinds-and-format-adapters.md).
+	// object (docs/adr/0009-source-kinds-and-format-adapters.md). A child's
+	// row is managed when the definition has the child: TrueUp never
+	// removes a child that only NetBox has.
 	Managed bool
 	// Derived says the format derived the definition's value rather than
 	// read it, such as a manufacturer's slug.
@@ -178,11 +225,14 @@ type Row struct {
 // type of definition and observed object, and every type they refer to.
 // observed must hold every object NetBox has that a definition could match
 // or collide with: every manufacturer, and the device types of each
-// manufacturer that Referenced finds the definitions refer to.
+// manufacturer that Referenced finds the definitions refer to; and every
+// child of each object that Matched finds the definitions match, such as a
+// device type's interface templates.
 //
 // It fails, rather than guess, if a definition or an object is of a type
 // without a spec, or doesn't hold its fields as its spec describes them (see
-// checkObserved and checkDefinition), or if NetBox listed an object twice.
+// checkObserved and checkDefinition), if NetBox listed an object twice, or
+// if a child observed belongs to no object observed.
 func Compare(specs []*model.Spec, defs []Definition, observed []Observed) ([]Result, error) {
 	ix, err := newIndex(specs, observed)
 	if err != nil {
@@ -237,9 +287,11 @@ func Referenced(specs []*model.Spec, defs []Definition, observed []Observed, typ
 // newIndex indexes the objects observed, which it checks.
 func newIndex(specs []*model.Spec, observed []Observed) (*index, error) {
 	ix := &index{
-		specs:   map[string]*model.Spec{},
-		objects: map[string]map[int64]model.Object{},
-		rules:   map[string][]map[string][]int64{},
+		specs:    map[string]*model.Spec{},
+		objects:  map[string]map[int64]model.Object{},
+		rules:    map[string][]map[string][]int64{},
+		holders:  map[string][]holder{},
+		children: map[string]map[int64]map[string][]int64{},
 	}
 	for _, s := range specs {
 		ix.specs[s.Type] = s
@@ -248,23 +300,46 @@ func newIndex(specs []*model.Spec, observed []Observed) (*index, error) {
 		for i := range s.Unique {
 			ix.rules[s.Type][i] = map[string][]int64{}
 		}
+		for i := range s.Children {
+			col := &s.Children[i]
+			ix.holders[col.Type] = append(ix.holders[col.Type], holder{parent: s, col: col})
+		}
 	}
 	for _, o := range observed {
 		if err := ix.add(o); err != nil {
 			return nil, err
 		}
 	}
+	// A child whose parent wasn't listed couldn't be compared with it.
+	for _, typ := range slices.Sorted(maps.Keys(ix.children)) {
+		for _, id := range slices.Sorted(maps.Keys(ix.children[typ])) {
+			if _, ok := ix.objects[typ][id]; !ok {
+				return nil, fmt.Errorf("NetBox listed children of %s #%d, but not the %s itself", typ, id, typ)
+			}
+		}
+	}
 	return ix, nil
 }
 
 // index holds the objects NetBox has, by type and ID, and by the values of
-// each uniqueness rule.
+// each uniqueness rule, and each object's children.
 type index struct {
 	specs   map[string]*model.Spec
 	objects map[string]map[int64]model.Object
 	// rules holds, by type and then by the index of the rule in the spec's
 	// Unique, the IDs of the objects with each rule's values.
 	rules map[string][]map[string][]int64
+	// holders lists, by a child's type, the collections that hold it.
+	holders map[string][]holder
+	// children holds, by a parent's type, its ID, and the name of its
+	// collection, the IDs of its children, in the order NetBox listed them.
+	children map[string]map[int64]map[string][]int64
+}
+
+// holder is a collection of a parent type.
+type holder struct {
+	parent *model.Spec
+	col    *model.Collection
 }
 
 func (ix *index) add(o Observed) error {
@@ -281,7 +356,16 @@ func (ix *index) add(o Observed) error {
 	if err := checkObserved(s, o.Object.Fields); err != nil {
 		return fmt.Errorf("NetBox's %s #%d %w", s.Type, o.ID, err)
 	}
+	if err := ix.addChild(s, o); err != nil {
+		return err
+	}
 	ix.objects[s.Type][o.ID] = o.Object
+	// An object of a type with no identity, such as a component template,
+	// is only ever a child, matched by its collection's key, so nothing
+	// looks it up by its rules.
+	if len(s.Identity) == 0 {
+		return nil
+	}
 	// NetBox's constraints compare what it stores, so the object's values
 	// count as NetBox returns them, not normalized.
 	for i, u := range s.Unique {
@@ -290,6 +374,43 @@ func (ix *index) add(o Observed) error {
 		}
 	}
 	return nil
+}
+
+// addChild files an object that some type's collection holds under its
+// parent, by the field that refers to it. It fails for one whose parent
+// field refers to no object, since only a parent's children are listed.
+func (ix *index) addChild(s *model.Spec, o Observed) error {
+	hs := ix.holders[s.Type]
+	if len(hs) == 0 {
+		return nil
+	}
+	nested := false
+	for _, h := range hs {
+		if h.col.Nested {
+			// A parent carries such children itself; this one has a
+			// listing of its own, so it belongs to another holder.
+			nested = true
+			continue
+		}
+		ref, ok := o.Object.Fields[h.col.Parent].(model.Reference)
+		if !ok || ref.ID <= 0 || ref.Type != h.parent.Type {
+			continue
+		}
+		byParent := ix.children[h.parent.Type]
+		if byParent == nil {
+			byParent = map[int64]map[string][]int64{}
+			ix.children[h.parent.Type] = byParent
+		}
+		if byParent[ref.ID] == nil {
+			byParent[ref.ID] = map[string][]int64{}
+		}
+		byParent[ref.ID][h.col.Name] = append(byParent[ref.ID][h.col.Name], o.ID)
+		return nil
+	}
+	if nested {
+		return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type, apart from those that carry it nested, which TrueUp doesn't compare yet", s.Type, o.ID)
+	}
+	return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type", s.Type, o.ID)
 }
 
 // described checks that every field in fields is one the spec describes.
@@ -338,27 +459,103 @@ func ruleKey(u model.Unique, fields map[string]model.Value) (string, bool) {
 }
 
 func (ix *index) compare(d *Definition) (Result, error) {
+	s, iu, err := ix.checked(d)
+	if err != nil {
+		return Result{}, err
+	}
+	m, err := ix.matchDefinition(s, iu, d)
+	if err != nil {
+		return Result{}, err
+	}
+	r := Result{Type: s.Type, Identity: d.Identity, Unresolved: m.unresolved, NetBoxID: m.match, Collisions: m.collisions}
+	r.Columns = []Column{{
+		Kind: DefinitionColumn, Source: d.Source, Path: d.Path,
+		DerivedFrom: d.DerivedFrom, Unmapped: d.Unmapped,
+	}}
+	var netbox map[string]model.Value
+	if r.NetBoxID != 0 {
+		r.Columns = append(r.Columns, Column{Kind: NetBoxColumn, ID: r.NetBoxID})
+		netbox = ix.objects[s.Type][r.NetBoxID].Fields
+	}
+	for i := range s.Fields {
+		f := &s.Fields[i]
+		row := Row{Path: Path{{Field: f.Name}}, Cells: []model.Value{m.fields[f.Name]}, Derived: m.derived[f.Name]}
+		if netbox != nil {
+			row.Cells = append(row.Cells, f.Normalize(netbox[f.Name]))
+		}
+		if !slices.ContainsFunc(row.Cells, func(v model.Value) bool { return v != nil }) {
+			continue
+		}
+		row.Differs = differ(row.Cells)
+		row.Managed = row.Cells[0] != nil && (!row.Derived || r.NetBoxID == 0)
+		r.addRow(row)
+	}
+	for i := range s.Children {
+		if err := ix.compareChildren(&r, s, &s.Children[i], m.fields); err != nil {
+			return Result{}, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
+		}
+	}
+	switch {
+	case len(r.Collisions) > 0 || m.ambiguous:
+		r.Outcome = Conflict
+	case r.NetBoxID != 0:
+		r.Outcome = Candidate
+	default:
+		r.Outcome = Absent
+	}
+	return r, nil
+}
+
+// addRow adds a row to the result, counting it if it is a difference.
+func (r *Result) addRow(row Row) {
+	if row.Differs && row.Managed {
+		r.Differences++
+	}
+	r.Rows = append(r.Rows, row)
+}
+
+// checked returns the spec of a definition's type, and the index of its
+// identity among its rules, once it has checked the definition against it.
+func (ix *index) checked(d *Definition) (*model.Spec, int, error) {
 	s := ix.specs[d.Object.Type]
 	if s == nil {
-		return Result{}, fmt.Errorf("a definition in %s is a %s, which has no spec", d.Source, strconv.Quote(d.Object.Type))
+		return nil, 0, fmt.Errorf("a definition in %s is a %s, which has no spec", d.Source, strconv.Quote(d.Object.Type))
 	}
-	if err := checkDefinition(s, d); err != nil {
-		return Result{}, fmt.Errorf("%s's definition %s %w", d.Source, describeDefinition(d), err)
+	if err := ix.checkDefinition(s, d); err != nil {
+		return nil, 0, fmt.Errorf("%s's definition %s %w", d.Source, describeDefinition(d), err)
 	}
 	iu := s.IdentityRule()
 	if iu < 0 {
-		return Result{}, fmt.Errorf("the spec of %s has no identity among its uniqueness rules", s.Type)
+		return nil, 0, fmt.Errorf("the spec of %s has no identity among its uniqueness rules", s.Type)
 	}
+	return s, iu, nil
+}
+
+// matched is what matching a definition found.
+type matched struct {
+	// fields are the definition's, normalized, with references resolved.
+	fields     map[string]model.Value
+	derived    map[string]bool
+	unresolved []Unresolved
+	// match is the NetBox object the identity matches, or 0.
+	match      int64
+	collisions []Collision
+	// ambiguous says that a reference NetBox has several objects for left
+	// the definition unmatched.
+	ambiguous bool
+}
+
+// matchDefinition matches a definition to NetBox's objects of its type, by
+// each of the type's uniqueness rules, iu being its identity.
+func (ix *index) matchDefinition(s *model.Spec, iu int, d *Definition) (matched, error) {
 	fields, unresolved, err := ix.resolve(s, d.Object.Fields)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
+		return matched{}, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
 	}
-	derived := map[string]bool{}
+	m := matched{fields: fields, derived: map[string]bool{}, unresolved: unresolved}
 	for _, name := range d.Derived {
-		derived[name] = true
+		m.derived[name] = true
 	}
-
-	r := Result{Type: s.Type, Identity: d.Identity, Unresolved: unresolved}
 	// A reference that NetBox has more than one object for can't be
 	// resolved, since NetBox's answer can't be trusted to say which it is.
 	// The definition is then a conflict, colliding with what it would
@@ -380,65 +577,70 @@ func (ix *index) compare(d *Definition) (Result, error) {
 		}
 		assignments = next
 	}
-	ambiguous := len(assignments) > 1
-	if ambiguous {
-		// Every object it would match or collide with, under each.
-		type seen struct {
-			rule int
-			id   int64
-		}
-		done := map[seen]bool{}
-		for _, a := range assignments {
-			match, collisions := ix.match(s, iu, a, derived)
-			if match != 0 {
-				collisions = append(collisions, ix.collision(s, iu, match))
-			}
-			for _, c := range collisions {
-				k := seen{slices.IndexFunc(s.Unique, func(u model.Unique) bool { return slices.Equal(u.Fields, c.Rule) }), c.ID}
-				if !done[k] {
-					done[k] = true
-					r.Collisions = append(r.Collisions, c)
-				}
-			}
-		}
-	} else {
-		r.NetBoxID, r.Collisions = ix.match(s, iu, fields, derived)
+	m.ambiguous = len(assignments) > 1
+	if !m.ambiguous {
+		m.match, m.collisions = ix.match(s, iu, fields, m.derived)
+		return m, nil
 	}
-	switch {
-	case len(r.Collisions) > 0 || ambiguous:
-		r.Outcome = Conflict
-	case r.NetBoxID != 0:
-		r.Outcome = Candidate
-	default:
-		r.Outcome = Absent
+	// Every object it would match or collide with, under each.
+	type seen struct {
+		rule int
+		id   int64
 	}
+	done := map[seen]bool{}
+	for _, a := range assignments {
+		match, collisions := ix.match(s, iu, a, m.derived)
+		if match != 0 {
+			collisions = append(collisions, ix.collision(s, iu, match))
+		}
+		for _, c := range collisions {
+			k := seen{slices.IndexFunc(s.Unique, func(u model.Unique) bool { return slices.Equal(u.Fields, c.Rule) }), c.ID}
+			if !done[k] {
+				done[k] = true
+				m.collisions = append(m.collisions, c)
+			}
+		}
+	}
+	return m, nil
+}
 
-	r.Columns = []Column{{
-		Kind: DefinitionColumn, Source: d.Source, Path: d.Path,
-		DerivedFrom: d.DerivedFrom, Unmapped: d.Unmapped,
-	}}
-	var netbox map[string]model.Value
-	if r.NetBoxID != 0 {
-		r.Columns = append(r.Columns, Column{Kind: NetBoxColumn, ID: r.NetBoxID})
-		netbox = ix.objects[s.Type][r.NetBoxID].Fields
+// Matched returns, sorted, the NetBox objects of type typ, among observed,
+// that the definitions of that type match, as Compare matches them: so that
+// a caller reads the children of exactly those, such as the interface
+// templates of the device types that definitions match.
+func Matched(specs []*model.Spec, defs []Definition, observed []Observed, typ string) ([]int64, error) {
+	ix, err := newIndex(specs, observed)
+	if err != nil {
+		return nil, err
 	}
-	for i := range s.Fields {
-		f := &s.Fields[i]
-		row := Row{Path: Path{{Field: f.Name}}, Cells: []model.Value{fields[f.Name]}, Derived: derived[f.Name]}
-		if netbox != nil {
-			row.Cells = append(row.Cells, f.Normalize(netbox[f.Name]))
-		}
-		if !slices.ContainsFunc(row.Cells, func(v model.Value) bool { return v != nil }) {
+	found := map[int64]bool{}
+	for i := range defs {
+		d := &defs[i]
+		if d.Object.Type != typ {
 			continue
 		}
-		row.Differs = differ(row.Cells)
-		row.Managed = row.Cells[0] != nil && (!row.Derived || r.NetBoxID == 0)
-		if row.Differs && row.Managed {
-			r.Differences++
+		// Matching needs the definition's own fields alone; Compare
+		// checks its children.
+		own := *d
+		own.Object.Fields = maps.Clone(d.Object.Fields)
+		if s := ix.specs[d.Object.Type]; s != nil {
+			for _, col := range s.Children {
+				delete(own.Object.Fields, col.Name)
+			}
 		}
-		r.Rows = append(r.Rows, row)
+		s, iu, err := ix.checked(&own)
+		if err != nil {
+			return nil, err
+		}
+		m, err := ix.matchDefinition(s, iu, &own)
+		if err != nil {
+			return nil, err
+		}
+		if m.match != 0 {
+			found[m.match] = true
+		}
 	}
-	return r, nil
+	return slices.Sorted(maps.Keys(found)), nil
 }
 
 // match returns the NetBox object the definition's identity matches, if it
@@ -508,6 +710,24 @@ func (ix *index) resolve(s *model.Spec, in map[string]model.Value) (map[string]m
 			}
 		}
 		fields[f.Name] = v
+	}
+	// Children, as NetBox would store them; checkDefinition makes sure
+	// they are children, of types with specs, setting their fields.
+	for i := range s.Children {
+		col := &s.Children[i]
+		children, ok := in[col.Name].(model.Children)
+		if !ok {
+			continue
+		}
+		cs := ix.specs[col.Type]
+		out := make(model.Children, len(children))
+		for j, c := range children {
+			out[j] = model.Object{Type: c.Type, Fields: make(map[string]model.Value, len(c.Fields))}
+			for name, v := range c.Fields {
+				out[j].Fields[name] = cs.Field(name).Normalize(v)
+			}
+		}
+		fields[col.Name] = out
 	}
 	return fields, unresolved, nil
 }
@@ -596,8 +816,10 @@ func fillOutcomes(results []Result) {
 				u.Outcome = o[0]
 			}
 		}
+		// The object's own first, then its children's, by where they are.
 		slices.SortStableFunc(r.Collisions, func(a, b Collision) int {
-			return cmp.Or(slices.Compare(a.Rule, b.Rule), cmp.Compare(a.ID, b.ID))
+			return cmp.Or(cmp.Compare(len(a.Path), len(b.Path)), cmp.Compare(a.Path.String(), b.Path.String()),
+				slices.Compare(a.Rule, b.Rule), cmp.Compare(a.ID, b.ID))
 		})
 	}
 }

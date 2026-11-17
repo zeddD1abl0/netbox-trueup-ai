@@ -1,8 +1,8 @@
 # Using TrueUp from the command line
 
-This guide takes you from a configuration file to a comparison of [devicetype-library](https://github.com/netbox-community/devicetype-library) with your NetBox: which of the library's manufacturers and device types NetBox already has, which it lacks, and how those it has differ, field by field.
+This guide takes you from a configuration file to a comparison of [devicetype-library](https://github.com/netbox-community/devicetype-library) with your NetBox: which of the library's manufacturers and device types NetBox already has, which it lacks, and how those it has differ, field by field and component by component.
 
-So far TrueUp only reads. It fetches the library, reads its device types as NetBox's own YAML import would, and compares them with what NetBox holds. Nothing writes to NetBox yet: importing and syncing come in milestone 2 ([roadmap](roadmap.md)). Component templates, such as interfaces and power ports, aren't compared yet either.
+So far TrueUp only reads. It fetches the library, reads its device types as NetBox's own YAML import would, and compares them with what NetBox holds. Nothing writes to NetBox yet: importing and syncing come in milestone 2 ([roadmap](roadmap.md)). Of a device type's component templates, its console ports, console server ports, power ports, power outlets, interfaces, module bays and device bays are compared; front and rear ports and inventory items aren't yet.
 
 Every setting mentioned here is described in [configuration.md](configuration.md), and every command's `--help` lists its flags and exit codes.
 
@@ -108,6 +108,17 @@ A candidate's fields are compared as NetBox stores them, so that only real diffe
 
 Only the fields a definition sets are compared. devicetype-library leaves out fields such as `end_of_life` and `exclude_from_utilization`, and many of its files leave out `airflow` or `part_number`: whatever NetBox holds there isn't a difference, since TrueUp won't manage those fields ([ADR 0006](adr/0006-manage-only-linked-objects.md)). A derived value, such as a manufacturer's slug, isn't a difference either: TrueUp uses it only to create the manufacturer. JSON output shows every field side by side, these included.
 
+### Component templates
+
+A device type's component templates are matched with NetBox's by name, within the device type, exactly, and compared field by field as the device type's own fields are ([ADR 0026](adr/0026-compare-children-by-their-key.md)):
+
+- A template the library lists and NetBox hasn't got is one difference, shown as `present` and `missing`, however many fields it sets.
+- A template only NetBox has, such as one added by hand, is listed under "Only in NetBox", but isn't a difference: TrueUp never removes one, so the device type can still be in step.
+- A field the library leaves out, such as an interface's `enabled`, isn't managed, as for a device type.
+- A power outlet's `power_port` compares by the name of the power port it refers to.
+
+A difference names its template by its list and name, such as `interfaces["eth0"].type`. TrueUp reads the library's lists as NetBox's own import does: an interface's `bridge`, which NetBox's import ignores, isn't compared, and neither is a console port's `_is_power_source`, which is for the library's own tests. A file that names a template twice, or a power outlet whose power port the device type hasn't got, is invalid, since NetBox's import would refuse it.
+
 ### Choosing what to compare
 
 - `compare devicetype-library` compares only the sources named.
@@ -119,7 +130,7 @@ Only the fields a definition sets are compared. devicetype-library leaves out fi
 | Code | Means |
 | --- | --- |
 | 0 | Every source was read and its comparisons recorded, and every file is valid, whatever the outcomes. |
-| 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers or device types, or the database can't be opened or written. |
+| 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers, device types or the component templates compared, or the database can't be opened or written. |
 | 2 | A name given isn't a configured source. |
 | 3 | The configuration is invalid, or `netbox.url` or the token isn't set. |
 | 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid, or no source defines a manufacturer `--manufacturer` names. The rest is compared and printed as usual. |
@@ -129,7 +140,7 @@ Only the fields a definition sets are compared. devicetype-library leaves out fi
 
 ### Permissions
 
-TrueUp sees what the token's permissions let it see. A token that can't read manufacturers or device types at all fails the command. A permission with constraints, such as one limited to some manufacturers, can't be detected: what it hides shows as absent.
+TrueUp sees what the token's permissions let it see. A token that can't read manufacturers, device types or one of the kinds of component template at all fails the command, naming what it can't read; `netbox check` lists them all. A permission with constraints, such as one limited to some manufacturers, can't be detected: what it hides shows as absent, or for a template as missing.
 
 ### Recorded comparisons
 
@@ -149,12 +160,12 @@ Each object has:
 
 - `type` and `identity`, such as `{"manufacturer": {"name": "Dell"}, "model": "PowerEdge R640"}`;
 - `outcome`, `in_step`, `netbox_id` (null unless the identity matches) and `differences`, the count;
-- `collisions`, each with its `rule`, such as `["manufacturer", "slug"]`, and the NetBox object's `netbox_id` and `identity`;
+- `collisions`, each with its `rule`, such as `["manufacturer", "slug"]`, and the NetBox object's `netbox_id` and `identity`, and its `path`: empty for an object such as a device type, and the template's path, such as `["interfaces", {"name": "eth0"}]`, for one of two templates NetBox holds under one name;
 - `unresolved`: references to objects NetBox lacks, each with its `field`, `type`, `key`, `netbox_ids`, the objects that all have the key when NetBox holds more than one, and the `outcome` of that object's own definition, or null;
 - `columns`: the versions compared, the definition first, with its `source`, `path` (null for a derived manufacturer), `derived_from` and `unmapped`, the component lists not compared yet, then NetBox's object, with its `netbox_id`, when there is one;
-- `rows`: each field any version sets, with its `path`, a list of steps, one `cell` per column, `{"value": ...}` or `{}` where that version doesn't set the field, and `differs`, `managed` and `derived`.
+- `rows`: each field any version sets, with its `path`, a list of steps, one `cell` per column, `{"value": ...}` or `{}` where that version doesn't set the field, `differs`, `managed` and `derived`, and `netbox_id`, which is null but on a template's row.
 
-A path is a list so that later releases can add steps into a device type's components, by their names.
+A path is a list of steps: a field's or a list's name, as a string, and a template's key, as an object. So a device type's own field is `["u_height"]`, an interface is `["interfaces", {"name": "eth0"}]`, and its type `["interfaces", {"name": "eth0"}, "type"]`. A template's own row, whose path ends at its key, says whether each version has it, as `true` or `false`, with NetBox's template's `netbox_id`; it is managed when the library lists the template. Rows for a template's fields follow it, for each field the library sets or NetBox holds something other than its default.
 
 Some questions it answers, with [jq](https://jqlang.org):
 
@@ -164,10 +175,22 @@ netbox-trueup-ai compare -o json | jq -r '.objects[]
   | select(.type == "dcim.devicetype" and .outcome == "absent")
   | "\(.identity.manufacturer.name)\t\(.identity.model)"'
 
-# Every field that differs, with both values.
+# Every field and template that differs, with both values, a template's
+# path written as interfaces[eth0].type.
 netbox-trueup-ai compare -o json | jq -c '.objects[] | select(.differences > 0)
   | {model: .identity.model, netbox_id, fields: [.rows[] | select(.differs and .managed)
-  | {field: .path[0], library: .cells[0].value, netbox: .cells[1].value}]}'
+  | {field: (.path | map(if type == "object" then "[\([.[] | tostring] | join(","))]" else . end) | join(".") | gsub("\\.\\["; "[")),
+     library: .cells[0].value, netbox: .cells[1].value}]}'
+
+# The templates NetBox lacks, by device type.
+netbox-trueup-ai compare -o json | jq -c '.objects[] | select(.netbox_id != null)
+  | {model: .identity.model, missing: [.rows[] | select(.path[-1] | type == "object")
+  | select(.managed and .differs) | "\(.path[0]) \(.path[1].name)"]} | select(.missing != [])'
+
+# The templates only NetBox has, which TrueUp leaves alone, with their IDs.
+netbox-trueup-ai compare -o json | jq -c '.objects[] | .identity.model as $model | .rows[]
+  | select((.path[-1] | type == "object") and .differs and (.managed | not))
+  | {model: $model, list: .path[0], name: .path[1].name, netbox_id}'
 
 # The conflicts, with what each collides with.
 netbox-trueup-ai compare -o json | jq -c '.objects[] | select(.outcome == "conflict")

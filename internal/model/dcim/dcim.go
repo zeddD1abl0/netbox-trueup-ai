@@ -1,7 +1,7 @@
 // Package dcim holds the specs of NetBox's dcim object types that TrueUp
-// handles (docs/adr/0008-describe-object-types-with-specs.md): manufacturers
-// and device types so far, with component templates to follow in roadmap
-// steps 11 and 12. Each spec follows NetBox 4.7.2's source, which it cites,
+// handles (docs/adr/0008-describe-object-types-with-specs.md): manufacturers,
+// device types, and the component templates that roadmap step 11 compares,
+// with ports and inventory items to follow in step 12. Each spec follows NetBox 4.7.2's source, which it cites,
 // and agrees with its OpenAPI schema, a snapshot of which is in
 // testdata/openapi.json. The choice values in choices_gen.go are generated
 // from that snapshot by `make generate`.
@@ -21,7 +21,11 @@ import "github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 // Specs returns the specs of the dcim object types TrueUp handles, in an
 // order that creates each after those it depends on.
 func Specs() []*model.Spec {
-	return []*model.Spec{manufacturer, deviceType}
+	return []*model.Spec{
+		manufacturer, deviceType,
+		consolePortTemplate, consoleServerPortTemplate, powerPortTemplate, powerOutletTemplate,
+		interfaceTemplate, moduleBayTemplate, deviceBayTemplate,
+	}
 }
 
 // choices returns the values of a choice field from the generated

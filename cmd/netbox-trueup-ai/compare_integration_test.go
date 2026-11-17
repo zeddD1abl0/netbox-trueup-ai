@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -162,7 +163,7 @@ func notInStep(r compareResult) []string {
 		var fields []string
 		for _, row := range o.Rows {
 			if row.Differs && row.Managed {
-				fields = append(fields, strings.Join(row.Path, "."))
+				fields = append(fields, pathText(row.Path))
 			}
 		}
 		if len(fields) > 0 {
@@ -171,6 +172,27 @@ func notInStep(r compareResult) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// pathText writes a row's path from compare's JSON as the text output does:
+// fields joined by dots, and a child's key, of one field, in brackets, such
+// as interfaces["eth0"].type.
+func pathText(path []any) string {
+	var b strings.Builder
+	for i, step := range path {
+		switch step := step.(type) {
+		case string:
+			if i > 0 {
+				b.WriteByte('.')
+			}
+			b.WriteString(step)
+		case map[string]any:
+			for _, v := range step {
+				b.WriteString("[" + strconv.Quote(fmt.Sprint(v)) + "]")
+			}
+		}
+	}
+	return b.String()
 }
 
 // netboxID returns the ID of the NetBox object that the object named name
@@ -183,6 +205,26 @@ func netboxID(t *testing.T, r compareResult, typ, name string) int {
 		}
 	}
 	t.Fatalf("no %s %q matches a NetBox object", typ, name)
+	return 0
+}
+
+// childID returns the ID of NetBox's component template that the device
+// type modelName's child of that name in collection matches.
+func childID(t *testing.T, r compareResult, modelName, collection, name string) int {
+	t.Helper()
+	for _, o := range r.Objects {
+		if o.Type != "dcim.devicetype" || o.name() != modelName {
+			continue
+		}
+		for _, row := range o.Rows {
+			if len(row.Path) == 2 && row.Path[0] == collection && row.NetBoxID != nil {
+				if key, _ := row.Path[1].(map[string]any); key["name"] == name {
+					return *row.NetBoxID
+				}
+			}
+		}
+	}
+	t.Fatalf("NetBox's %s has no %s %q that compare matched", modelName, collection, name)
 	return 0
 }
 
@@ -223,6 +265,13 @@ func TestCompareParity(t *testing.T) {
 	huawei := netboxID(t, got, "dcim.manufacturer", "Huawei")
 	ne8000 := netboxID(t, got, "dcim.devicetype", "NE8000-X8")
 	deviceType, manufacturer := "/api/dcim/device-types/"+strconv.Itoa(ne8000)+"/", "/api/dcim/manufacturers/"+strconv.Itoa(huawei)+"/"
+	template := func(endpoint, modelName, collection, name string) string {
+		return "/api/dcim/" + endpoint + "/" + strconv.Itoa(childID(t, got, modelName, collection, name)) + "/"
+	}
+	iface := template("interface-templates", "GS105", "interfaces", "GigabitEthernet/1")
+	outlet := template("power-outlet-templates", "TEST-1000", "power_outlets", "Power Outlet 2")
+	port1 := childID(t, got, "TEST-1000", "power_ports", "Power Port 1")
+	port2 := childID(t, got, "TEST-1000", "power_ports", "Power Port 2")
 	for _, tt := range []struct {
 		name           string
 		path           string
@@ -284,6 +333,29 @@ func TestCompareParity(t *testing.T) {
 			[]string{},
 			exitOK,
 		},
+		{
+			"an interface's type", iface,
+			map[string]any{"type": "10gbase-t"},
+			map[string]any{"type": "1000base-t"},
+			[]string{`candidate GS105: interfaces["GigabitEthernet/1"].type`},
+			exitNotInStep,
+		},
+		// A field of a template the definition leaves out.
+		{
+			"an interface's description", iface,
+			map[string]any{"description": "from NetBox"},
+			map[string]any{"description": ""},
+			[]string{},
+			exitOK,
+		},
+		// A reference to another template of the device type, by its name.
+		{
+			"an outlet's power port", outlet,
+			map[string]any{"power_port": port2},
+			map[string]any{"power_port": port1},
+			[]string{`candidate TEST-1000: power_outlets["Power Outlet 2"].power_port`},
+			exitNotInStep,
+		},
 	} {
 		if err := nb.Patch(t.Context(), tt.path, tt.change, nil); err != nil {
 			t.Fatalf("%s: %v", tt.name, err)
@@ -297,9 +369,50 @@ func TestCompareParity(t *testing.T) {
 		}
 	}
 
+	// A template only NetBox has is listed, but TrueUp leaves it alone, so
+	// the device type is still in step.
+	gs105ID := netboxID(t, got, "dcim.devicetype", "GS105")
+	var added struct {
+		ID int `json:"id"`
+	}
+	if err := nb.Post(t.Context(), "/api/dcim/interface-templates/",
+		map[string]any{"device_type": gs105ID, "name": "GigabitEthernet/9", "type": "1000base-t"}, &added); err != nil {
+		t.Fatal(err)
+	}
+	got, code = compareJSONRun(t, env, configure, "--exit-code")
+	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" || code != exitOK {
+		t.Errorf("adding an interface in NetBox: compare --exit-code exits with %d, and finds (-want +got):\n%s", code, diff)
+	}
+	if id := childID(t, got, "GS105", "interfaces", "GigabitEthernet/9"); id != added.ID {
+		t.Errorf("the interface added is listed as #%d, want #%d", id, added.ID)
+	}
+	if err := nb.Delete(t.Context(), "/api/dcim/interface-templates/"+strconv.Itoa(added.ID)+"/"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A template deleted from NetBox is one difference, whatever fields it
+	// has, until it is created again.
+	console := template("console-port-templates", "TEST-1000", "console_ports", "Console Port 3")
+	if err := nb.Delete(t.Context(), console); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = compareJSONRun(t, env, configure)
+	if diff := cmp.Diff([]string{`candidate TEST-1000: console_ports["Console Port 3"]`}, notInStep(got)); diff != "" {
+		t.Errorf("deleting a console port in NetBox: compare finds (-want +got):\n%s", diff)
+	}
+	test1000 := netboxID(t, got, "dcim.devicetype", "TEST-1000")
+	if err := nb.Post(t.Context(), "/api/dcim/console-port-templates/",
+		map[string]any{"device_type": test1000, "name": "Console Port 3", "type": "de-9"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = compareJSONRun(t, env, configure)
+	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" {
+		t.Errorf("after creating the console port again, compare finds (-want +got):\n%s", diff)
+	}
+
 	// A device type deleted from NetBox is absent, until it is imported
 	// again.
-	gs105 := "/api/dcim/device-types/" + strconv.Itoa(netboxID(t, got, "dcim.devicetype", "GS105")) + "/"
+	gs105 := "/api/dcim/device-types/" + strconv.Itoa(gs105ID) + "/"
 	if err := nb.Delete(t.Context(), gs105); err != nil {
 		t.Fatal(err)
 	}

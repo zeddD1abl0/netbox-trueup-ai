@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 )
@@ -42,14 +43,29 @@ func checkObserved(s *model.Spec, fields map[string]model.Value) error {
 // checkDefinition checks that a definition sets only fields its spec
 // describes, each of the field's kind or null where the field takes it, with
 // every reference to an object that stands on its own given by natural key
-// alone, and that it sets its identity's fields, as its Identity gives them.
-func checkDefinition(s *model.Spec, d *Definition) error {
-	if err := described(s, d.Object.Fields); err != nil {
-		return err
-	}
+// alone, and children as checkChildren checks them, and that it sets its
+// identity's fields, as its Identity gives them.
+func (ix *index) checkDefinition(s *model.Spec, d *Definition) error {
+	// The keys of the definition's children, by collection, and their
+	// references to each other, checked once every collection's keys are
+	// known.
+	keys := map[string]map[string]int{}
+	var refs []childRef
 	for _, name := range slices.Sorted(maps.Keys(d.Object.Fields)) {
-		f, v := s.Field(name), d.Object.Fields[name]
-		if v == nil {
+		v := d.Object.Fields[name]
+		if col := s.Collection(name); col != nil {
+			got, err := ix.checkChildren(s, col, v, &refs)
+			if err != nil {
+				return err
+			}
+			keys[col.Name] = got
+			continue
+		}
+		f := s.Field(name)
+		switch {
+		case f == nil:
+			return fmt.Errorf("sets %s, which the spec of %s doesn't describe", strconv.Quote(name), s.Type)
+		case v == nil:
 			return fmt.Errorf("sets %s to no value", name)
 		}
 		if err := checkKind(f, v); err != nil {
@@ -57,6 +73,11 @@ func checkDefinition(s *model.Spec, d *Definition) error {
 		}
 		if ref, ok := v.(model.Reference); ok && f.Ref.Within == "" && (ref.ID != 0 || len(ref.Key) == 0) {
 			return fmt.Errorf("%s refers to a %s other than by its natural key", name, ref.Type)
+		}
+	}
+	for _, r := range refs {
+		if _, ok := keys[r.col.Name][r.key]; !ok {
+			return fmt.Errorf("%s refers to %s, which the definition hasn't got", r.where, r.ref)
 		}
 	}
 	if len(d.Identity) != len(s.Identity) {
@@ -72,6 +93,121 @@ func checkDefinition(s *model.Spec, d *Definition) error {
 		}
 	}
 	return nil
+}
+
+// childRef is a reference from one of a definition's children to another,
+// by the key of the collection that holds it.
+type childRef struct {
+	where string
+	ref   model.Reference
+	col   *model.Collection
+	key   string
+}
+
+// checkChildren checks a definition's children in collection col of its
+// type s: each of the collection's type, setting only fields its spec
+// describes, but not the one that refers to its parent, each of the field's
+// kind or null where it takes it, with its key set and different from every
+// other child's as NetBox would store it, and every reference to another
+// child of the parent given by its collection's key alone, as NetBox would
+// store it, which it adds to refs. It returns the children's keys. TrueUp
+// doesn't compare nested collections, or a child's references to objects
+// that stand on their own, yet.
+func (ix *index) checkChildren(s *model.Spec, col *model.Collection, v model.Value, refs *[]childRef) (map[string]int, error) {
+	children, ok := v.(model.Children)
+	cs := ix.specs[col.Type]
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("sets %s to %s, not children", col.Name, describe(v))
+	case cs == nil:
+		return nil, fmt.Errorf("has %s, whose type %s has no spec", col.Name, col.Type)
+	case col.Nested:
+		return nil, fmt.Errorf("has %s, a nested collection, which TrueUp doesn't compare yet", col.Name)
+	}
+	keys := map[string]int{}
+	for i, c := range children {
+		where := col.Name + "[" + strconv.Itoa(i) + "]"
+		if c.Type != col.Type {
+			return nil, fmt.Errorf("%s is a %s, not a %s", where, strconv.Quote(c.Type), col.Type)
+		}
+		for _, name := range slices.Sorted(maps.Keys(c.Fields)) {
+			f, v := cs.Field(name), c.Fields[name]
+			switch {
+			case f == nil:
+				return nil, fmt.Errorf("%s sets %s, which the spec of %s doesn't describe", where, strconv.Quote(name), cs.Type)
+			case name == col.Parent:
+				return nil, fmt.Errorf("%s sets %s, which refers to its parent", where, name)
+			case v == nil:
+				return nil, fmt.Errorf("%s sets %s to no value", where, name)
+			}
+			if err := checkKind(f, v); err != nil {
+				return nil, fmt.Errorf("%s %s %w", where, name, err)
+			}
+			ref, isRef := v.(model.Reference)
+			switch {
+			case !isRef:
+				continue
+			case f.Ref.Within != s.Type:
+				return nil, fmt.Errorf("%s %s refers to a %s outside the %s, which TrueUp doesn't compare in children yet", where, name, ref.Type, s.Type)
+			case ref.ID != 0 || len(ref.Key) == 0:
+				return nil, fmt.Errorf("%s %s refers to a %s other than by its key", where, name, ref.Type)
+			}
+			r, err := ix.childRef(s, ref)
+			if err != nil {
+				return nil, fmt.Errorf("%s %s %w", where, name, err)
+			}
+			r.where = where + " " + name
+			*refs = append(*refs, r)
+		}
+		key, _, ok := keyOf(col, normalized(cs, c.Fields, col.Key))
+		if !ok {
+			return nil, fmt.Errorf("%s hasn't got its key, %s", where, strings.Join(col.Key, " and "))
+		}
+		if j, seen := keys[key]; seen {
+			return nil, fmt.Errorf("%s has the key of %s[%d], which NetBox keeps unique among a %s's %s", where, col.Name, j, s.Type, col.Name)
+		}
+		keys[key] = i
+	}
+	return keys, nil
+}
+
+// childRef returns, for a reference from a child of an object of type s to
+// another of its children, the collection that holds what it refers to, and
+// its key there. The key must be the collection's, as NetBox would store
+// it: NetBox's import finds a template by its name as the file gives it, so
+// a name NetBox would store otherwise names nothing it could hold.
+func (ix *index) childRef(s *model.Spec, ref model.Reference) (childRef, error) {
+	cs := ix.specs[ref.Type]
+	for i := range s.Children {
+		col := &s.Children[i]
+		if col.Type != ref.Type || cs == nil {
+			continue
+		}
+		if len(ref.Key) != len(col.Key) {
+			return childRef{}, fmt.Errorf("refers to a %s by a key of %d fields, but the %s's is %s", ref.Type, len(ref.Key), col.Name, strings.Join(col.Key, " and "))
+		}
+		key, _, ok := keyOf(col, ref.Key)
+		if !ok {
+			return childRef{}, fmt.Errorf("refers to a %s without its %s", ref.Type, strings.Join(col.Key, " and "))
+		}
+		if want, _, _ := keyOf(col, normalized(cs, ref.Key, col.Key)); want != key {
+			return childRef{}, fmt.Errorf("refers to %s, by a key NetBox would store otherwise", ref)
+		}
+		return childRef{ref: ref, col: col, key: key}, nil
+	}
+	return childRef{}, fmt.Errorf("refers to a %s, which no collection of the %s holds", ref.Type, s.Type)
+}
+
+// normalized returns the named fields of a child, normalized as its spec
+// says, as NetBox would store them.
+func normalized(s *model.Spec, fields map[string]model.Value, names []string) map[string]model.Value {
+	out := make(map[string]model.Value, len(names))
+	for _, name := range names {
+		if f, v := s.Field(name), fields[name]; f != nil && v != nil {
+			out[name] = f.Normalize(v)
+		}
+	}
+	return out
 }
 
 // checkKind checks that v is of field f's kind, or null where f is nullable,

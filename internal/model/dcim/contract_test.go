@@ -170,6 +170,9 @@ func TestContractFinds(t *testing.T) {
 			d.Ignored = append(d.Ignored, model.Ignored{Name: "component_type", Reason: "x"}, model.Ignored{Name: "component_id", Reason: "x"})
 		}, "dcim.inventoryitemtemplate.component: its spec says NetBox's API carries it as an ID, but it gives a schema with no type and takes nothing"},
 		{"an endpoint NetBox hasn't got", func(s specs) { s["dcim.manufacturer"].Endpoint = "/api/dcim/makers/" }, "dcim.manufacturer: the schema has no GET /api/dcim/makers/"},
+		// NetBox's schema says a console port's type takes null, which its
+		// ChoiceField stores as blank: that excuses a blank choice only.
+		{"a choice that can't be blank, taking null", func(s specs) { field(s, "consoleporttemplate", "type").Blank = false }, "dcim.consoleporttemplate.type: its spec says nullable is false, NetBox's API false when it gives it and true when it takes it"},
 	}
 	for _, tt := range tests {
 		s := cloneSpecs(withPrototypes())
@@ -299,6 +302,12 @@ func TestContractFindsNetBoxChanges(t *testing.T) {
 		{"another default", func(d doc) {
 			prop(d, "DeviceType", "u_height").Default = []byte("2.0")
 		}, "dcim.devicetype.u_height: its spec's default is 1, NetBox's API's 2"},
+		{"a nested reference no longer taken as an ID", func(d doc) {
+			prop(d, "WritableInterfaceTemplateRequest", "parent").Type = "string"
+		}, "dcim.interfacetemplate.parent: NetBox's API gives it as a nested InterfaceTemplate, but doesn't take it as an ID"},
+		{"a blank choice given as null", func(d doc) {
+			prop(d, "ConsolePortTemplate", "type").Nullable = true
+		}, "dcim.consoleporttemplate.type: its spec says nullable is false, NetBox's API true"},
 		{"no longer nullable", func(d doc) {
 			prop(d, "DeviceType", "end_of_life").Nullable = false
 		}, "dcim.devicetype.end_of_life: its spec says nullable is true, NetBox's API false"},

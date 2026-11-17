@@ -28,6 +28,20 @@ func (Null) MarshalJSON() ([]byte, error) {
 	return []byte("null"), nil
 }
 
+// MarshalJSON writes children as a JSON array of their fields, such as
+// [{"name":"eth0","type":"1000base-t"}], in their order. The collection that
+// holds them says their type.
+func (c Children) MarshalJSON() ([]byte, error) {
+	out := make([]map[string]Value, len(c))
+	for i, o := range c {
+		out[i] = o.Fields
+		if out[i] == nil {
+			out[i] = map[string]Value{}
+		}
+	}
+	return json.Marshal(out)
+}
+
 // MarshalJSON writes r as a JSON object of its natural key, such as
 // {"name":"Dell"} for a manufacturer, with its NetBox ID as "id" once it is
 // resolved. The field that holds a reference says what type it refers to.

@@ -1,7 +1,9 @@
 package format
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
@@ -9,7 +11,8 @@ import (
 
 // Value reads a scalar as the value of field f, by the field's kind: text as
 // a string, a choice or a date, a number as a decimal, a whole number as an
-// integer or a decimal, true or false as a boolean, and null as Null. It
+// integer or a decimal, a number such as 2.0 as an integer where NetBox's
+// import takes it as one, true or false as a boolean, and null as Null. It
 // doesn't normalize or validate the value: f.Normalize and f.Validate do. A
 // reference names another object, which only a format knows how to read.
 func Value(f *model.Field, n *Node) (model.Value, error) {
@@ -51,10 +54,38 @@ func Value(f *model.Field, n *Node) (model.Value, error) {
 			}
 			return model.Integer(i), nil
 		}
+		if n.Tag == TagFloat {
+			return wholeFloat(f, n.Value)
+		}
 	default:
 		return nil, fmt.Errorf("TrueUp doesn't read NetBox's %s, %s, from files", f.Name, kindName(f.Kind))
 	}
 	return nil, mismatch()
+}
+
+// pyReprExponent is where Python starts writing a float with an exponent:
+// repr(1e16) is '1e+16', and repr(9999999999999998.0) '9999999999999998.0'.
+const pyReprExponent = 1e16
+
+// wholeFloat reads a number PyYAML resolved as a float, given in its
+// shortest decimal form, as the value of an integer field, as NetBox's
+// import reads one: Django's forms.IntegerField.to_python takes str(value),
+// strips a trailing decimal point and zeros (re_decimal, \.0*\s*$), and
+// passes the rest to int(). So 2.0 is 2, but 2.5 isn't a whole number, and
+// 1.0e+16, which Python writes as 1e+16, isn't one int() takes.
+func wholeFloat(f *model.Field, v string) (model.Value, error) {
+	x, err := strconv.ParseFloat(v, 64)
+	switch {
+	case err != nil:
+		// resolvePlain gives only values that read back.
+		return nil, fmt.Errorf("%s isn't a number TrueUp can read: %w", v, err)
+	case x != math.Trunc(x):
+		return nil, fmt.Errorf("is %s, but NetBox's %s is a whole number", v, f.Name)
+	case math.Abs(x) >= pyReprExponent:
+		// Not v, which Python's form makes 1e+16, as the file doesn't give it.
+		return nil, errors.New("is a whole number written with a decimal point, which NetBox's import refuses once it is 1e16 or more, or -1e16 or less: write it without the decimal point")
+	}
+	return model.Integer(int64(x)), nil
 }
 
 func kindName(k model.Kind) string {

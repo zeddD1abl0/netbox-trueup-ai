@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
@@ -38,15 +39,33 @@ func (nb *NetBox) Delete(ctx context.Context, path string) error {
 	return nb.write(ctx, http.MethodDelete, path, nil, nil, http.StatusNoContent)
 }
 
+// Get reads from this NetBox, as a test needs to see what something else
+// made, such as NetBox's own import: it asks path, such as
+// /api/dcim/interface-templates/, with query, such as device_type_id=7, and
+// decodes NetBox's answer into out. TrueUp reads NetBox through its own
+// client; this is for tests that check NetBox itself.
+func (nb *NetBox) Get(ctx context.Context, path string, query url.Values, out any) error {
+	return nb.request(ctx, http.MethodGet, path, query, nil, out, http.StatusOK)
+}
+
 // write sends a request that changes NetBox, with body as JSON unless it is
 // nil, and checks that NetBox answers with want.
 func (nb *NetBox) write(ctx context.Context, method, path string, body, out any, want int) error {
+	return nb.request(ctx, method, path, nil, body, out, want)
+}
+
+// request sends a request to NetBox's API at path, with query, and body as
+// JSON unless it is nil, and checks that NetBox answers with want.
+func (nb *NetBox) request(ctx context.Context, method, path string, query url.Values, body, out any, want int) error {
 	if !strings.HasPrefix(path, "/api/") || !strings.HasSuffix(path, "/") || strings.ContainsAny(path, "?#") {
 		return fmt.Errorf("%s %q: the path must be an API path such as /api/dcim/manufacturers/", method, path)
 	}
 	endpoint, err := localEndpoint(nb.URL, path)
 	if err != nil {
 		return err
+	}
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
 	}
 	var reader io.Reader
 	if body != nil {

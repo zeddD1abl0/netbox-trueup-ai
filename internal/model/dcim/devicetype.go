@@ -10,10 +10,9 @@ import (
 // manufacturer and model identify it, and its manufacturer and slug are
 // unique too, so two device types of one manufacturer can't share a slug.
 //
-// Its component templates are child collections, which roadmap steps 11 and
-// 12 add. Some of its rules span fields and aren't in the spec yet: a weight
-// needs a unit (WeightMixin.clean), and a child device type is 0U
-// (DeviceType.clean).
+// Its component templates are child collections (components.go). Some of
+// its rules span fields and aren't in the spec yet: a weight needs a unit
+// (WeightMixin.clean), and a child device type is 0U (DeviceType.clean).
 var deviceType = &model.Spec{
 	Type:      "dcim.devicetype",
 	Endpoint:  "/api/dcim/device-types/",
@@ -88,6 +87,7 @@ var deviceType = &model.Spec{
 		{Name: "description", Kind: model.KindString, Blank: true, Default: model.String(""), MaxLength: 200, Trim: true},
 		{Name: "comments", Kind: model.KindString, Blank: true, Default: model.String(""), Trim: true},
 	},
+	Children: deviceTypeComponents,
 	Ignored: slices.Concat(ignoredBookkeeping, ignoredNetBoxModel, []model.Ignored{
 		{Name: "default_platform", Reason: "a reference to a dcim.platform, which has no spec yet; devicetype-library doesn't set it, and TrueUp leaves it as it is"},
 		{Name: "front_image", Reason: "an image file, which needs an upload; devicetype-library's front_image is a boolean saying it has one, kept as metadata"},
