@@ -8,8 +8,8 @@ From the command line, point TrueUp at devicetype-library and a disposable local
 
 ### Scope
 
-- **In:** one or more Git sources, with definitions of the same object grouped across them. Manufacturers, as objects in their own right derived from the library, and device types with every component template the library uses: console port, console server port, power port, power outlet, interface, front port, rear port (with port mappings), module bay, device bay and inventory item templates.
-- **Out:** any write to NetBox, importing and linking, the web UI, overrides, schedules, high availability, source kinds other than Git, module types, module type profiles, rack types and images.
+- **In:** one or more Git sources, with definitions of the same object grouped across them. Manufacturers, as objects in their own right derived from the library, and device types with every component template the library uses: console port, console server port, power port, power outlet, interface, front port, rear port (with port mappings), module bay and device bay templates.
+- **Out:** any write to NetBox, importing and linking, the web UI, overrides, schedules, high availability, source kinds other than Git, module types, module type profiles, rack types and images. Inventory item templates are out for good: NetBox has deprecated them in favour of modules ([ADR 0028](adr/0028-no-inventory-item-templates.md)).
 
 ### Done when
 
@@ -37,7 +37,7 @@ flowchart LR
     s6 --> s10
     s9 --> s10
     s10 --> s11["11 Console, power,<br/>interface, bay templates"]
-    s10 --> s12["12 Ports, mappings,<br/>inventory items"]
+    s10 --> s12["12 Front and rear ports,<br/>port mappings"]
     s10 --> s13["13 Compare across sources"]
 ```
 
@@ -131,9 +131,16 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - [ADR 0026](adr/0026-compare-children-by-their-key.md): compare children by their key, with a row for each child, and leave children only NetBox has unmanaged.
     - No new dependency.
 
-12. **`feat(compare): compare ports, port mappings and inventory items`.**
-    - Rear and front port templates, with mappings folded into front ports, and inventory item templates as a tree with their component references.
-    - The `add-netbox-object` project skill, now that several object types show the pattern.
+12. **`feat(compare): compare front and rear ports and port mappings`.** Done in #25.
+    - `internal/model/dcim`: specs of the rear and front port templates, keyed by name, and of port mappings, a front port's nested `rear_ports`, keyed by the front port's position, with the rear port as a reference within the device type by ID. NetBox's import fills a port's or mapping's omitted fields as its REST API does, as `TestImportDefaults` and `TestNestedDefaults` check. A mapping's position is bounded only by NetBox's model and import, since its API runs none of a mapping's checks, so the bound cites `TighterBounds`, which `TestMappingPositionsAgainstNetBox` checks. The step 8 prototypes go, and inventory item templates with them: NetBox has deprecated them, and TrueUp won't support them. The model keeps generic references, shared fields and trees, with their tests, for later object types; `spectest` tests generic references against a schema of its own.
+    - `internal/model`: `DecodeAPI` reads a parent's nested collections, as the spec says.
+    - `internal/format`: devicetype-library's `front-ports` and `rear-ports` map to their collections, and each item of `port-mappings` folds into its front port, by name. A mapping to a port the file hasn't got, to a rear port position beyond the rear port's, or to a front or rear port position another mapping takes, makes the file invalid, as NetBox's import refuses it; a front port position beyond the front port's, which the import takes, doesn't. A rear port's `_is_power_source` is read and dropped, and `inventory-items` gets a warning, or makes the file invalid where NetBox's import refuses it for not being a list of mappings. Nothing is left unmapped. The whole library, 13,187 files, still reads with none invalid.
+    - `internal/compare`: nested collections compared within their parent, their paths going on from it, such as `front_ports["FP1"].rear_ports[1].rear_port`, with no NetBox IDs. A front port NetBox lacks is one difference, its mappings' NetBox cells unset; mappings only NetBox has are reported, not managed. A nested child's reference names a child of any object above it. Fuzzed with mappings.
+    - `compare` asks for each front port template's `rear_ports`, and `netbox check` takes its object types from the specs, so `netbox.ReadTypes` goes. The whole library against an almost empty NetBox writes 220 MB of JSON, peaking at 648 MB of memory, against 205 MB and 619 MB before.
+    - The parity test also raises a rear port's positions, points a mapping at another rear port, adds a front port and deletes one, each making exactly its difference. Run by hand on 400 device types sampled from the whole library, it finds all 527 definitions in step, and on all 179 files with ports, all 209.
+    - The `add-netbox-object` project skill.
+    - [ADR 0027](adr/0027-nest-port-mappings-in-their-front-port.md): compare port mappings as children of their front port, keyed by position. [ADR 0028](adr/0028-no-inventory-item-templates.md): don't support inventory item templates.
+    - No new dependency.
 
 13. **`feat(compare): compare definitions across sources`.**
     - Definitions from every configured source grouped into objects by NetBox's uniqueness rules, with a conflict reported when one source defines an object twice.
@@ -160,7 +167,7 @@ Done when, starting from a fresh local NetBox, you can import a selection of lib
 
 Proposed order, to be refined when milestone 2 is done.
 
-- **M3, web UI.** Browse sources and objects. Each object's page compares every source's definition and NetBox's object side by side, with a live edit area compared against them as you type. Import, choose the primary definition, and review and apply plans. Sign-in with OpenID Connect single sign-on or local accounts, built-in roles mapped from the identity provider's groups, and the audit log in the UI.
+- **M3, web UI.** Browse sources and objects. Each object's page compares every source's definition and NetBox's object side by side, with a live edit area compared against them as you type, showing each colour, such as a port's, as a swatch beside its value. Import, choose the primary definition, and review and apply plans. Sign-in with OpenID Connect single sign-on or local accounts, built-in roles mapped from the identity provider's groups, and the audit log in the UI.
 - **M4, access and change management.** Permissions scoped to sources, object types and selections; approval policies, off by default, with separation of duties and required change references; SAML sign-in; and SCIM provisioning ([ADR 0015](adr/0015-sign-in-and-provisioning.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md)).
 - **M5, overrides and injected values.** Tick Override on any field to take it from another source, from NetBox, or from the live edit, and save live edits as overrides. Rules that inject values across many objects.
 - **M6, server operations.** Schedules, high availability with leader election, metrics for Prometheus and OpenTelemetry, traces, and running as a systemd unit or Windows service.

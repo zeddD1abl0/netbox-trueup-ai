@@ -31,7 +31,8 @@ type componentList struct {
 // order NetBox's import creates them (DeviceTypeImportView in dcim/views.py),
 // whatever the order of the file's keys. TrueUp reads them in the file's
 // order, and checks each reference to another template once it has read
-// them all (references).
+// them all (references). Port mappings, which NetBox's import creates after
+// the front ports, are a list of their own (portMappingsKey).
 var componentLists = []componentList{
 	{
 		Key: "console-ports", Collection: "console_ports",
@@ -59,6 +60,16 @@ var componentLists = []componentList{
 		Dropped: map[string]format.Tag{"bridge": format.TagStr},
 	},
 	{
+		Key: "rear-ports", Collection: "rear_ports",
+		Fields: []string{"name", "label", "type", "color", "positions", "description"},
+		// A hint for the library's own tests, as for console ports.
+		Dropped: map[string]format.Tag{"_is_power_source": format.TagBool},
+	},
+	{
+		Key: "front-ports", Collection: "front_ports",
+		Fields: []string{"name", "label", "type", "color", "positions", "description"},
+	},
+	{
 		Key: "module-bays", Collection: "module_bays",
 		Fields: []string{"name", "label", "position", "description"},
 	},
@@ -67,10 +78,6 @@ var componentLists = []componentList{
 		Fields: []string{"name", "label", "description"},
 	},
 }
-
-// unmappedKeys are the lists of component templates that roadmap step 12
-// reads, which a definition counts in Unmapped meanwhile.
-var unmappedKeys = []string{"front-ports", "rear-ports", "port-mappings", "inventory-items"}
 
 // componentListOf returns the list TrueUp reads under key, or nil.
 func componentListOf(key string) *componentList {
@@ -105,6 +112,12 @@ type names struct {
 
 func newNames() *names {
 	return &names{given: map[string]map[model.Value]bool{}, unread: map[string]bool{}}
+}
+
+// has reports whether the file gives a template of type typ that name
+// names, or might, where some of that type's names can't be read.
+func (ns *names) has(typ string, name model.Value) bool {
+	return ns.unread[typ] || ns.given[typ][name]
 }
 
 func (ns *names) add(typ string, name model.Value) {
@@ -214,7 +227,7 @@ func (r *reader) component(list *componentList, spec *model.Spec, col *model.Col
 		if f.Name == col.Parent {
 			continue
 		}
-		if _, set := child.Fields[f.Name]; !set && (f.Required || f.ImportRequired) && ok {
+		if _, set := child.Fields[f.Name]; !set && f.ImportNeeds() && ok {
 			fail(item, where, "has no "+f.Name+", which NetBox needs to create one of a device type's "+list.Key)
 		}
 	}
@@ -250,8 +263,11 @@ func (r *reader) within(f *model.Field, n *format.Node) (model.Value, string) {
 // it can't find among the templates it has created, which it creates list
 // by list, in the order of componentLists, and item by item. A power
 // outlet's power port is in an earlier list, so any of the file's power
-// ports will do; a reference within one list, such as an interface's parent,
-// which TrueUp doesn't read, would have to name an earlier item. A template
+// ports will do, as will any of its ports for a port mapping, which comes
+// after them all; a reference within one list, such as an interface's
+// parent, which TrueUp doesn't read, would have to name an earlier item. For
+// a port mapping, NetBox's import fails with a server error, and saves
+// nothing (PortTemplateMapping.clean reads a port it hasn't got). A template
 // the file gives with an error of its own counts, so that what refers to it
 // isn't blamed too; so does any name in a list some of whose names can't be
 // read, as the reference may name one of those.

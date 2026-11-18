@@ -82,8 +82,10 @@ type Field struct {
 	// required has one.
 	Default Value
 	// ImportDefault is what NetBox's own CSV and YAML import gives the field
-	// when a record leaves it out, where that differs from Default. The
-	// import fills a form, and a form takes a missing checkbox as false.
+	// when a record leaves it out, where that differs from Default: a form
+	// takes a missing checkbox as false, and fills a field from its initial
+	// value, even one the REST API requires, such as a port mapping's
+	// position.
 	ImportDefault Value
 	// ImportRequired says NetBox's import refuses a record that leaves the
 	// field out, though the REST API gives it a default.
@@ -144,14 +146,15 @@ type Choices struct {
 // Ref describes a reference field.
 type Ref struct {
 	// Types lists the object types the field can refer to: one, or several
-	// for a generic reference such as an inventory item template's
-	// component.
+	// for a generic reference such as an IP address's assigned object.
 	Types []string
-	// Within is set for a reference to another child of the same parent,
-	// such as a power outlet template's power port: it names the parent's
-	// object type, and the reference names the object by its key in the
-	// parent's collection. It is empty for a reference to an object that
-	// stands on its own, which names the object by its identity.
+	// Within is set for a reference to another child of an object that
+	// holds this one, directly or further up, such as a power outlet
+	// template's power port, or a front port mapping's rear port, both
+	// within their device type: it names that object's type, and the
+	// reference names the object by its key in that object's collection. It
+	// is empty for a reference to an object that stands on its own, which
+	// names the object by its identity.
 	Within string
 	// Shape is how NetBox's API carries the reference.
 	Shape Shape
@@ -168,12 +171,12 @@ const (
 	// ShapeNested reads as a brief object, with the ID and the natural key,
 	// and writes as the ID. Most references are like this.
 	ShapeNested Shape = iota
-	// ShapeID reads and writes as the ID alone, such as an inventory item
-	// template's parent.
+	// ShapeID reads and writes as the ID alone, such as a front port
+	// mapping's rear port.
 	ShapeID
 	// ShapeTypeAndID reads and writes as two fields, Ref.TypeField and
-	// Ref.IDField, such as an inventory item template's component_type and
-	// component_id.
+	// Ref.IDField, such as an IP address's assigned_object_type and
+	// assigned_object_id.
 	ShapeTypeAndID
 )
 
@@ -191,8 +194,7 @@ type Collection struct {
 	// collection has none, since the parent carries its children.
 	Parent string
 	// Shared lists fields children have the same value in as their parent,
-	// such as the device type of an inventory item template nested in
-	// another.
+	// such as the site of a location nested in another.
 	Shared []string
 	// Key lists the children's fields that tell one parent's children apart.
 	Key []string
@@ -224,6 +226,23 @@ type Source struct {
 	// name in File, such as DeviceType, DeviceType.clean or
 	// MODULAR_COMPONENT_TEMPLATE_MODELS.
 	Symbol string
+}
+
+// ImportedDefault is what NetBox's own import gives the field when a record
+// leaves it out: its ImportDefault, if it has one, or else its Default,
+// which is nil for a field NetBox requires.
+func (f *Field) ImportedDefault() Value {
+	if f.ImportDefault != nil {
+		return f.ImportDefault
+	}
+	return f.Default
+}
+
+// ImportNeeds says NetBox's own import refuses a record that leaves the
+// field out: the REST API requires it, and the import fills it with no
+// default, or the import requires it alone.
+func (f *Field) ImportNeeds() bool {
+	return f.Required && f.ImportDefault == nil || f.ImportRequired
 }
 
 // Field returns the field called name, or nil if the spec has none.

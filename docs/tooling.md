@@ -109,7 +109,7 @@ These live in `.claude/skills/` and are versioned with the code. Each one is wri
 
 | Skill | Purpose |
 | --- | --- |
-| `add-netbox-object` | Checklist for teaching the comparison and sync engine a new NetBox object type by writing its spec (ADR 0008): uniqueness rules, dependency order, field semantics checked against NetBox's OpenAPI schema, override handling, fixtures, and a parity test against a real NetBox. |
+| `add-netbox-object` | Checklist for teaching TrueUp a new NetBox object type or child collection (ADR 0008): its spec, schema snapshot and choices, tests against NetBox's defaults, import and validation, how each format reads it, how compare reads it from NetBox, the parity test and the docs. Written in roadmap step 12, from the object types of steps 8 to 12; override handling joins it in milestone 5. |
 | `netbox-parity` | Before writing comparison rules for a field, look up how NetBox itself validates and serializes it in the pinned NetBox source (section 3.1). The aim is to match NetBox's behaviour, not guess at it. Written in roadmap step 8, from writing the manufacturer and device type specs. |
 | `db-change` | Add a migration and queries for **both** SQLite and PostgreSQL, regenerate sqlc, extend the shared storage tests, and run them on both engines. Written in roadmap step 6; its PostgreSQL steps are required since step 7. |
 | `write-adr` | Create a numbered ADR from the template, add it to the index, and link any ADR it supersedes. |

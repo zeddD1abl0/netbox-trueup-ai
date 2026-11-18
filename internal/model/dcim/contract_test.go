@@ -42,7 +42,7 @@ func cloneSpecs(specs []*model.Spec) map[string]*model.Spec {
 
 func listOf(specs map[string]*model.Spec) []*model.Spec {
 	var out []*model.Spec
-	for _, s := range withPrototypes() {
+	for _, s := range Specs() {
 		out = append(out, specs[s.Type])
 	}
 	return out
@@ -126,7 +126,7 @@ func TestContractFinds(t *testing.T) {
 			f.Kind, f.Choices, f.BlankIsNull = model.KindString, nil, false
 		}, "dcim.devicetype.airflow: its spec says it is a string, but NetBox's API gives object"},
 		{"a reference to another type", func(s specs) {
-			field(s, "inventoryitemtemplate", "manufacturer").Ref.Types = []string{"dcim.devicetype"}
+			field(s, "devicetype", "manufacturer").Ref.Types = []string{"dcim.devicetype"}
 		}, "it refers to a dcim.devicetype, which NetBox's API gives as BriefDeviceType, but it gives BriefManufacturer"},
 		{"a nested reference as an ID", func(s specs) { field(s, "devicetype", "manufacturer").Ref.Shape = model.ShapeID }, "dcim.devicetype.manufacturer: its spec says NetBox's API carries it as an ID, but it gives object"},
 		{"an ID reference as nested", func(s specs) { field(s, "porttemplatemapping", "rear_port").Ref.Shape = model.ShapeNested }, "dcim.porttemplatemapping.rear_port: its spec says it refers to a dcim.rearporttemplate"},
@@ -134,13 +134,14 @@ func TestContractFinds(t *testing.T) {
 		{"another integer default", func(s specs) { field(s, "porttemplatemapping", "rear_port_position").Default = model.Integer(2) }, "rear_port_position: its spec's default is 2, NetBox's API's 1"},
 		{"another integer bound", func(s specs) { field(s, "frontporttemplate", "positions").Max = model.Integer(2048) }, "dcim.frontporttemplate.positions: its spec's maximum is 2048"},
 		{"no integer bound", func(s specs) { field(s, "rearporttemplate", "positions").Min = nil }, "dcim.rearporttemplate.positions: its spec's minimum is none, NetBox's API's 1"},
-		{"a bound NetBox hasn't got", func(s specs) { field(s, "porttemplatemapping", "position").Min = model.Integer(1) }, "dcim.porttemplatemapping.position: its spec's minimum is 1, NetBox's API's none"},
+		{"a bound NetBox's API hasn't got", func(s specs) { field(s, "porttemplatemapping", "position").TighterBounds = model.Source{} }, "dcim.porttemplatemapping.position: its spec's minimum is 1, NetBox's API's none"},
 		{"a colour that isn't blank", func(s specs) { field(s, "frontporttemplate", "color").Blank = false }, "dcim.frontporttemplate.color: its spec says blank is false, NetBox's API true"},
-		{"a generic reference's fields misnamed", func(s specs) { field(s, "inventoryitemtemplate", "component").Ref.TypeField = "component_kind" }, "component (component_kind): NetBox's API doesn't give it"},
+		// spectest's own tests check generic references, which no dcim spec
+		// has, against a schema of their own.
 		{"a generic reference that isn't", func(s specs) {
-			f := field(s, "inventoryitemtemplate", "manufacturer")
+			f := field(s, "devicetype", "manufacturer")
 			f.Ref.Shape, f.Ref.TypeField, f.Ref.IDField = model.ShapeTypeAndID, "manufacturer_type", "manufacturer_id"
-		}, "dcim.inventoryitemtemplate.manufacturer: NetBox's API gives it as a field it writes too"},
+		}, "dcim.devicetype.manufacturer: NetBox's API gives it as a field it writes too"},
 		{"a nested collection NetBox hasn't got", func(s specs) { s["dcim.frontporttemplate"].Children[0].Name = "mappings" }, "dcim.frontporttemplate.mappings: NetBox's API doesn't carry the collection in mappings"},
 		{"a nested child's field", func(s specs) { field(s, "porttemplatemapping", "position").Name = "front_port_position" }, "dcim.porttemplatemapping.front_port_position: NetBox's API doesn't give it"},
 		{"a set of the wrong references", func(s specs) {
@@ -162,27 +163,20 @@ func TestContractFinds(t *testing.T) {
 			d.Ignored = slices.DeleteFunc(d.Ignored, func(ig model.Ignored) bool { return ig.Name == "device_count" })
 			d.Fields = append(d.Fields, model.Field{Name: "device_count", Kind: model.KindSet, ReadOnly: true, Elem: &model.Field{Kind: model.KindString}})
 		}, "dcim.devicetype.device_count: its spec says it is a set, but NetBox's API gives integer and takes nothing"},
-		{"a read-only ID reference that isn't", func(s specs) {
-			d := s["dcim.inventoryitemtemplate"]
-			f := d.Field("component")
-			f.ReadOnly, f.Default, f.Source = true, nil, model.Source{}
-			f.Ref = &model.Ref{Types: []string{"dcim.frontporttemplate"}, Within: "dcim.devicetype", Shape: model.ShapeID}
-			d.Ignored = append(d.Ignored, model.Ignored{Name: "component_type", Reason: "x"}, model.Ignored{Name: "component_id", Reason: "x"})
-		}, "dcim.inventoryitemtemplate.component: its spec says NetBox's API carries it as an ID, but it gives a schema with no type and takes nothing"},
 		{"an endpoint NetBox hasn't got", func(s specs) { s["dcim.manufacturer"].Endpoint = "/api/dcim/makers/" }, "dcim.manufacturer: the schema has no GET /api/dcim/makers/"},
 		// NetBox's schema says a console port's type takes null, which its
 		// ChoiceField stores as blank: that excuses a blank choice only.
 		{"a choice that can't be blank, taking null", func(s specs) { field(s, "consoleporttemplate", "type").Blank = false }, "dcim.consoleporttemplate.type: its spec says nullable is false, NetBox's API false when it gives it and true when it takes it"},
 	}
 	for _, tt := range tests {
-		s := cloneSpecs(withPrototypes())
+		s := cloneSpecs(Specs())
 		tt.breaks(s)
 		err := spectest.Contract(doc, listOf(s))
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: Contract = %v\nwant a problem with %q", tt.name, err, tt.want)
 		}
 	}
-	if err := spectest.Contract(doc, listOf(cloneSpecs(withPrototypes()))); err != nil {
+	if err := spectest.Contract(doc, listOf(cloneSpecs(Specs()))); err != nil {
 		t.Errorf("Contract of cloned specs: %v", err)
 	}
 }
@@ -233,14 +227,14 @@ func TestSourcesFinds(t *testing.T) {
 		}, "dcim.devicetype.subdevice_role: it cites DeviceType, which isn't a choice set"},
 	}
 	for _, tt := range tests {
-		s := cloneSpecs(withPrototypes())
+		s := cloneSpecs(Specs())
 		tt.breaks(s)
 		err := spectest.Sources(root, listOf(s))
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: Sources = %v, want a problem with %q", tt.name, err, tt.want)
 		}
 	}
-	if err := spectest.Sources(root, withPrototypes()); err != nil {
+	if err := spectest.Sources(root, Specs()); err != nil {
 		t.Errorf("Sources of the specs: %v", err)
 	}
 }
@@ -338,10 +332,6 @@ func TestContractFindsNetBoxChanges(t *testing.T) {
 			n := 99
 			prop(d, "WritableDeviceTypeRequest", "model").MaxLength = &n
 		}, "dcim.devicetype.model: NetBox's API takes it with at most 99 characters"},
-		{
-			"a generic reference's type taken as a number", func(d doc) { prop(d, "InventoryItemTemplateRequest", "component_type").Type = "integer" },
-			"dcim.inventoryitemtemplate.component: NetBox's API takes component_type as integer, not string",
-		},
 		{"a field only patching takes", func(d doc) {
 			d.Components.Schemas["PatchedWritableDeviceTypeRequest"].Properties["colour"] = &openapi.Schema{Type: "string"}
 		}, "dcim.devicetype: NetBox's API has colour, which the spec neither describes nor ignores"},
@@ -352,7 +342,7 @@ func TestContractFindsNetBoxChanges(t *testing.T) {
 	// A field only patching takes can be ignored.
 	d := loadSnapshot(t)
 	d.Components.Schemas["PatchedWritableDeviceTypeRequest"].Properties["colour"] = &openapi.Schema{Type: "string"}
-	s := cloneSpecs(withPrototypes())
+	s := cloneSpecs(Specs())
 	s["dcim.devicetype"].Ignored = append(s["dcim.devicetype"].Ignored, model.Ignored{Name: "colour", Reason: "only patched"})
 	if err := spectest.Contract(d, listOf(s)); err != nil {
 		t.Errorf("Contract with a field only patching takes, ignored: %v", err)
@@ -360,13 +350,13 @@ func TestContractFindsNetBoxChanges(t *testing.T) {
 	// A null default, where the spec's is null too, agrees.
 	d = loadSnapshot(t)
 	prop(d, "DeviceType", "end_of_life").Default = []byte("null")
-	if err := spectest.Contract(d, withPrototypes()); err != nil {
+	if err := spectest.Contract(d, Specs()); err != nil {
 		t.Errorf("Contract with a null default for end_of_life: %v", err)
 	}
 	for _, tt := range tests {
 		d := loadSnapshot(t)
 		tt.changes(d)
-		err := spectest.Contract(d, withPrototypes())
+		err := spectest.Contract(d, Specs())
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("%s: Contract = %v\nwant a problem with %q", tt.name, err, tt.want)
 		}

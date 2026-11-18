@@ -1034,11 +1034,34 @@
       "Object": {
         "Type": "dcim.devicetype",
         "Fields": {
+          "front_ports": [
+            {
+              "name": "Port 1",
+              "positions": 1,
+              "rear_ports": [
+                {
+                  "position": 1,
+                  "rear_port": {
+                    "name": "Port 1"
+                  },
+                  "rear_port_position": 1
+                }
+              ],
+              "type": "8p8c"
+            }
+          ],
           "is_full_depth": false,
           "manufacturer": {
             "name": "Generic"
           },
           "model": "Wall box, 1 UTP plug",
+          "rear_ports": [
+            {
+              "name": "Port 1",
+              "positions": 1,
+              "type": "8p8c"
+            }
+          ],
           "slug": "generic-wall-box-1-utp-plug",
           "u_height": 0
         }
@@ -1055,11 +1078,7 @@
       "Metadata": {
         "is_powered": false
       },
-      "Unmapped": {
-        "front-ports": 1,
-        "port-mappings": 1,
-        "rear-ports": 1
-      }
+      "Unmapped": null
     },
     {
       "Object": {
@@ -1470,6 +1489,50 @@
               "name": "Device Bay 3"
             }
           ],
+          "front_ports": [
+            {
+              "name": "Front Port 1",
+              "positions": 1,
+              "rear_ports": [
+                {
+                  "position": 1,
+                  "rear_port": {
+                    "name": "Rear Port 1"
+                  },
+                  "rear_port_position": 1
+                }
+              ],
+              "type": "8p8c"
+            },
+            {
+              "name": "Front Port 2",
+              "positions": 1,
+              "rear_ports": [
+                {
+                  "position": 1,
+                  "rear_port": {
+                    "name": "Rear Port 2"
+                  },
+                  "rear_port_position": 1
+                }
+              ],
+              "type": "8p8c"
+            },
+            {
+              "name": "Front Port 3",
+              "positions": 1,
+              "rear_ports": [
+                {
+                  "position": 1,
+                  "rear_port": {
+                    "name": "Rear Port 3"
+                  },
+                  "rear_port_position": 1
+                }
+              ],
+              "type": "8p8c"
+            }
+          ],
           "interfaces": [
             {
               "mgmt_only": true,
@@ -1544,6 +1607,23 @@
               "type": "iec-60320-c14"
             }
           ],
+          "rear_ports": [
+            {
+              "name": "Rear Port 1",
+              "positions": 1,
+              "type": "8p8c"
+            },
+            {
+              "name": "Rear Port 2",
+              "positions": 1,
+              "type": "8p8c"
+            },
+            {
+              "name": "Rear Port 3",
+              "positions": 1,
+              "type": "8p8c"
+            }
+          ],
           "slug": "generic-test-1000",
           "subdevice_role": "parent",
           "u_height": 2
@@ -1559,11 +1639,7 @@
       "DerivedFrom": null,
       "Derived": null,
       "Metadata": null,
-      "Unmapped": {
-        "front-ports": 3,
-        "port-mappings": 3,
-        "rear-ports": 3
-      }
+      "Unmapped": null
     },
     {
       "Object": {

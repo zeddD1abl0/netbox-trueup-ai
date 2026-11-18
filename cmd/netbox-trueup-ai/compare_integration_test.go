@@ -176,7 +176,7 @@ func notInStep(r compareResult) []string {
 
 // pathText writes a row's path from compare's JSON as the text output does:
 // fields joined by dots, and a child's key, of one field, in brackets, such
-// as interfaces["eth0"].type.
+// as interfaces["eth0"].type or front_ports["F1"].rear_ports[1].
 func pathText(path []any) string {
 	var b strings.Builder
 	for i, step := range path {
@@ -188,7 +188,11 @@ func pathText(path []any) string {
 			b.WriteString(step)
 		case map[string]any:
 			for _, v := range step {
-				b.WriteString("[" + strconv.Quote(fmt.Sprint(v)) + "]")
+				if text, ok := v.(string); ok {
+					b.WriteString("[" + strconv.Quote(text) + "]")
+				} else {
+					b.WriteString("[" + fmt.Sprint(v) + "]")
+				}
 			}
 		}
 	}
@@ -272,6 +276,20 @@ func TestCompareParity(t *testing.T) {
 	outlet := template("power-outlet-templates", "TEST-1000", "power_outlets", "Power Outlet 2")
 	port1 := childID(t, got, "TEST-1000", "power_ports", "Power Port 1")
 	port2 := childID(t, got, "TEST-1000", "power_ports", "Power Port 2")
+	test1000 := netboxID(t, got, "dcim.devicetype", "TEST-1000")
+	rear1 := childID(t, got, "TEST-1000", "rear_ports", "Rear Port 1")
+	front1 := template("front-port-templates", "TEST-1000", "front_ports", "Front Port 1")
+	// A rear port only NetBox has, for a mapping to point to.
+	var rear4 struct {
+		ID int `json:"id"`
+	}
+	if err := nb.Post(t.Context(), "/api/dcim/rear-port-templates/",
+		map[string]any{"device_type": test1000, "name": "Rear Port 4", "type": "8p8c"}, &rear4); err != nil {
+		t.Fatal(err)
+	}
+	mapped := func(rear int) map[string]any {
+		return map[string]any{"rear_ports": []any{map[string]any{"position": 1, "rear_port": rear, "rear_port_position": 1}}}
+	}
 	for _, tt := range []struct {
 		name           string
 		path           string
@@ -356,6 +374,22 @@ func TestCompareParity(t *testing.T) {
 			[]string{`candidate TEST-1000: power_outlets["Power Outlet 2"].power_port`},
 			exitNotInStep,
 		},
+		{
+			"a rear port's positions", template("rear-port-templates", "TEST-1000", "rear_ports", "Rear Port 1"),
+			map[string]any{"positions": 2},
+			map[string]any{"positions": 1},
+			[]string{`candidate TEST-1000: rear_ports["Rear Port 1"].positions`},
+			exitNotInStep,
+		},
+		// A mapping, nested in its front port, by position, and its rear
+		// port by name.
+		{
+			"a mapping's rear port", front1,
+			mapped(rear4.ID),
+			mapped(rear1),
+			[]string{`candidate TEST-1000: front_ports["Front Port 1"].rear_ports[1].rear_port`},
+			exitNotInStep,
+		},
 	} {
 		if err := nb.Patch(t.Context(), tt.path, tt.change, nil); err != nil {
 			t.Fatalf("%s: %v", tt.name, err)
@@ -367,6 +401,52 @@ func TestCompareParity(t *testing.T) {
 		if err := nb.Patch(t.Context(), tt.path, tt.undo, nil); err != nil {
 			t.Fatalf("%s: undo: %v", tt.name, err)
 		}
+	}
+
+	// A front port only NetBox has, mapped to a rear port only NetBox has,
+	// is listed, but TrueUp leaves it alone, mappings and all.
+	var front4 struct {
+		ID int `json:"id"`
+	}
+	if err := nb.Post(t.Context(), "/api/dcim/front-port-templates/",
+		map[string]any{"device_type": test1000, "name": "Front Port 4", "type": "8p8c", "rear_ports": mapped(rear4.ID)["rear_ports"]}, &front4); err != nil {
+		t.Fatal(err)
+	}
+	got, code = compareJSONRun(t, env, configure, "--exit-code")
+	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" || code != exitOK {
+		t.Errorf("adding a front port in NetBox: compare --exit-code exits with %d, and finds (-want +got):\n%s", code, diff)
+	}
+	if id := childID(t, got, "TEST-1000", "front_ports", "Front Port 4"); id != front4.ID {
+		t.Errorf("the front port added is listed as #%d, want #%d", id, front4.ID)
+	}
+	for _, path := range []string{"/api/dcim/front-port-templates/" + strconv.Itoa(front4.ID) + "/", "/api/dcim/rear-port-templates/" + strconv.Itoa(rear4.ID) + "/"} {
+		if err := nb.Delete(t.Context(), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A front port deleted from NetBox, which deletes its mapping too, is
+	// one difference, until it is created again.
+	if err := nb.Delete(t.Context(), template("front-port-templates", "TEST-1000", "front_ports", "Front Port 3")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = compareJSONRun(t, env, configure)
+	if diff := cmp.Diff([]string{`candidate TEST-1000: front_ports["Front Port 3"]`}, notInStep(got)); diff != "" {
+		t.Errorf("deleting a front port in NetBox: compare finds (-want +got):\n%s", diff)
+	}
+	for _, o := range got.Objects {
+		if o.name() == "TEST-1000" && o.Differences != 1 {
+			t.Errorf("deleting a front port in NetBox: TEST-1000 has %d differences, want 1", o.Differences)
+		}
+	}
+	rear3 := childID(t, got, "TEST-1000", "rear_ports", "Rear Port 3")
+	if err := nb.Post(t.Context(), "/api/dcim/front-port-templates/",
+		map[string]any{"device_type": test1000, "name": "Front Port 3", "type": "8p8c", "rear_ports": mapped(rear3)["rear_ports"]}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = compareJSONRun(t, env, configure)
+	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" {
+		t.Errorf("after creating the front port again, compare finds (-want +got):\n%s", diff)
 	}
 
 	// A template only NetBox has is listed, but TrueUp leaves it alone, so
@@ -400,7 +480,6 @@ func TestCompareParity(t *testing.T) {
 	if diff := cmp.Diff([]string{`candidate TEST-1000: console_ports["Console Port 3"]`}, notInStep(got)); diff != "" {
 		t.Errorf("deleting a console port in NetBox: compare finds (-want +got):\n%s", diff)
 	}
-	test1000 := netboxID(t, got, "dcim.devicetype", "TEST-1000")
 	if err := nb.Post(t.Context(), "/api/dcim/console-port-templates/",
 		map[string]any{"device_type": test1000, "name": "Console Port 3", "type": "de-9"}, nil); err != nil {
 		t.Fatal(err)

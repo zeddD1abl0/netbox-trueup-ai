@@ -27,8 +27,10 @@ type resultJSON struct {
 }
 
 type collisionJSON struct {
-	Rule     []string               `json:"rule"`
-	NetBoxID int64                  `json:"netbox_id"`
+	Rule []string `json:"rule"`
+	// NetBoxID is null for a nested child, such as a front port's mapping,
+	// which NetBox gives no ID.
+	NetBoxID *int64                 `json:"netbox_id"`
 	Identity map[string]model.Value `json:"identity"`
 	// Path is where a child is, or empty for the object itself.
 	Path Path `json:"path"`
@@ -85,7 +87,10 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		out.Columns = []Column{}
 	}
 	for _, c := range r.Collisions {
-		j := collisionJSON{Rule: c.Rule, NetBoxID: c.ID, Identity: c.Identity, Path: c.Path}
+		j := collisionJSON{Rule: c.Rule, Identity: c.Identity, Path: c.Path}
+		if c.ID != 0 {
+			j.NetBoxID = &c.ID
+		}
 		if j.Identity == nil {
 			j.Identity = map[string]model.Value{}
 		}

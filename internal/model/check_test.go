@@ -106,6 +106,39 @@ func TestCheckConsistent(t *testing.T) {
 	if err := Check(nil); err != nil {
 		t.Errorf("Check(nil) = %v", err)
 	}
+	// NetBox's import can fill a field its REST API requires.
+	s := testSpecs()
+	f := s["thing"].Field("height")
+	f.Required, f.Default, f.ImportRequired, f.ImportDefault = true, nil, false, NewDecimal(1, 0)
+	if err := Check(list(s)); err != nil {
+		t.Errorf("Check of a required field with an import default:\n%v", err)
+	}
+	if !Equal(f.ImportedDefault(), NewDecimal(1, 0)) || f.ImportNeeds() {
+		t.Errorf("a required field with an import default: ImportedDefault %v, ImportNeeds %t; want 1 and false", f.ImportedDefault(), f.ImportNeeds())
+	}
+}
+
+func TestImportNeeds(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		field Field
+		needs bool
+		def   Value
+	}{
+		{"required", Field{Required: true}, true, nil},
+		{"required, but filled by the import", Field{Required: true, ImportDefault: Integer(1)}, false, Integer(1)},
+		{"required by the import alone", Field{Default: Integer(1), ImportRequired: true}, true, Integer(1)},
+		{"optional", Field{Default: Integer(1)}, false, Integer(1)},
+		{"optional, with another import default", Field{Default: Boolean(true), ImportDefault: Boolean(false)}, false, Boolean(false)},
+	} {
+		if got := tt.field.ImportNeeds(); got != tt.needs {
+			t.Errorf("%s: ImportNeeds = %t, want %t", tt.name, got, tt.needs)
+		}
+		if got := tt.field.ImportedDefault(); !Equal(got, tt.def) {
+			t.Errorf("%s: ImportedDefault = %v, want %v", tt.name, got, tt.def)
+		}
+	}
 }
 
 // TestCheckFinds breaks consistent specs one way at a time and checks that

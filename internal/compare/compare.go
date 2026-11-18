@@ -136,7 +136,8 @@ type Column struct {
 	Kind ColumnKind
 	// Source, Path, DerivedFrom and Unmapped are a definition's: its
 	// source, its file or the files it is derived from, and the lists of
-	// children it holds that TrueUp doesn't compare yet.
+	// children it holds that TrueUp is to read but doesn't yet
+	// (format.Definition.Unmapped).
 	Source      string
 	Path        string
 	DerivedFrom []string
@@ -353,7 +354,7 @@ func (ix *index) add(o Observed) error {
 	if _, ok := ix.objects[s.Type][o.ID]; ok {
 		return fmt.Errorf("NetBox listed %s #%d twice", s.Type, o.ID)
 	}
-	if err := checkObserved(s, o.Object.Fields); err != nil {
+	if err := checkObserved(ix.specs, s, o.Object.Fields); err != nil {
 		return fmt.Errorf("NetBox's %s #%d %w", s.Type, o.ID, err)
 	}
 	if err := ix.addChild(s, o); err != nil {
@@ -408,19 +409,9 @@ func (ix *index) addChild(s *model.Spec, o Observed) error {
 		return nil
 	}
 	if nested {
-		return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type, apart from those that carry it nested, which TrueUp doesn't compare yet", s.Type, o.ID)
+		return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type, and listed on its own, it isn't one that a parent carries nested", s.Type, o.ID)
 	}
 	return fmt.Errorf("NetBox's %s #%d belongs to none of the objects that hold its type", s.Type, o.ID)
-}
-
-// described checks that every field in fields is one the spec describes.
-func described(s *model.Spec, fields map[string]model.Value) error {
-	for _, name := range slices.Sorted(maps.Keys(fields)) {
-		if s.Field(name) == nil {
-			return fmt.Errorf("sets %s, which the spec of %s doesn't describe", strconv.Quote(name), s.Type)
-		}
-	}
-	return nil
 }
 
 // ruleKey returns the values of a uniqueness rule's fields as a key, or false
@@ -711,25 +702,33 @@ func (ix *index) resolve(s *model.Spec, in map[string]model.Value) (map[string]m
 		}
 		fields[f.Name] = v
 	}
-	// Children, as NetBox would store them; checkDefinition makes sure
-	// they are children, of types with specs, setting their fields.
 	for i := range s.Children {
 		col := &s.Children[i]
-		children, ok := in[col.Name].(model.Children)
-		if !ok {
-			continue
+		if children, ok := in[col.Name].(model.Children); ok {
+			fields[col.Name] = ix.normalizedChildren(ix.specs[col.Type], children)
 		}
-		cs := ix.specs[col.Type]
-		out := make(model.Children, len(children))
-		for j, c := range children {
-			out[j] = model.Object{Type: c.Type, Fields: make(map[string]model.Value, len(c.Fields))}
-			for name, v := range c.Fields {
-				out[j].Fields[name] = cs.Field(name).Normalize(v)
-			}
-		}
-		fields[col.Name] = out
 	}
 	return fields, unresolved, nil
+}
+
+// normalizedChildren returns children of type cs as NetBox would store
+// them: their fields normalized, as the spec says, and their nested
+// children too. checkDefinition makes sure they are children, of types with
+// specs, setting their fields and nested collections.
+func (ix *index) normalizedChildren(cs *model.Spec, children model.Children) model.Children {
+	out := make(model.Children, len(children))
+	for j, c := range children {
+		out[j] = model.Object{Type: c.Type, Fields: make(map[string]model.Value, len(c.Fields))}
+		for name, v := range c.Fields {
+			if f := cs.Field(name); f != nil {
+				out[j].Fields[name] = f.Normalize(v)
+			} else if col := cs.Collection(name); col != nil {
+				nested, _ := v.(model.Children)
+				out[j].Fields[name] = ix.normalizedChildren(ix.specs[col.Type], nested)
+			}
+		}
+	}
+	return out
 }
 
 // find returns the NetBox objects whose identity is ref's key: none, one,

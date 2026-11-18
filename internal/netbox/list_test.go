@@ -407,30 +407,39 @@ func TestCanRead(t *testing.T) {
 	}
 }
 
+// checkTypes are object types for CheckRead's tests.
+var checkTypes = []ObjectType{
+	{Name: "dcim.manufacturer", Endpoint: "/api/dcim/manufacturers/"},
+	{Name: "dcim.devicetype", Endpoint: "/api/dcim/device-types/"},
+	{Name: "dcim.interfacetemplate", Endpoint: "/api/dcim/interface-templates/"},
+	{Name: "dcim.rearporttemplate", Endpoint: "/api/dcim/rear-port-templates/"},
+	{Name: "dcim.frontporttemplate", Endpoint: "/api/dcim/front-port-templates/"},
+}
+
 func TestCheckRead(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
-	for _, rt := range ReadTypes() {
+	for _, rt := range checkTypes {
 		f.objects[rt.Endpoint] = []map[string]any{}
 	}
 	f.denied["/api/dcim/device-types/"] = true
-	f.denied["/api/dcim/inventory-item-templates/"] = true
+	f.denied["/api/dcim/front-port-templates/"] = true
 	c := connected(t, f, Options{}, nil)
 
-	got, err := c.CheckRead(t.Context(), ReadTypes())
+	got, err := c.CheckRead(t.Context(), checkTypes)
 	if err != nil {
 		t.Fatalf("CheckRead: %v", err)
 	}
 	var denied []string
 	for i, r := range got {
-		if r.Type != ReadTypes()[i] {
-			t.Errorf("result %d is for %v, want %v", i, r.Type, ReadTypes()[i])
+		if r.Type != checkTypes[i] {
+			t.Errorf("result %d is for %v, want %v", i, r.Type, checkTypes[i])
 		}
 		if !r.Readable {
 			denied = append(denied, r.Type.Name)
 		}
 	}
-	if diff := cmp.Diff([]string{"dcim.devicetype", "dcim.inventoryitemtemplate"}, denied); diff != "" {
+	if diff := cmp.Diff([]string{"dcim.devicetype", "dcim.frontporttemplate"}, denied); diff != "" {
 		t.Errorf("unreadable types (-want +got):\n%s", diff)
 	}
 	checks := 0
@@ -449,11 +458,11 @@ func TestCheckReadReportsEveryFailure(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	c := connected(t, f, Options{}, nil)
-	_, err := c.CheckRead(t.Context(), ReadTypes()[:3]) // the fake has none of them: 404
+	_, err := c.CheckRead(t.Context(), checkTypes[:3]) // the fake has none of them: 404
 	if !isStatus(err, http.StatusNotFound) || !strings.Contains(err.Error(), "(and 2 other object types failed too)") {
 		t.Errorf("CheckRead error = %v, want a 404 and 2 others", err)
 	}
-	_, err = c.CheckRead(t.Context(), ReadTypes()[:2])
+	_, err = c.CheckRead(t.Context(), checkTypes[:2])
 	if !strings.Contains(err.Error(), "(and 1 other object type failed too)") {
 		t.Errorf("CheckRead error = %v, want a 404 and 1 other", err)
 	}
@@ -468,25 +477,8 @@ func TestCheckReadWhenTheTokenExpires(t *testing.T) {
 	f.mu.Lock()
 	f.authorization = "Bearer nbt_another.token"
 	f.mu.Unlock()
-	_, err := c.CheckRead(t.Context(), ReadTypes())
+	_, err := c.CheckRead(t.Context(), checkTypes)
 	if !errors.Is(err, ErrTokenRejected) {
 		t.Errorf("CheckRead error = %v, want ErrTokenRejected", err)
-	}
-}
-
-func TestReadTypes(t *testing.T) {
-	t.Parallel()
-	types := ReadTypes()
-	if len(types) != 12 || types[0].Name != "dcim.manufacturer" || types[1].Name != "dcim.devicetype" {
-		t.Errorf("ReadTypes = %v, want manufacturers, device types and 10 component templates", types)
-	}
-	for _, rt := range types {
-		if err := checkListing(rt.Endpoint, nil); err != nil {
-			t.Errorf("%s: %v", rt.Name, err)
-		}
-	}
-	types[0].Name = "changed"
-	if ReadTypes()[0].Name != "dcim.manufacturer" {
-		t.Error("changing what ReadTypes returned changed the list")
 	}
 }

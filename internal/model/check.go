@@ -269,7 +269,9 @@ func (c *checker) checkField(s *Spec, f *Field, name string) {
 	switch {
 	case f.ReadOnly && (f.Required || f.CreateOnly || f.Default != nil || f.ImportDefault != nil || f.ImportRequired):
 		fail("is read-only, so it can't be required or have a default")
-	case f.Required && (f.Default != nil || f.ImportDefault != nil || f.ImportRequired):
+	case f.Required && (f.Default != nil || f.ImportRequired):
+		// An ImportDefault is allowed: NetBox's import can fill what its
+		// REST API requires, such as a port mapping's position.
 		fail("is required, so it can't have a default")
 	case writable && !f.Required && f.Default == nil && name == f.Name:
 		fail("isn't required, so it needs the default NetBox gives it")

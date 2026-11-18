@@ -90,8 +90,11 @@ type Definition struct {
 	// NetBox.
 	Metadata map[string]model.Value
 	// Unmapped counts, by key, the lists of children the file holds that
-	// TrueUp doesn't read as objects yet, such as a device type's 24 front
-	// ports, which roadmap step 12 reads.
+	// TrueUp is to read as objects but doesn't yet. devicetype-library's
+	// format reads every list TrueUp supports, so it leaves none unmapped,
+	// and warns about inventory items, which TrueUp doesn't support, or
+	// refuses them where NetBox's import would; the field is kept for
+	// formats to come, and in list's and compare's JSON.
 	Unmapped map[string]int
 }
 

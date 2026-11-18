@@ -32,6 +32,8 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0024](0024-read-source-files-as-pyyaml-does.md) | Read source files as PyYAML does, within fixed limits, and validate them with santhosh-tekuri/jsonschema | Accepted |
 | [0025](0025-match-by-netbox-uniqueness-rules.md) | Match definitions to NetBox by its uniqueness rules, compare them side by side, and record each comparison as compare prints it | Accepted |
 | [0026](0026-compare-children-by-their-key.md) | Compare a device type's component templates by their key, with a row for each child, and leave children only NetBox has unmanaged | Accepted |
+| [0027](0027-nest-port-mappings-in-their-front-port.md) | Compare port mappings as children of their front port, keyed by position | Accepted |
+| [0028](0028-no-inventory-item-templates.md) | Don't support inventory item templates | Accepted |
 
 ## When to write one
 

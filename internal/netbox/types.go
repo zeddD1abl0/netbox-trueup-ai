@@ -8,39 +8,11 @@ import (
 )
 
 // ObjectType is a NetBox model, such as dcim.devicetype, and the REST
-// endpoint that lists it.
+// endpoint that lists it. The object model's specs (internal/model) say
+// which TrueUp reads, and where.
 type ObjectType struct {
 	Name     string
 	Endpoint string
-}
-
-// readTypes are the object types milestone 1 reads (docs/roadmap.md):
-// manufacturers, device types, and every component template that
-// devicetype-library uses. Port mappings need no permission of their own: a
-// front port template carries them, as rear_ports (FrontPortTemplateSerializer
-// in netbox/dcim/api/serializers_/devicetype_components.py). The endpoints
-// are those in netbox/dcim/api/urls.py.
-var readTypes = []ObjectType{
-	{Name: "dcim.manufacturer", Endpoint: "/api/dcim/manufacturers/"},
-	{Name: "dcim.devicetype", Endpoint: "/api/dcim/device-types/"},
-	{Name: "dcim.consoleporttemplate", Endpoint: "/api/dcim/console-port-templates/"},
-	{Name: "dcim.consoleserverporttemplate", Endpoint: "/api/dcim/console-server-port-templates/"},
-	{Name: "dcim.powerporttemplate", Endpoint: "/api/dcim/power-port-templates/"},
-	{Name: "dcim.poweroutlettemplate", Endpoint: "/api/dcim/power-outlet-templates/"},
-	{Name: "dcim.interfacetemplate", Endpoint: "/api/dcim/interface-templates/"},
-	{Name: "dcim.frontporttemplate", Endpoint: "/api/dcim/front-port-templates/"},
-	{Name: "dcim.rearporttemplate", Endpoint: "/api/dcim/rear-port-templates/"},
-	{Name: "dcim.modulebaytemplate", Endpoint: "/api/dcim/module-bay-templates/"},
-	{Name: "dcim.devicebaytemplate", Endpoint: "/api/dcim/device-bay-templates/"},
-	{Name: "dcim.inventoryitemtemplate", Endpoint: "/api/dcim/inventory-item-templates/"},
-}
-
-// ReadTypes returns the object types TrueUp reads in milestone 1, in the
-// order a sync would read them. The object model's specs (internal/model)
-// will take this list over once they cover the component templates, in
-// roadmap steps 11 and 12.
-func ReadTypes() []ObjectType {
-	return slices.Clone(readTypes)
 }
 
 // ReadCheck says whether the token may read one object type.

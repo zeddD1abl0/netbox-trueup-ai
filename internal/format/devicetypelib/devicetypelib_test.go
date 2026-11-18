@@ -97,10 +97,15 @@ func TestReadLibraryAsNetBoxReadsIt(t *testing.T) {
 		t.Errorf("NE8000-X8 has %d module bays, %v unmapped and metadata %v, want 18 module bays and neither", len(bays), huawei.Unmapped, huawei.Metadata)
 	}
 	wallBox := defs["device-types/Generic/wall-box-1-utp-plug.yaml"]
+	fronts, _ := wallBox.Object.Fields["front_ports"].(model.Children)
+	var mappings model.Children
+	if len(fronts) == 1 {
+		mappings, _ = fronts[0].Fields["rear_ports"].(model.Children)
+	}
 	if !model.Equal(wallBox.Object.Fields["u_height"], model.NewDecimal(0, 0)) ||
 		!model.Equal(wallBox.Metadata["is_powered"], model.Boolean(false)) ||
-		wallBox.Unmapped["port-mappings"] != 1 {
-		t.Errorf("wall box = %+v, want u_height 0, is_powered false as metadata and one port mapping", wallBox)
+		len(fronts) != 1 || len(mappings) != 1 {
+		t.Errorf("wall box = %+v, want u_height 0, is_powered false as metadata and one front port with one mapping", wallBox)
 	}
 	if _, ok := wallBox.Object.Fields["is_powered"]; ok {
 		t.Error("is_powered is a field, not metadata")
@@ -146,6 +151,11 @@ func librarySchemas(t testing.TB) fstest.MapFS {
 
 // withFiles returns the library's schemas and the device types given, by
 // path.
+// lenientSchema stands for the library's device type schema, but takes any
+// mapping, as a source's own schemas might, so a test reaches what the
+// format checks itself.
+const lenientSchema = `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
+
 func withFiles(t *testing.T, files map[string]string) fstest.MapFS {
 	t.Helper()
 	fsys := librarySchemas(t)
@@ -264,15 +274,38 @@ module-bays:
 device-bays:
   - name: Bay 1
     description: left
+port-mappings:
+  - front_port: F1
+    front_port_position: 1
+    rear_port: R1
+    rear_port_position: 2
+  - front_port: F2
+    front_port_position: 2
+    rear_port: R1
+    rear_port_position: 1
 front-ports:
   - name: F1
     type: 8p8c
     positions: 1
+  - name: F2
+    type: lc
+    color: 00ff00
+    positions: 2.0
+    label: Fibre
+  - name: F3
+    type: lc
+    positions: 1
+rear-ports:
+  - name: R1
+    type: 8p8c
+    positions: 2
+    description: patch
+    _is_power_source: false
 `
 
 // TestReadComponents checks the component templates read from each list:
-// their fields as NetBox's import takes them, keys TrueUp drops, and lists it
-// doesn't read yet counted.
+// their fields as NetBox's import takes them, keys TrueUp drops, and port
+// mappings folded into their front ports, whatever the order of the lists.
 func TestReadComponents(t *testing.T) {
 	t.Parallel()
 	const p = "device-types/Acme/box.yaml"
@@ -316,6 +349,21 @@ func TestReadComponents(t *testing.T) {
 		},
 		"module_bays": {child("modulebay", map[string]model.Value{"name": s("Slot 1"), "position": s("1")})},
 		"device_bays": {child("devicebay", map[string]model.Value{"name": s("Bay 1"), "description": s("left")})},
+		"rear_ports":  {child("rearport", map[string]model.Value{"name": s("R1"), "type": c("8p8c"), "positions": model.Integer(2), "description": s("patch")})},
+		"front_ports": {
+			child("frontport", map[string]model.Value{
+				"name": s("F1"), "type": c("8p8c"), "positions": model.Integer(1),
+				"rear_ports": model.Children{mappingOf(1, "R1", 2)},
+			}),
+			// A front port position beyond the front port's is no error to
+			// NetBox's import.
+			child("frontport", map[string]model.Value{
+				"name": s("F2"), "type": c("lc"), "color": s("00ff00"), "positions": model.Integer(2), "label": s("Fibre"),
+				"rear_ports": model.Children{mappingOf(2, "R1", 1)},
+			}),
+			// No mappings: the definition doesn't manage them.
+			child("frontport", map[string]model.Value{"name": s("F3"), "type": c("lc"), "positions": model.Integer(1)}),
+		},
 	}
 	for name, children := range want {
 		if got := dt.Object.Fields[name]; !model.Equal(got, children) {
@@ -324,17 +372,48 @@ func TestReadComponents(t *testing.T) {
 			t.Errorf("%s = %s, want %s", name, gotJSON, wantJSON)
 		}
 	}
-	if !cmp.Equal(dt.Unmapped, map[string]int{"front-ports": 1}) {
-		t.Errorf("unmapped = %v, want one front port", dt.Unmapped)
+	if dt.Unmapped != nil {
+		t.Errorf("unmapped = %v, want none", dt.Unmapped)
 	}
+}
+
+// mappingOf is a front port's mapping as the format reads it.
+func mappingOf(position int64, rear string, rearPosition int64) model.Object {
+	return model.Object{Type: "dcim.porttemplatemapping", Fields: map[string]model.Value{
+		"position":           model.Integer(position),
+		"rear_port":          model.Reference{Type: "dcim.rearporttemplate", Key: map[string]model.Value{"name": model.String(rear)}},
+		"rear_port_position": model.Integer(rearPosition),
+	}}
 }
 
 // TestReadComponentProblems checks what is wrong with component lists that
 // break one rule each, with the library's schema and with one that lets
 // anything through.
+// portsFile gives a device type rear ports R1, with one position, and R2,
+// with two, and front ports F1 and F2, with one each, on lines 6 to 19.
+const portsFile = `rear-ports:
+  - name: R1
+    type: 8p8c
+    positions: 1
+  - name: R2
+    type: lc
+    positions: 2
+front-ports:
+  - name: F1
+    type: 8p8c
+    positions: 1
+  - name: F2
+    type: lc
+    positions: 1
+`
+
+// mappingYAML is one of a file's port mappings, on four lines.
+func mappingYAML(front string, frontPosition int, rear string, rearPosition int) string {
+	return fmt.Sprintf("  - front_port: %s\n    front_port_position: %d\n    rear_port: %s\n    rear_port_position: %d\n", front, frontPosition, rear, rearPosition)
+}
+
 func TestReadComponentProblems(t *testing.T) {
 	t.Parallel()
-	lenient := `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
 	ports := "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n"
 	outlet := "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n"
 	tests := []struct {
@@ -397,6 +476,97 @@ func TestReadComponentProblems(t *testing.T) {
 		{"a power port named by a number", true, valid + ports + "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: 1\n", []format.Problem{
 			{Severity: format.Error, Line: 12, Column: 17, Field: "power-outlets[0].power_port", Reason: "is a whole number, but it names another of the device type's templates, as text"},
 		}},
+		// Port mappings, at line 21 after portsFile; each key's value is at
+		// column 17, 26, 16 and 25.
+		{"a mapping's front port the device type hasn't got", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F9", 1, "R1", 1), []format.Problem{
+			{Severity: format.Error, Line: 21, Column: 17, Field: "port-mappings[0].front_port", Reason: `names "F9", which isn't one of the device type's front-ports, so NetBox's import wouldn't find it`},
+		}},
+		{"a mapping's rear port the device type hasn't got", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R9", 1), []format.Problem{
+			{Severity: format.Error, Line: 23, Column: 16, Field: "port-mappings[0].rear_port", Reason: `names "R9", which isn't one of the device type's rear-ports, so NetBox's import wouldn't find it`},
+		}},
+		{"a rear port position beyond the rear port's", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R1", 2), []format.Problem{
+			{Severity: format.Error, Line: 24, Column: 25, Field: "port-mappings[0].rear_port_position", Reason: `is 2, but rear-ports "R1" has only 1 positions, so NetBox's import would refuse it`},
+		}},
+		// A mapping with an error of its own takes no positions, so the
+		// next isn't blamed for F1's position 1 too.
+		{"a mapping after one with an error of its own", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R1", 2) + mappingYAML("F1", 1, "R2", 1), []format.Problem{
+			{Severity: format.Error, Line: 24, Column: 25, Field: "port-mappings[0].rear_port_position", Reason: `is 2, but rear-ports "R1" has only 1 positions, so NetBox's import would refuse it`},
+		}},
+		// One naming a port the file hasn't got has that error of its own.
+		{"a mapping after one naming a rear port the file hasn't got", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R9", 1) + mappingYAML("F1", 1, "R2", 1), []format.Problem{
+			{Severity: format.Error, Line: 23, Column: 16, Field: "port-mappings[0].rear_port", Reason: `names "R9", which isn't one of the device type's rear-ports, so NetBox's import wouldn't find it`},
+		}},
+		// NetBox's import checks only the rear port's positions.
+		{"a front port position beyond the front port's", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 2, "R1", 1), nil},
+		{"a front port's position mapped twice", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R2", 1) + mappingYAML("F1", 1, "R2", 2), []format.Problem{
+			{Severity: format.Error, Line: 26, Column: 26, Field: "port-mappings[1].front_port_position", Reason: `maps position 1 of front-ports "F1", as port-mappings[0] does, but NetBox maps each position of a front port once`},
+		}},
+		{"a rear port's position mapped twice", false, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R2", 1) + mappingYAML("F2", 1, "R2", 1), []format.Problem{
+			{Severity: format.Error, Line: 28, Column: 25, Field: "port-mappings[1].rear_port_position", Reason: `maps to position 1 of rear-ports "R2", as port-mappings[0] does, but NetBox maps each position of a rear port once`},
+		}},
+		// NetBox creates the ports before their mappings, whatever the
+		// order of the file's keys.
+		{"mappings before their ports", false, valid + "port-mappings:\n" + mappingYAML("F1", 1, "R1", 1) + portsFile, nil},
+		{"a mapping that isn't a mapping", true, valid + portsFile + "port-mappings:\n  - F1\n", []format.Problem{
+			{Severity: format.Error, Line: 21, Column: 5, Field: "port-mappings[0]", Reason: "is text, but each of devicetype-library's port-mappings is a mapping"},
+		}},
+		{"a mapping without its front port", true, valid + portsFile + "port-mappings:\n  - front_port_position: 1\n    rear_port: R1\n    rear_port_position: 1\n", []format.Problem{
+			{Severity: format.Error, Line: 21, Column: 5, Field: "port-mappings[0]", Reason: "has no front_port, which NetBox needs to map a front port"},
+		}},
+		{"a mapping without its ports", true, valid + portsFile + "port-mappings:\n  - front_port_position: 1\n    rear_port_position: 1\n", []format.Problem{
+			{Severity: format.Error, Line: 21, Column: 5, Field: "port-mappings[0]", Reason: "has no front_port, which NetBox needs to map a front port"},
+			{Severity: format.Error, Line: 21, Column: 5, Field: "port-mappings[0]", Reason: "has no rear_port, which NetBox needs to map a front port"},
+		}},
+		{"a mapping's port named by a number", true, valid + portsFile + "port-mappings:\n" + mappingYAML("1", 1, "R1", 1), []format.Problem{
+			{Severity: format.Error, Line: 21, Column: 17, Field: "port-mappings[0].front_port", Reason: "is a whole number, but it names one of the device type's front-ports, as text"},
+		}},
+		{"a mapping's port named blank", true, valid + portsFile + "port-mappings:\n" + mappingYAML(`""`, 1, "R1", 1), []format.Problem{
+			{Severity: format.Error, Line: 21, Column: 17, Field: "port-mappings[0].front_port", Reason: "is blank, but NetBox's import needs one of the device type's front-ports"},
+		}},
+		{"a mapping's port with white space", true, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, `" R1"`, 1), []format.Problem{
+			{Severity: format.Error, Line: 23, Column: 16, Field: "port-mappings[0].rear_port", Reason: `" R1" has white space at an end: NetBox trims a template's name, but its import looks for the name as the file gives it, and wouldn't find it`},
+		}},
+		{"a mapping's position NetBox refuses", true, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 0, "R1", 1), []format.Problem{
+			{Severity: format.Error, Line: 22, Column: 26, Field: "port-mappings[0].front_port_position", Reason: "0 is less than 1"},
+		}},
+		{"a mapping's key TrueUp doesn't read", true, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R1", 1) + "    cable: 1\n", []format.Problem{
+			{Severity: format.Warning, Line: 25, Column: 5, Field: "port-mappings[0].cable", Reason: "isn't a key TrueUp reads from devicetype-library's port-mappings yet, so it is ignored"},
+		}},
+		// NetBox's import fills a position left out with 1, so this maps
+		// F1's position 1 twice; the error is at the item, which has no
+		// position of its own.
+		{"a mapping without its front port position", true, valid + portsFile + "port-mappings:\n" + mappingYAML("F1", 1, "R1", 1) + "  - front_port: F1\n    rear_port: R2\n    rear_port_position: 1\n", []format.Problem{
+			{Severity: format.Error, Line: 25, Column: 5, Field: "port-mappings[1].front_port_position", Reason: `maps position 1 of front-ports "F1", as port-mappings[0] does, but NetBox maps each position of a front port once`},
+		}},
+		{"a mapping without its rear port position", true, valid + portsFile + "port-mappings:\n  - front_port: F1\n    front_port_position: 1\n    rear_port: R2\n" + mappingYAML("F2", 1, "R2", 1), []format.Problem{
+			{Severity: format.Error, Line: 27, Column: 25, Field: "port-mappings[1].rear_port_position", Reason: `maps to position 1 of rear-ports "R2", as port-mappings[0] does, but NetBox maps each position of a rear port once`},
+		}},
+		{"a rear port position beyond the positions a rear port leaves out", true, valid + "rear-ports:\n  - name: R1\n    type: 8p8c\nfront-ports:\n  - name: F1\n    type: 8p8c\n    positions: 1\nport-mappings:\n" + mappingYAML("F1", 1, "R1", 2), []format.Problem{
+			{Severity: format.Error, Line: 17, Column: 25, Field: "port-mappings[0].rear_port_position", Reason: `is 2, but rear-ports "R1" has only 1 positions, so NetBox's import would refuse it`},
+		}},
+		{"port mappings that aren't a list", true, valid + "port-mappings: {front_port: F1}\n", []format.Problem{
+			{Severity: format.Error, Line: 6, Column: 16, Field: "port-mappings", Reason: "isn't a list, which devicetype-library's port-mappings is"},
+		}},
+		// The rear port's own error, not the mapping's too.
+		{"a mapping's rear port with an error of its own", true, valid + "rear-ports:\n  - name: R1\n    type: bogus\n    positions: 1\nfront-ports:\n  - name: F1\n    type: 8p8c\n    positions: 1\nport-mappings:\n" + mappingYAML("F1", 1, "R1", 3), []format.Problem{
+			{Severity: format.Error, Line: 8, Column: 11, Field: "rear-ports[0].type", Reason: `"bogus" isn't one of its choices`},
+		}},
+		{"a rear port's dropped key of the wrong kind", true, valid + "rear-ports:\n  - name: R1\n    type: 8p8c\n    positions: 1\n    _is_power_source: 1\n", []format.Problem{
+			{Severity: format.Error, Line: 10, Column: 23, Field: "rear-ports[0]._is_power_source", Reason: "is a whole number, but devicetype-library's _is_power_source is true or false"},
+		}},
+		{"inventory items that aren't mappings", true, valid + "inventory-items:\n  - CPU\n  - name: Fan\n  -\n  - [a]\n", []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "inventory-items[0]", Reason: "is text, but each of devicetype-library's inventory-items is a mapping"},
+			{Severity: format.Error, Line: 9, Column: 4, Field: "inventory-items[2]", Reason: "is null, but each of devicetype-library's inventory-items is a mapping"},
+			{Severity: format.Error, Line: 10, Column: 5, Field: "inventory-items[3]", Reason: "is a list, but each of devicetype-library's inventory-items is a mapping"},
+		}},
+		{"inventory items that aren't a list", true, valid + "inventory-items: CPU\n", []format.Problem{
+			{Severity: format.Error, Line: 6, Column: 18, Field: "inventory-items", Reason: "isn't a list, which devicetype-library's inventory-items is"},
+		}},
+		// Nothing to ignore.
+		{"no inventory items", false, valid + "inventory-items: []\n", nil},
+		{"inventory items", false, valid + "inventory-items:\n  - name: CPU\n", []format.Problem{
+			{Severity: format.Warning, Line: 6, Column: 1, Field: "inventory-items", Reason: "holds inventory items, whose fields TrueUp neither checks nor compares: NetBox has deprecated inventory item templates in favour of modules, and TrueUp doesn't support them"},
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -404,7 +574,7 @@ func TestReadComponentProblems(t *testing.T) {
 			const p = "device-types/Acme/box.yaml"
 			fsys := withFiles(t, map[string]string{p: tt.file})
 			if tt.lenient {
-				fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenient)}
+				fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenientSchema)}
 			}
 			res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
 			if err != nil {
@@ -424,7 +594,6 @@ func TestReadComponentProblems(t *testing.T) {
 // the schema, which comes from the source, lets through what it shouldn't.
 func TestReadWithAMoreLenientSchema(t *testing.T) {
 	t.Parallel()
-	lenient := `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
 	tests := []struct {
 		name string
 		file string
@@ -462,7 +631,7 @@ func TestReadWithAMoreLenientSchema(t *testing.T) {
 			t.Parallel()
 			const p = "device-types/Acme/box.yaml"
 			fsys := withFiles(t, map[string]string{p: tt.file})
-			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenient)}
+			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenientSchema)}
 			res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
 			if err != nil {
 				t.Fatal(err)

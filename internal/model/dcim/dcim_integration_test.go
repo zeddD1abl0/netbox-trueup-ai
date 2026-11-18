@@ -58,7 +58,7 @@ func TestLiveSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spectest.Live(t, schema, withPrototypes(), snapshot)
+	spectest.Live(t, schema, Specs(), snapshot)
 }
 
 // created counts the objects the tests create, to name them apart.
@@ -170,6 +170,8 @@ var factories = map[string]func(t *testing.T) map[string]any{
 	"dcim.powerporttemplate":         template(nil),
 	"dcim.poweroutlettemplate":       template(nil),
 	"dcim.interfacetemplate":         template(map[string]any{"type": "1000base-t"}),
+	"dcim.rearporttemplate":          template(map[string]any{"type": "8p8c"}),
+	"dcim.frontporttemplate":         template(map[string]any{"type": "8p8c"}),
 	"dcim.modulebaytemplate":         template(nil),
 	"dcim.devicebaytemplate":         template(nil),
 }
@@ -192,6 +194,10 @@ func template(fields map[string]any) func(t *testing.T) map[string]any {
 func TestDefaults(t *testing.T) {
 	t.Parallel()
 	for _, spec := range Specs() {
+		if spec.Endpoint == "" {
+			// A type its parent carries, which TestNestedDefaults checks.
+			continue
+		}
 		factory, ok := factories[spec.Type]
 		if !ok {
 			t.Errorf("%s: TestDefaults has no way to create one; add it to factories", spec.Type)
@@ -219,6 +225,49 @@ func TestDefaults(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestNestedDefaults creates a front port template with a mapping that has
+// only its required fields, and checks that NetBox gives the mapping's
+// other fields the defaults its spec says.
+func TestNestedDefaults(t *testing.T) {
+	t.Parallel()
+	dt := newDeviceType(t)
+	rear := createID(t, "/api/dcim/rear-port-templates/", map[string]any{"device_type": dt, "name": unique("rear"), "type": "8p8c"})
+	front, err := create(t, "/api/dcim/front-port-templates/", map[string]any{
+		"device_type": dt, "name": unique("front"), "type": "8p8c",
+		"rear_ports": []any{map[string]any{"position": 1, "rear_port": rear}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mappings []map[string]json.RawMessage
+	if err := json.Unmarshal(front["rear_ports"], &mappings); err != nil || len(mappings) != 1 {
+		t.Fatalf("NetBox gives the front port's mappings as %s (%v), want one", front["rear_ports"], err)
+	}
+	for i := range portTemplateMapping.Fields {
+		f := &portTemplateMapping.Fields[i]
+		if f.Required || f.ReadOnly {
+			continue
+		}
+		if got := observe(t, f, mappings[0][f.Name]); !model.Equal(got, f.Default) {
+			t.Errorf("%s.%s: NetBox's default is %s, the spec's %s", portTemplateMapping.Type, f.Name, got, f.Default)
+		}
+	}
+}
+
+// createID creates an object and returns its ID.
+func createID(t *testing.T, endpoint string, body map[string]any) int64 {
+	t.Helper()
+	out, err := create(t, endpoint, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := json.Unmarshal(out["id"], &id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 // TestImportDefaults imports a device type through NetBox's own YAML import,
@@ -251,6 +300,15 @@ module-bays:
   - name: m1
 device-bays:
   - name: d1
+rear-ports:
+  - name: r1
+    type: 8p8c
+front-ports:
+  - name: f1
+    type: 8p8c
+port-mappings:
+  - front_port: f1
+    rear_port: r1
 `
 	if err := nb.Import(t.Context(), "/dcim/device-types/import/", file); err != nil {
 		t.Fatal(err)
@@ -299,6 +357,66 @@ device-bays:
 			if got := observe(t, spec.Field("maximum_draw"), obj["maximum_draw"]); !model.Equal(got, model.Integer(2)) {
 				t.Errorf("maximum_draw: 2.0 imported as %s, want 2", got)
 			}
+		}
+		// A mapping left at the import's initial values: both positions 1,
+		// the spec's import default for the front port's, which the REST
+		// API requires, and the REST default for the rear port's.
+		if col.Name == "front_ports" {
+			var mappings []map[string]json.RawMessage
+			if err := json.Unmarshal(obj["rear_ports"], &mappings); err != nil || len(mappings) != 1 {
+				t.Fatalf("NetBox's import gives the front port the mappings %s (%v), want one", obj["rear_ports"], err)
+			}
+			for _, name := range []string{"position", "rear_port_position"} {
+				f := portTemplateMapping.Field(name)
+				if got := observe(t, f, mappings[0][name]); !model.Equal(got, f.ImportedDefault()) {
+					t.Errorf("%s.%s: NetBox's import gives %s, the spec %s", portTemplateMapping.Type, name, got, f.ImportedDefault())
+				}
+			}
+		}
+	}
+}
+
+// TestMappingPositionsAgainstNetBox checks that a mapping's front port
+// position is bounded as its spec says by NetBox's import, which runs the
+// model's checks, but not by NetBox's REST API, which runs none of a
+// mapping's: so the spec's bounds cite TighterBounds.
+func TestMappingPositionsAgainstNetBox(t *testing.T) {
+	t.Parallel()
+	f := portTemplateMapping.Field("position")
+	// The REST API takes any.
+	dt := newDeviceType(t)
+	rear := createID(t, "/api/dcim/rear-port-templates/", map[string]any{"device_type": dt, "name": unique("rear"), "type": "8p8c"})
+	for i, position := range []int64{0, 1025} {
+		_, err := create(t, "/api/dcim/front-port-templates/", map[string]any{
+			"device_type": dt, "name": unique("front"), "type": "8p8c",
+			"rear_ports": []any{map[string]any{"position": position, "rear_port": rear, "rear_port_position": i + 1}},
+		})
+		if err != nil || f.Validate(model.Integer(position)) == nil {
+			t.Errorf("position %d: NetBox's API says %v, Validate %v; want the API to take it, and Validate to refuse it", position, err, f.Validate(model.Integer(position)))
+		}
+	}
+	// NetBox's import takes what Validate does.
+	maker := unique("maker")
+	if _, err := create(t, "/api/dcim/manufacturers/", map[string]any{"name": maker, "slug": maker}); err != nil {
+		t.Fatal(err)
+	}
+	for _, position := range []int64{0, 1, 1024, 1025} {
+		name := unique("mapped")
+		file := "manufacturer: " + maker + "\nmodel: " + name + "\nslug: " + name + "\nu_height: 1\n" + `rear-ports:
+  - name: r1
+    type: 8p8c
+front-ports:
+  - name: f1
+    type: 8p8c
+port-mappings:
+  - front_port: f1
+    front_port_position: ` + strconv.FormatInt(position, 10) + `
+    rear_port: r1
+    rear_port_position: 1
+`
+		nbErr := nb.Import(t.Context(), "/dcim/device-types/import/", file)
+		if err := f.Validate(model.Integer(position)); (nbErr == nil) != (err == nil) {
+			t.Errorf("position %d: NetBox's import says %v, Validate %v", position, nbErr, err)
 		}
 	}
 }
@@ -418,10 +536,22 @@ func TestValidationAgainstNetBox(t *testing.T) {
 		{"/api/dcim/module-bay-templates/", "position", strings.Repeat("p", 31), model.String(strings.Repeat("p", 31))},
 		{"/api/dcim/power-outlet-templates/", "color", "ff00ff", model.String("ff00ff")},
 		{"/api/dcim/power-outlet-templates/", "color", "FF00FF", model.String("FF00FF")},
+		{"/api/dcim/rear-port-templates/", "positions", 1024, model.Integer(1024)},
+		{"/api/dcim/rear-port-templates/", "positions", 1025, model.Integer(1025)},
+		{"/api/dcim/front-port-templates/", "positions", 0, model.Integer(0)},
+		{"/api/dcim/front-port-templates/", "color", "00ff00", model.String("00ff00")},
+		{"/api/dcim/front-port-templates/", "color", "00FF00", model.String("00FF00")},
+		{"/api/dcim/rear-port-templates/", "type", "mpo", model.Choice("mpo")},
+		{"/api/dcim/rear-port-templates/", "type", "mpo-16", model.Choice("mpo-16")},
 	} {
 		body := map[string]any{"device_type": dt, "name": unique("valid"), tt.field: tt.json}
-		if tt.endpoint == "/api/dcim/interface-templates/" {
+		switch tt.endpoint {
+		case "/api/dcim/interface-templates/":
 			body["type"] = "1000base-t"
+		case "/api/dcim/rear-port-templates/", "/api/dcim/front-port-templates/":
+			if tt.field != "type" {
+				body["type"] = "8p8c"
+			}
 		}
 		_, nbErr := create(t, tt.endpoint, body)
 		var spec *model.Spec

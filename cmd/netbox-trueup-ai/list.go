@@ -146,8 +146,8 @@ type definitionJSON struct {
 	Derived []string `json:"derived"`
 	// Metadata holds what the file says that isn't a NetBox field.
 	Metadata map[string]model.Value `json:"metadata"`
-	// Unmapped counts the lists of children the file holds that TrueUp
-	// doesn't read yet, such as a device type's interfaces.
+	// Unmapped counts the lists of children the file holds that TrueUp is
+	// to read but doesn't yet (format.Definition.Unmapped).
 	Unmapped map[string]int `json:"unmapped"`
 }
 

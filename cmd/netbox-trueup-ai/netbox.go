@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/netbox"
 )
 
@@ -128,7 +129,7 @@ func checkNetBox(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	if err != nil {
 		return checkJSON{}, err
 	}
-	checks, err := c.CheckRead(ctx, netbox.ReadTypes())
+	checks, err := c.CheckRead(ctx, readTypes())
 	if err != nil {
 		return checkJSON{}, fmt.Errorf("check what the token can read: %w", err)
 	}
@@ -159,6 +160,21 @@ func checkNetBox(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		result.Warnings = append(result.Warnings, warningJSON{Message: w})
 	}
 	return result, nil
+}
+
+// readTypes are the object types compare reads, as the specs say, in the
+// order a sync would read them: every type with an endpoint. Port mappings
+// need no permission of their own, since a front port template carries
+// them, as rear_ports (FrontPortTemplateSerializer in
+// netbox/dcim/api/serializers_/devicetype_components.py).
+func readTypes() []netbox.ObjectType {
+	var types []netbox.ObjectType
+	for _, s := range dcim.Specs() {
+		if s.Endpoint != "" {
+			types = append(types, netbox.ObjectType{Name: s.Type, Endpoint: s.Endpoint})
+		}
+	}
+	return types
 }
 
 // connectNetBox connects to the NetBox the settings name, which checks its
