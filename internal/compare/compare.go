@@ -136,7 +136,8 @@ type Column struct {
 	Kind ColumnKind
 	// Source, Path, DerivedFrom and Unmapped are a definition's: its
 	// source, its file or the files it is derived from, and the lists of
-	// children it holds that TrueUp doesn't compare yet.
+	// children it holds that TrueUp is to read but doesn't yet
+	// (format.Definition.Unmapped).
 	Source      string
 	Path        string
 	DerivedFrom []string

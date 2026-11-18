@@ -28,11 +28,6 @@ const (
 	mappingRearPortPosition  = "rear_port_position"
 )
 
-// inventoryItemsKey is devicetype-library's list of inventory item
-// templates, which TrueUp doesn't support: NetBox has deprecated them in
-// favour of modules (docs/adr/0028-no-inventory-item-templates.md).
-const inventoryItemsKey = "inventory-items"
-
 // portMapping is one of a file's port mappings, read.
 type portMapping struct {
 	where string // such as port-mappings[3]

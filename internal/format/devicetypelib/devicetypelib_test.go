@@ -151,6 +151,11 @@ func librarySchemas(t testing.TB) fstest.MapFS {
 
 // withFiles returns the library's schemas and the device types given, by
 // path.
+// lenientSchema stands for the library's device type schema, but takes any
+// mapping, as a source's own schemas might, so a test reaches what the
+// format checks itself.
+const lenientSchema = `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
+
 func withFiles(t *testing.T, files map[string]string) fstest.MapFS {
 	t.Helper()
 	fsys := librarySchemas(t)
@@ -409,7 +414,6 @@ func mappingYAML(front string, frontPosition int, rear string, rearPosition int)
 
 func TestReadComponentProblems(t *testing.T) {
 	t.Parallel()
-	lenient := `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
 	ports := "power-ports:\n  - name: PSU1\n    type: iec-60320-c14\n"
 	outlet := "power-outlets:\n  - name: O1\n    type: iec-60320-c13\n    power_port: PSU1\n"
 	tests := []struct {
@@ -550,8 +554,18 @@ func TestReadComponentProblems(t *testing.T) {
 		{"a rear port's dropped key of the wrong kind", true, valid + "rear-ports:\n  - name: R1\n    type: 8p8c\n    positions: 1\n    _is_power_source: 1\n", []format.Problem{
 			{Severity: format.Error, Line: 10, Column: 23, Field: "rear-ports[0]._is_power_source", Reason: "is a whole number, but devicetype-library's _is_power_source is true or false"},
 		}},
+		{"inventory items that aren't mappings", true, valid + "inventory-items:\n  - CPU\n  - name: Fan\n  -\n  - [a]\n", []format.Problem{
+			{Severity: format.Error, Line: 7, Column: 5, Field: "inventory-items[0]", Reason: "is text, but each of devicetype-library's inventory-items is a mapping"},
+			{Severity: format.Error, Line: 9, Column: 4, Field: "inventory-items[2]", Reason: "is null, but each of devicetype-library's inventory-items is a mapping"},
+			{Severity: format.Error, Line: 10, Column: 5, Field: "inventory-items[3]", Reason: "is a list, but each of devicetype-library's inventory-items is a mapping"},
+		}},
+		{"inventory items that aren't a list", true, valid + "inventory-items: CPU\n", []format.Problem{
+			{Severity: format.Error, Line: 6, Column: 18, Field: "inventory-items", Reason: "isn't a list, which devicetype-library's inventory-items is"},
+		}},
+		// Nothing to ignore.
+		{"no inventory items", false, valid + "inventory-items: []\n", nil},
 		{"inventory items", false, valid + "inventory-items:\n  - name: CPU\n", []format.Problem{
-			{Severity: format.Warning, Line: 6, Column: 1, Field: "inventory-items", Reason: "holds inventory items, which TrueUp neither checks nor compares: NetBox has deprecated inventory item templates in favour of modules, and TrueUp doesn't support them"},
+			{Severity: format.Warning, Line: 6, Column: 1, Field: "inventory-items", Reason: "holds inventory items, whose fields TrueUp neither checks nor compares: NetBox has deprecated inventory item templates in favour of modules, and TrueUp doesn't support them"},
 		}},
 	}
 	for _, tt := range tests {
@@ -560,7 +574,7 @@ func TestReadComponentProblems(t *testing.T) {
 			const p = "device-types/Acme/box.yaml"
 			fsys := withFiles(t, map[string]string{p: tt.file})
 			if tt.lenient {
-				fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenient)}
+				fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenientSchema)}
 			}
 			res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
 			if err != nil {
@@ -580,7 +594,6 @@ func TestReadComponentProblems(t *testing.T) {
 // the schema, which comes from the source, lets through what it shouldn't.
 func TestReadWithAMoreLenientSchema(t *testing.T) {
 	t.Parallel()
-	lenient := `{"$id": "urn:devicetype-library:device-type", "type": "object"}`
 	tests := []struct {
 		name string
 		file string
@@ -618,7 +631,7 @@ func TestReadWithAMoreLenientSchema(t *testing.T) {
 			t.Parallel()
 			const p = "device-types/Acme/box.yaml"
 			fsys := withFiles(t, map[string]string{p: tt.file})
-			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenient)}
+			fsys["schema/devicetype.json"] = &fstest.MapFile{Data: []byte(lenientSchema)}
 			res, err := Format{}.Read(t.Context(), sourcetest.Snapshot(t, "lib", fsys))
 			if err != nil {
 				t.Fatal(err)

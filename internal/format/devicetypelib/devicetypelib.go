@@ -22,6 +22,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
@@ -392,12 +393,7 @@ func (r *reader) deviceTypeOf(p string, root *format.Node) (format.Definition, [
 		case key == portMappingsKey:
 			mappings = r.portMappings(n, at, &refs)
 		case key == inventoryItemsKey:
-			switch {
-			case n.Kind != format.Sequence:
-				at(format.Error, n, key, "isn't a list, which devicetype-library's "+key+" is")
-			case len(n.Items) > 0:
-				at(format.Warning, pair.Key, key, "holds inventory items, which TrueUp neither checks nor compares: NetBox has deprecated inventory item templates in favour of modules, and TrueUp doesn't support them")
-			}
+			r.inventoryItems(pair.Key, n, at)
 		default:
 			at(format.Warning, pair.Key, format.JoinField("", key), "isn't a key TrueUp reads from devicetype-library yet, so it is ignored")
 		}
@@ -564,5 +560,32 @@ func (r *reader) duplicates() {
 				Reason: fmt.Sprintf("%s has the same %s as this one, which NetBox keeps unique", other, strings.Join(u.Fields, " and ")),
 			})
 		}
+	}
+}
+
+// inventoryItemsKey is devicetype-library's list of inventory item
+// templates, which TrueUp doesn't support: NetBox has deprecated them in
+// favour of modules (docs/adr/0028-no-inventory-item-templates.md).
+const inventoryItemsKey = "inventory-items"
+
+// inventoryItems checks a file's inventory items as far as NetBox's import
+// refuses a file for them before reading their fields: a list, of mappings
+// (BulkImportView._save_object). Then it warns that TrueUp ignores them,
+// unless it refuses some. keyNode is the file's inventory-items key, where
+// the warning points, and n the list.
+func (r *reader) inventoryItems(keyNode, n *format.Node, at childAt) {
+	if n.Kind != format.Sequence {
+		at(format.Error, n, inventoryItemsKey, "isn't a list, which devicetype-library's "+inventoryItemsKey+" is")
+		return
+	}
+	bad := false
+	for i, item := range n.Items {
+		if item.Kind != format.Mapping {
+			at(format.Error, item, inventoryItemsKey+"["+strconv.Itoa(i)+"]", "is "+format.Describe(item)+", but each of devicetype-library's "+inventoryItemsKey+" is a mapping")
+			bad = true
+		}
+	}
+	if len(n.Items) > 0 && !bad {
+		at(format.Warning, keyNode, inventoryItemsKey, "holds inventory items, whose fields TrueUp neither checks nor compares: NetBox has deprecated inventory item templates in favour of modules, and TrueUp doesn't support them")
 	}
 }

@@ -5,7 +5,7 @@ A format turns the files of a source's snapshot into definitions: objects of the
 | Package | What it holds |
 | --- | --- |
 | `format` | `Format`, `Definition` and `Problem`; `ParseYAML`, which reads a file as PyYAML's `SafeLoader` does, within limits; `CompileSchema` and `Schema.Validate`, for a source's own JSON schemas, with every reference outside them refused; and `Value`, which reads a scalar as a spec's field. |
-| `format/devicetypelib` | devicetype-library's format: device types with their console, power, interface, port and bay templates, each `port-mappings` item folded into its front port's `rear_ports` (`mappings.go`), and a manufacturer derived from each name they give. Inventory items, which NetBox has deprecated, are ignored with a warning ([ADR 0028](../../docs/adr/0028-no-inventory-item-templates.md)). |
+| `format/devicetypelib` | devicetype-library's format: device types with their console, power, interface, port and bay templates, each `port-mappings` item folded into its front port's `rear_ports` (`mappings.go`), and a manufacturer derived from each name they give. Inventory items, which NetBox has deprecated, are ignored with a warning, once checked to be a list of mappings, as NetBox's import checks them ([ADR 0028](../../docs/adr/0028-no-inventory-item-templates.md)). |
 
 ## Reading YAML as NetBox does
 
