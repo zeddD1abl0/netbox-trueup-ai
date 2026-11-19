@@ -50,16 +50,18 @@ func (p cacheProblem) Unwrap() error { return p.error }
 type sourceRead struct {
 	ref, version string
 	result       *format.Result
-	// keys are the keys the database holds the definitions by, and json
-	// the definitions as it holds them, which list --output json prints.
-	keys []store.DefinitionKey
-	json []json.RawMessage
 	// status is that of the source's loads when the definitions were read,
-	// and rows the definitions as the database holds them: by their IDs,
-	// with what they are found by.
+	// and rows the definitions as the database holds them: by their keys
+	// and IDs, with what they are found by, and, read whole, their JSON,
+	// which list --output json prints.
 	status store.LoadStatus
 	rows   []store.Definition
 }
+
+// errNoUniqueValues means the database holds no unique values of a
+// definition, as one that a release before them migrated doesn't, until
+// the source is loaded again.
+var errNoUniqueValues = errors.New("the database holds no unique values of it, as a release before them left it")
 
 // loadKey is what decides what a load of a source's version reads: the
 // format and its version, read by this release of TrueUp, and the source's
@@ -187,8 +189,13 @@ func (a *app) readLoadedWith(ctx context.Context, db store.Store, cfg *config.Co
 		if reload {
 			return sourceRead{}, sourceProblem{fmt.Errorf("TrueUp can't read back the definitions it just loaded; please report it: %w", err)}
 		}
-		a.logger.Warn("the database holds definitions of the source that this release can't read back, so it loads the source again",
-			"source", s.Name, "error", err)
+		if errors.Is(err, errNoUniqueValues) {
+			a.logger.Info("the database holds no unique values of the source's definitions, as a release before them left it, so it loads the source again",
+				"source", s.Name)
+		} else {
+			a.logger.Warn("the database holds definitions of the source that this release can't read back, so it loads the source again",
+				"source", s.Name, "error", err)
+		}
 		reload = true
 	}
 	return sourceRead{}, sourceProblem{errors.New("another process fetched the source, or loaded it with another release of TrueUp or other settings of the source, each time it was read: try again")}
@@ -212,7 +219,7 @@ func decodeLoaded(defs store.SourceDefinitions) (sourceRead, error) {
 func decodeUniqueValues(defs store.SourceDefinitions) (sourceRead, error) {
 	return decodeWith(defs, func(d store.Definition) ([]byte, error) {
 		if len(d.UniqueValues) == 0 {
-			return nil, errors.New("the database holds no unique values of it")
+			return nil, errNoUniqueValues
 		}
 		return d.UniqueValues, nil
 	})
@@ -230,8 +237,6 @@ func decodeWith(defs store.SourceDefinitions, of func(store.Definition) ([]byte,
 	}
 	read := sourceRead{
 		ref: defs.SnapshotRef, version: defs.Loaded.Version, result: res,
-		keys:   make([]store.DefinitionKey, len(defs.Definitions)),
-		json:   make([]json.RawMessage, len(defs.Definitions)),
 		status: defs.LoadStatus, rows: defs.Definitions,
 	}
 	for i, d := range defs.Definitions {
@@ -243,7 +248,7 @@ func decodeWith(defs store.SourceDefinitions, of func(store.Definition) ([]byte,
 		if err != nil {
 			return sourceRead{}, fmt.Errorf("%s: %w", d.DefinitionKey, err)
 		}
-		res.Definitions[i], read.keys[i], read.json[i] = def, d.DefinitionKey, d.JSON
+		res.Definitions[i] = def
 	}
 	for i, p := range defs.Problems {
 		res.Problems[i] = format.Problem{

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"database/sql"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +13,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
 
 // recordedKeys returns the keys of the comparisons recorded, sorted: a
@@ -128,7 +132,7 @@ func TestCompareScopes(t *testing.T) {
 			"a model of none of the manufacturers",
 			[]string{"--manufacturer", "Netgear", "--manufacturer", "Huawei", "--model", "GS510TLP"},
 			[]string{"candidate Huawei 0", "candidate Netgear 0"},
-			`no source read defines a device type with the model "GS510TLP" of any of the manufacturers "Huawei" and "Netgear"`,
+			`no source read defines a device type with the model "GS510TLP" of the manufacturer "Huawei" or "Netgear"`,
 		},
 		{"a manufacturer nothing defines", []string{"--manufacturer", "netgear"}, nil, `no source read defines the manufacturer "netgear"`},
 	} {
@@ -144,6 +148,13 @@ func TestCompareScopes(t *testing.T) {
 		if r.code != exitOK || strings.Contains(r.stdout, "NetBox hasn't got") {
 			t.Errorf("compare %v: exit code %d, and says what NetBox hasn't got:\n%s", args, r.code, r.stdout)
 		}
+	}
+
+	// A name is quoted whole, however long.
+	long := strings.Repeat("Hewlett Packard Enterprise ", 3)
+	got = compareJSONOf(t, exitCompareProblems, "--manufacturer", long, "--model", "X")
+	if want := strconv.Quote(strings.TrimSpace(long)); len(got.Warnings) != 2 || !strings.HasSuffix(got.Warnings[1].Message, want) {
+		t.Errorf("compare --manufacturer %q --model X warns %+v", long, got.Warnings)
 	}
 
 	// A name nothing defines is logged with its flag's key.
@@ -239,7 +250,10 @@ func TestCompareSourceLoadedAgainMeanwhile(t *testing.T) {
 		t.Fatalf("exit code %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
 	}
 	got := decodeCompare(t, r.stdout)
-	if src := got.Sources[0]; src.OK || src.Error == nil || !strings.Contains(*src.Error, "loaded again while it was compared") || len(got.Objects) != 0 {
+	// As a source that couldn't be read at all shows: no version, and no
+	// counts of what it read.
+	if src := got.Sources[0]; src.OK || src.Error == nil || !strings.Contains(*src.Error, "loaded again while it was compared") || len(got.Objects) != 0 ||
+		src.Version != nil || src.Definitions != 0 || src.Compared != 0 {
 		t.Errorf("the source = %+v, with %d objects", src, len(got.Objects))
 	}
 	if keys := recordedKeys(t, dataDir); len(keys) != 0 {
@@ -272,6 +286,38 @@ func TestCompareLoadsUniqueValuesThatDontReadBack(t *testing.T) {
 	}
 	for _, d := range storedDefinitions(t, dataDir).Definitions {
 		if string(d.UniqueValues) == `{}` {
+			t.Errorf("%s's unique values weren't loaded again", d.DefinitionKey)
+		}
+	}
+}
+
+// TestCompareLoadsWhatAMigrationLeftWithoutUniqueValues checks that
+// definitions without unique values, as migration 00004 leaves them, are
+// loaded again first, with a note rather than a warning.
+func TestCompareLoadsWhatAMigrationLeftWithoutUniqueValues(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	env, dataDir, _, configure := compareEnv(t, nb)
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, engine.DefaultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "UPDATE definitions SET unique_values = ''"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json")
+	note := `msg="the database holds no unique values of the source's definitions, as a release before them left it, so it loads the source again"`
+	if r.code != exitOK || !strings.Contains(r.stderr, note) || strings.Contains(r.stderr, "level=WARN") {
+		t.Fatalf("exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+	if got := decodeCompare(t, r.stdout); len(got.Objects) != 5 {
+		t.Errorf("compare compared %d definitions, want 5", len(got.Objects))
+	}
+	for _, d := range storedDefinitions(t, dataDir).Definitions {
+		if len(d.UniqueValues) == 0 {
 			t.Errorf("%s's unique values weren't loaded again", d.DefinitionKey)
 		}
 	}

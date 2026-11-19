@@ -268,7 +268,10 @@ func (a *app) listSources(ctx context.Context, db store.Store, cfg *config.Confi
 			row.Ref, row.Version = &read.ref, &read.version
 			row.Files, row.InvalidFiles = res.Files, res.Invalid
 			row.OK = readCleanly(res)
-			row.Definitions, row.defs = read.json, res.Definitions
+			row.Definitions, row.defs = make([]json.RawMessage, len(read.rows)), res.Definitions
+			for i, d := range read.rows {
+				row.Definitions[i] = d.JSON
+			}
 			row.Problems = problemsOf(res.Problems)
 		}
 		result.OK = result.OK && row.OK

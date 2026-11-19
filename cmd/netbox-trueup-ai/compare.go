@@ -160,9 +160,9 @@ Exit codes:
 	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does")
 	cmd.Flags().BoolVar(&signal, "exit-code", false, "exit with 5 when some definitions compared aren't in step with NetBox")
 	cmd.Flags().StringArrayVar(&sel.manufacturers, "manufacturer", nil,
-		"compare only this manufacturer, by its exact name, and its device types; repeat it for more")
+		"compare only this manufacturer, by its name as NetBox would store it, and its device types; repeat it for more")
 	cmd.Flags().StringArrayVar(&sel.models, "model", nil,
-		"compare only the device types with this model, exactly, and their manufacturers; repeat it for more")
+		"compare only the device types with this model, as NetBox would store it, and their manufacturers; repeat it for more")
 	cmd.Flags().BoolVar(&sel.all, "all", false, "compare every definition, not only those NetBox has")
 	return cmd
 }
@@ -293,7 +293,8 @@ type sourceCompared struct {
 	row *compareSourceJSON
 	// status is that of the source's loads when its definitions were
 	// read, rows the definitions as the database holds them, and unique
-	// each of them cut down to its unique values, in the same order.
+	// each of them as it is first matched with NetBox, in the same order:
+	// cut down to its unique values, or for --all, whole.
 	status store.LoadStatus
 	rows   []store.Definition
 	unique []compare.Definition
@@ -460,8 +461,10 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			if _, ok := errors.AsType[sourceProblem](err); !ok {
 				return compareJSON{}, err
 			}
+			// As a source that couldn't be read at all shows.
+			*sc.row = compareSourceJSON{Name: sc.row.Name, Format: sc.row.Format, Problems: []problemJSON{}}
 			a.failSource(sc.row, err.Error())
-			sc.row.Version, sc.row.Ref, sc.chosen, sc.whole = nil, nil, nil, nil
+			sc.chosen, sc.whole = nil, nil
 		}
 	}
 	var defs []compare.Definition
@@ -653,12 +656,17 @@ func (u unknownName) message() string {
 		return "no source read defines the manufacturer " + strconv.Quote(u.name)
 	}
 	msg := "no source read defines a device type with the model " + strconv.Quote(u.name)
-	switch len(u.of) {
+	// Whole, unlike format.Quote, since they may be what was mistyped.
+	quoted := make([]string, len(u.of))
+	for i, m := range u.of {
+		quoted[i] = strconv.Quote(m)
+	}
+	switch len(quoted) {
 	case 0:
 	case 1:
-		msg += " of the manufacturer " + format.Quote(u.of[0])
+		msg += " of the manufacturer " + quoted[0]
 	default:
-		msg += " of any of the manufacturers " + format.ListQuoted(u.of)
+		msg += " of the manufacturer " + strings.Join(quoted[:len(quoted)-1], ", ") + " or " + quoted[len(quoted)-1]
 	}
 	return msg
 }
