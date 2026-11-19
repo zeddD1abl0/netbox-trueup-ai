@@ -4,7 +4,7 @@ A format turns the files of a source's snapshot into definitions: objects of the
 
 | Package | What it holds |
 | --- | --- |
-| `format` | `Format`, `Definition` and `Problem`; `ParseYAML`, which reads a file as PyYAML's `SafeLoader` does, within limits; `CompileSchema` and `Schema.Validate`, for a source's own JSON schemas, with every reference outside them refused; and `Value`, which reads a scalar as a spec's field. |
+| `format` | `Format`, `Definition` and `Problem`; `ParseYAML`, which reads a file as PyYAML's `SafeLoader` does, within limits; `CompileSchema` and `Schema.Validate`, for a source's own JSON schemas, with every reference outside them refused; `Value`, which reads a scalar as a spec's field; and a definition's JSON, as `list --output json` prints it and the database keeps it: `MarshalDefinition`, `UnmarshalDefinition`, and `EncodeDefinition`, which checks that a definition reads back exactly before TrueUp keeps it. |
 | `format/devicetypelib` | devicetype-library's format: device types with their console, power, interface, port and bay templates, each `port-mappings` item folded into its front port's `rear_ports` (`mappings.go`), and a manufacturer derived from each name they give. Inventory items, which NetBox has deprecated, are ignored with a warning, once checked to be a list of mappings, as NetBox's import checks them ([ADR 0028](../../docs/adr/0028-no-inventory-item-templates.md)). |
 
 ## Reading YAML as NetBox does
@@ -32,6 +32,10 @@ The limits are in `DefinitionLimits`, and a file that breaks one, or uses anchor
 ## devicetype-library
 
 `devicetypelib/testdata/library` holds unchanged copies of 20 device types and all six schemas from devicetype-library, with its CC0 licence; its README says where they came from and why each is there. `library.golden.json` is what `Read` makes of them, every definition and problem: after a change to the adapter, review the diff that `go test ./internal/format/devicetypelib -update` makes to it.
+
+## Versions
+
+TrueUp reads each version of a source once, and keeps what it read in its database, with the format's name and version (`Format.Version`, and `Reader`, such as `devicetype-library/1`) and TrueUp's release, so that each release reads its sources again, and so does a build that raises a format's version ([ADR 0029](../../docs/adr/0029-keep-a-lookup-table-of-definitions.md)). Raise a format's version whenever `Read` gives other definitions or problems for the same files, or `EncodeDefinition` writes them otherwise. `devicetypelib/testdata/versions.json` gives each version of devicetype-library's format the SHA-256 of what it makes of `testdata/library`, as it is kept, and `TestVersion` fails when that changes and the version doesn't: raise the version, then run `go test ./internal/format/devicetypelib -update`, which adds it. The test sees only what the test files exercise, so raise the version for any change to what the format reads, whether the test fails or not.
 
 To read a whole checkout of the library, and fail on any file found invalid, as when the library changes:
 

@@ -57,6 +57,17 @@ func Run(t *testing.T, open Open) {
 		{"comparisons sort as bytes", testComparisonsSorting},
 		{"comparisons recorded while the source is fetched or removed", testComparisonsWhileFetching},
 		{"many comparisons", testLargeComparisons},
+		{"loads", testLoads},
+		{"loads keep definitions' IDs", testLoadsKeepIDs},
+		{"a failed load keeps the definitions", testLoadFailure},
+		{"loads need the version loaded", testLoadsNeedTheSnapshot},
+		{"definitions go with their source", testLoadsRemoved},
+		{"invalid loads record nothing", testInvalidLoads},
+		{"text from loads", testLoadText},
+		{"searching definitions", testSearch},
+		{"a large load", testLargeLoad},
+		{"definitions read while loads are recorded", testLoadsReadsAgree},
+		{"loads recorded while the source is fetched or removed", testLoadsWhileFetching},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

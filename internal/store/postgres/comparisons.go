@@ -99,7 +99,7 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 		}
 		out = append(out, store.RecordedComparison{
 			Comparison: store.Comparison{
-				ComparisonKey: store.ComparisonKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
+				DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
 				Outcome:       r.Outcome,
 				NetBoxID:      r.NetboxID.Int64,
 				Differences:   int(r.Differences),

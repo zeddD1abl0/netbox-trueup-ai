@@ -28,6 +28,13 @@ type Format interface {
 	// Name is the format's name in a source's configuration, such as
 	// devicetype-library.
 	Name() string
+	// Version is the version of how the format reads files. TrueUp keeps it
+	// with the definitions it loads into its database, and reads a source
+	// again when it changes
+	// (docs/adr/0029-keep-a-lookup-table-of-definitions.md). Raise it
+	// whenever Read gives other definitions or problems for the same files,
+	// or they encode otherwise (EncodeDefinition).
+	Version() int
 	// Needs lists patterns of files the format needs whatever a source's
 	// include patterns choose, such as devicetype-library's JSON schemas. A
 	// command adds them to a source's include patterns, when it has any.
@@ -40,6 +47,12 @@ type Format interface {
 	// returns an error only when it can't read the snapshot at all, such as
 	// when the snapshot lacks a file the format needs, or ctx ends.
 	Read(ctx context.Context, snap *source.Snapshot) (*Result, error)
+}
+
+// Reader names a format's way of reading, as TrueUp records it with the
+// definitions it loads: its name and version, such as devicetype-library/1.
+func Reader(f Format) string {
+	return f.Name() + "/" + strconv.Itoa(f.Version())
 }
 
 // Result is what a format read from a snapshot.

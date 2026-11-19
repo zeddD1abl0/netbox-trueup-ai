@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -55,6 +56,15 @@ or why it failed. A source that fails keeps the version it had. The records
 of sources no longer configured are removed with their caches. Fetches of
 one source take turns, even in different processes: a fetch waits up to the
 source's fetch_timeout for another to finish, and otherwise fails.
+
+Each version fetched is then read with the source's format, and its
+definitions and the problems with its files are loaded into the database,
+where list, compare and searches read them, unless the database holds them
+already. Files that are invalid are only counted here: list shows them. A
+version whose files can't be read at all, such as one without
+devicetype-library's schemas, is reported, and the database keeps the
+definitions it held, but the exit code stays as the fetch made it: list and
+compare report it too.
 
 Exit codes:
   0  Every source was fetched.
@@ -142,7 +152,15 @@ type fetchSourceJSON struct {
 	Version *string       `json:"version"`
 	Files   *int          `json:"files"`
 	Skipped []skippedJSON `json:"skipped"`
-	Error   *string       `json:"error"`
+	// Definitions is how many definitions the source's format read from the
+	// version fetched, and InvalidFiles how many files it skipped as
+	// invalid, or null when the fetch failed or the files couldn't be read.
+	Definitions  *int `json:"definitions"`
+	InvalidFiles *int `json:"invalid_files"`
+	// Error says why the fetch failed, and LoadError why the files of the
+	// version fetched couldn't be read, or they are null.
+	Error     *string `json:"error"`
+	LoadError *string `json:"load_error"`
 }
 
 type skippedJSON struct {
@@ -297,12 +315,14 @@ func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root strin
 	return nil
 }
 
-// fetchAndRecord fetches one source and records the fetch, holding the
-// source's fetch lock throughout, so that the cache and the database agree
-// on its latest version. A fetch that fails is recorded, and reported in the
-// row; a fetch that can't start, because another process held the lock too
-// long, is only reported, since it fetched nothing. Any other problem with
-// the lock, the cache or the database is an error.
+// fetchAndRecord fetches one source, records the fetch, and loads the
+// version fetched into the database, holding the source's fetch lock
+// throughout, so that the cache and the database agree on its latest
+// version and its definitions. A fetch or a load that fails is recorded,
+// and reported in the row; a fetch that can't start, because another
+// process held the lock too long, is only reported, since it fetched
+// nothing. Any other problem with the lock, the cache or the database is an
+// error.
 func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[string]source.Kind, root string, s config.Source) (fetchSourceJSON, error) {
 	row := fetchSourceJSON{Name: s.Name, Kind: s.Kind, URL: s.URL, Skipped: []skippedJSON{}}
 	fail := func(msg string) {
@@ -313,12 +333,13 @@ func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[stri
 		a.logger.Info("waiting for another TrueUp process to finish fetching the source", "source", s.Name)
 	})
 	switch {
+	case err == nil:
 	case ctx.Err() != nil:
 		return row, fmt.Errorf("interrupted while waiting to fetch source %s: %w", s.Name, ctx.Err())
 	case errors.Is(err, source.ErrFetching):
 		fail(err.Error())
 		return row, nil
-	case err != nil:
+	default:
 		return row, fmt.Errorf("source %s: %w", s.Name, err)
 	}
 	defer func() {
@@ -345,7 +366,33 @@ func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[stri
 		}
 		return row, err
 	}
+	if rec.Error == "" {
+		if err := a.loadFetched(ctx, db, kinds, s, &row); err != nil {
+			return row, err
+		}
+	}
 	return row, nil
+}
+
+// loadFetched loads the version a fetch recorded into the database, unless
+// it holds what the source's format read from it with the source's
+// settings as they are, and fills in the row's counts. The caller holds the
+// source's fetch lock. A version whose files can't be read is reported in
+// the row.
+func (a *app) loadFetched(ctx context.Context, db store.Store, kinds map[string]source.Kind, s config.Source, row *fetchSourceJSON) error {
+	// A version whose load failed is tried again: fetching is how to.
+	status, err := a.loadUnlessCurrent(ctx, db, kinds, s, false, true)
+	if p, ok := errors.AsType[sourceProblem](err); ok {
+		msg := p.Error()
+		row.LoadError = &msg
+		a.logger.Warn("fetched the source, but can't read its files", "source", s.Name, "error", msg)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	row.Definitions, row.InvalidFiles = &status.Definitions, &status.InvalidFiles
+	return nil
 }
 
 // fetchSource fetches one source, fills in its row, and returns the fetch
@@ -427,13 +474,17 @@ var skipDescriptions = map[source.Reason]string{
 func writeFetchText(w io.Writer, r fetchJSON) error {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "SOURCE\tREF\tVERSION\tFILES\tSKIPPED")
+	_, _ = fmt.Fprintln(tw, "SOURCE\tREF\tVERSION\tFILES\tSKIPPED\tDEFINITIONS\tINVALID")
 	for _, s := range r.Sources {
 		if !s.OK {
-			_, _ = fmt.Fprintf(tw, "%s\t-\t-\t-\t-\n", s.Name)
+			_, _ = fmt.Fprintf(tw, "%s\t-\t-\t-\t-\t-\t-\n", s.Name)
 			continue
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\n", s.Name, cell(*s.Ref), *s.Version, *s.Files, len(s.Skipped))
+		definitions, invalid := "-", "-"
+		if s.Definitions != nil {
+			definitions, invalid = strconv.Itoa(*s.Definitions), strconv.Itoa(*s.InvalidFiles)
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n", s.Name, cell(*s.Ref), *s.Version, *s.Files, len(s.Skipped), definitions, invalid)
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("write output: %w", err)
@@ -461,13 +512,17 @@ func writeFetchText(w io.Writer, r fetchJSON) error {
 		b.WriteString("\nSkipped files (--output json lists them all):\n")
 		b.WriteString(strings.Join(skips, "\n") + "\n")
 	}
-	if failed := r.failed(); len(failed) > 0 {
-		b.WriteString("\nErrors:\n")
-		for _, s := range r.Sources {
-			if s.Error != nil {
-				fmt.Fprintf(&b, "  %s: %s\n", s.Name, cell(*s.Error))
-			}
+	var errs []string
+	for _, s := range r.Sources {
+		switch {
+		case s.Error != nil:
+			errs = append(errs, fmt.Sprintf("  %s: %s", s.Name, cell(*s.Error)))
+		case s.LoadError != nil:
+			errs = append(errs, fmt.Sprintf("  %s: fetched, but its files couldn't be read: %s", s.Name, cell(*s.LoadError)))
 		}
+	}
+	if len(errs) > 0 {
+		b.WriteString("\nErrors:\n" + strings.Join(errs, "\n") + "\n")
 	}
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return fmt.Errorf("write output: %w", err)

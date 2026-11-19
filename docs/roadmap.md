@@ -4,7 +4,7 @@ How the [architecture](architecture.md) gets built. Each milestone is a slice th
 
 ## Milestone 1: list and compare manufacturers and device types
 
-From the command line, point TrueUp at devicetype-library and a disposable local NetBox 4.7.2. List the manufacturers and device types the library defines, and see for each one whether NetBox already has it and how it differs, field by field and component by component. When more than one source defines a device type, see every source's definition and NetBox's object side by side. TrueUp writes nothing to NetBox. Sources, snapshots and comparisons are recorded in a database, on SQLite or PostgreSQL.
+From the command line, point TrueUp at devicetype-library and a disposable local NetBox 4.7.2. List and search the manufacturers and device types the library defines, and see, for those NetBox has or that you choose, how NetBox's differ, field by field and component by component. When more than one source defines a device type, see every source's definition and NetBox's object side by side. TrueUp writes nothing to NetBox. Sources, snapshots, their definitions and comparisons are recorded in a database, on SQLite or PostgreSQL, where commands, and later the web UI, read definitions without reading the sources' files.
 
 ### Scope
 
@@ -13,12 +13,12 @@ From the command line, point TrueUp at devicetype-library and a disposable local
 
 ### Done when
 
-- `netbox-trueup-ai list` prints the definitions in a source, and reports files that fail validation with their path, line and reason.
-- `netbox-trueup-ai compare` gives each manufacturer's and device type's outcome (candidate, absent or conflict) and, for candidates, every field and component difference, as text or JSON.
+- `netbox-trueup-ai list` prints the definitions in a source, from the database, finds them by manufacturer, model or part number with `--search`, and reports files that fail validation with their path, line and reason.
+- `netbox-trueup-ai compare` compares what NetBox has, or the manufacturers and device types named: each one's outcome (candidate, absent or conflict) and, for candidates, every field and component difference, as text or JSON.
 - With two sources that define the same device type, `compare` shows both definitions and NetBox's object side by side, field by field.
 - A parity test imports a sample of library files through NetBox's own YAML import and then compares them, with no differences. Changing a field or a component in NetBox makes exactly that difference appear.
 - No code path writes to NetBox. The client has no write methods, and tests seed NetBox through a separate helper.
-- The latest comparison of each definition is recorded, and the storage tests pass on both SQLite and PostgreSQL.
+- Each source's definitions are loaded into the database once per version, and the latest comparison of each definition compared is recorded. The storage tests pass on both SQLite and PostgreSQL.
 - `make check` and the integration tests pass in CI.
 
 ### Steps
@@ -38,7 +38,10 @@ flowchart LR
     s9 --> s10
     s10 --> s11["11 Console, power,<br/>interface, bay templates"]
     s10 --> s12["12 Front and rear ports,<br/>port mappings"]
-    s10 --> s13["13 Compare across sources"]
+    s10 --> s13["13 Definitions<br/>in the database"]
+    s6 --> s13
+    s13 --> s14["14 Compare what<br/>NetBox has"]
+    s14 --> s15["15 Compare across sources"]
 ```
 
 Steps not connected in the graph can run in parallel. Each step updates the docs it affects, and adds dependencies to [tooling.md](tooling.md) with the reason in its PR description.
@@ -142,10 +145,24 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - [ADR 0027](adr/0027-nest-port-mappings-in-their-front-port.md): compare port mappings as children of their front port, keyed by position. [ADR 0028](adr/0028-no-inventory-item-templates.md): don't support inventory item templates.
     - No new dependency.
 
-13. **`feat(compare): compare definitions across sources`.**
-    - Definitions from every configured source grouped into objects by NetBox's uniqueness rules, with a conflict reported when one source defines an object twice.
-    - `compare` shows a column for each source that defines an object, plus NetBox, in text and JSON.
-    - Tests with two Git sources that agree on some fields and disagree on others.
+13. **`feat(source): load each source's definitions into the database`.** Done in #26.
+    - Comparing every definition of every source on each run took seconds and gigabytes, and showed thousands of device types NetBox has never had. The web UI needs a search across every source, and an object's comparison across sources and NetBox, each in under a second on a local deployment however many sources there are. So the plan for the end of milestone 1 became three steps: definitions in the database (this one), comparing what NetBox has by default (14), and comparing across sources (15).
+    - `internal/store`: `definitions`, `definition_problems` and `definition_loads` tables on both engines ([ADR 0029](adr/0029-keep-a-lookup-table-of-definitions.md)). A load records each definition of a source's latest version as `list --output json` prints it, with its manufacturer, model, slug, part number and file digest, and replaces the last load in one transaction, only if the source's snapshot is still the version read. A definition keeps its internal ID while its source defines the same object in the same file, and IDs are never reused. A search looks in the manufacturer, model and part number, ignoring case, alike on both engines. A failed load is recorded, and keeps what the last load held; a load in progress isn't recorded. The migration is tested to keep what the database held.
+    - `internal/model`: `Spec.UnmarshalFields` reads fields back from the JSON TrueUp writes, through the spec. `internal/format`: `MarshalDefinition`, `UnmarshalDefinition` and `EncodeDefinition`, which checks that a definition reads back exactly before it is kept; fuzzing devicetype-library's format checks the same of every file it takes. Formats have a version, recorded as each load's reader, and `TestVersion` fails when what devicetype-library's format makes of its test files changes and its version doesn't.
+    - `source fetch` loads each version it fetches, under the source's fetch lock, and reports how many definitions and invalid files it found, or why its files couldn't be read. `list` and `compare` read definitions from the database alone, and load a version the database holds nothing of, or what another version of the format or other settings of the source read, or definitions it can't read back. A version whose load failed is reported as it failed until a fetch, or other settings, try again. `list --search` finds definitions by manufacturer, model or part number.
+    - Measured against the whole library: `list` takes 1 second from the database instead of 3 from the files, a search 0.04 seconds, and `compare` 3.8 seconds instead of 6.7 to 12.8, at the same memory and with the same output; two copies of the library take 7.5 seconds instead of 13 to 14. A load takes about 5 seconds and 580 MB, and the database grows by about 32 MB for each copy of the library.
+    - No new dependency.
+
+14. **`feat(compare): compare what NetBox has, or what a selection names`.**
+    - With no selection, `compare` compares the definitions that match a NetBox object, or would collide with one, candidates and conflicts, matching every definition from the database's identity and slug columns, and reading the whole definition only of those. Absent definitions are counted, not compared, listed or recorded.
+    - A selection compares what it names, absent included: `--manufacturer`, as today, and `--model`, exact and repeatable, which narrows `--manufacturer`. `--all` compares everything. Linked objects join the default scope in milestone 2.
+    - `--exit-code` counts only what was compared. JSON gains a top-level `scope`. Comparisons gain their definition's ID, outcome and NetBox ID as columns, and a run of the default scope removes the records of definitions it found absent.
+    - Tests: a definition cut down to its unique values gets the same outcome as the whole; the parity test's default scope compares exactly what it imported.
+
+15. **`feat(compare): compare definitions across sources`.**
+    - Definitions from every configured source grouped into objects by type and identity; an object is in scope if any of its definitions is. A source that defines an object twice, and objects that would share another unique value NetBox keeps unique, are conflicts.
+    - Each definition keeps its outcome against NetBox; an object gets one of its own, and is in step when NetBox and every source agree. `compare` shows a column for each definition, plus NetBox, in text and JSON. Each definition's comparison is recorded alone, and an object is built by merging its definitions' comparisons.
+    - Tests with two Git sources that agree on some fields and disagree on others, fuzzing with up to three sources, and a second source in the parity test.
 
 ## Milestone 2: import and sync manufacturers and device types
 
@@ -167,7 +184,7 @@ Done when, starting from a fresh local NetBox, you can import a selection of lib
 
 Proposed order, to be refined when milestone 2 is done.
 
-- **M3, web UI.** Browse sources and objects. Each object's page compares every source's definition and NetBox's object side by side, with a live edit area compared against them as you type, showing each colour, such as a port's, as a swatch beside its value. Import, choose the primary definition, and review and apply plans. Sign-in with OpenID Connect single sign-on or local accounts, built-in roles mapped from the identity provider's groups, and the audit log in the UI.
+- **M3, web UI.** Browse and search sources and objects, each page in under a second, reading the database. Each object's page compares every source's definition and NetBox's object side by side, with a live edit area compared against them as you type, showing each colour, such as a port's, as a swatch beside its value. Import, choose the primary definition, and review and apply plans. Sign-in with OpenID Connect single sign-on or local accounts, built-in roles mapped from the identity provider's groups, and the audit log in the UI.
 - **M4, access and change management.** Permissions scoped to sources, object types and selections; approval policies, off by default, with separation of duties and required change references; SAML sign-in; and SCIM provisioning ([ADR 0015](adr/0015-sign-in-and-provisioning.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md)).
 - **M5, overrides and injected values.** Tick Override on any field to take it from another source, from NetBox, or from the live edit, and save live edits as overrides. Rules that inject values across many objects.
 - **M6, server operations.** Schedules, high availability with leader election, metrics for Prometheus and OpenTelemetry, traces, and running as a systemd unit or Windows service.

@@ -39,6 +39,9 @@ type compareNetBox struct {
 	// refused is an endpoint NetBox refuses to list, as when a device type
 	// asked for no longer exists.
 	refused string
+	// onManufacturers, if set, runs before manufacturers are listed, once
+	// compare has read the sources' definitions.
+	onManufacturers func()
 
 	mu      sync.Mutex
 	queries map[string][]url.Values // by path
@@ -79,6 +82,9 @@ func newCompareNetBox(t *testing.T, manufacturers, deviceTypes []map[string]any,
 			answer(http.StatusBadRequest, map[string]any{"device_type_id": []string{"Select a valid choice. 11 is not one of the available choices."}})
 			return
 		case r.URL.Path == "/api/dcim/manufacturers/":
+			if f.onManufacturers != nil {
+				f.onManufacturers()
+			}
 			objects = f.manufacturers
 		case r.URL.Path == "/api/dcim/device-types/":
 			ids := q["manufacturer_id"]
@@ -391,12 +397,13 @@ func outcomes(r compareResult) []string {
 	return out
 }
 
-// recordedResults returns the comparisons recorded of a source, each as its
-// result decoded, by its path, or its identity for a derived definition.
-func recordedResults(t *testing.T, dataDir, source string) map[string]any {
+// recordedResults returns the comparisons recorded of the source lib, each
+// as its result decoded, by its path, or its identity for a derived
+// definition.
+func recordedResults(t *testing.T, dataDir string) map[string]any {
 	t.Helper()
 	out := map[string]any{}
-	for k, c := range recordedComparisons(t, dataDir, source) {
+	for k, c := range recordedComparisons(t, dataDir) {
 		var v any
 		if err := json.Unmarshal(c.Result, &v); err != nil {
 			t.Fatal(err)
@@ -406,16 +413,16 @@ func recordedResults(t *testing.T, dataDir, source string) map[string]any {
 	return out
 }
 
-// recordedComparisons returns the comparisons recorded of a source, by path,
-// or identity for a derived definition.
-func recordedComparisons(t *testing.T, dataDir, source string) map[string]store.RecordedComparison {
+// recordedComparisons returns the comparisons recorded of the source lib, by
+// path, or identity for a derived definition.
+func recordedComparisons(t *testing.T, dataDir string) map[string]store.RecordedComparison {
 	t.Helper()
 	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	recorded, err := s.Comparisons(t.Context(), source)
+	recorded, err := s.Comparisons(t.Context(), "lib")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +497,7 @@ func TestCompareJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.stdout), &printed); err != nil {
 		t.Fatal(err)
 	}
-	recorded := recordedResults(t, dataDir, "lib")
+	recorded := recordedResults(t, dataDir)
 	if len(recorded) != len(got.Objects) {
 		t.Errorf("recorded %d comparisons, want %d", len(recorded), len(got.Objects))
 	}
@@ -537,7 +544,7 @@ func TestCompareManufacturers(t *testing.T) {
 	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
 		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
-	before := recordedComparisons(t, dataDir, "lib")
+	before := recordedComparisons(t, dataDir)
 
 	// A name no source defines, perhaps mistyped, leaves the comparison
 	// short of what was asked for.
@@ -562,7 +569,7 @@ func TestCompareManufacturers(t *testing.T) {
 		t.Errorf("device types listed for manufacturers %v, want Huawei's alone", ids)
 	}
 	// Huawei's are recorded again, and the others keep theirs.
-	after := recordedComparisons(t, dataDir, "lib")
+	after := recordedComparisons(t, dataDir)
 	if len(after) != len(before) {
 		t.Fatalf("recorded %d comparisons, then %d", len(before), len(after))
 	}
@@ -593,9 +600,17 @@ func TestCompareRecordsOnlyTheVersionCompared(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
 	env, dataDir, _, configure := compareEnv(t, nb)
-	// As if the source were fetched again elsewhere since this cache was:
-	// the database's snapshot isn't the version compared.
-	recordFetch(t, dataDir, "lib", time.Now())
+	// As if the source were fetched again elsewhere while compare reads
+	// NetBox, having read the definitions of the version before: the
+	// database's snapshot isn't the version compared.
+	var once sync.Once
+	nb.onManufacturers = func() {
+		once.Do(func() {
+			if err := recordFetchErr(t, dataDir, "lib", time.Now()); err != nil {
+				t.Error(err)
+			}
+		})
+	}
 	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json")
 	if r.code != exitCompareProblems {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
@@ -605,8 +620,69 @@ func TestCompareRecordsOnlyTheVersionCompared(t *testing.T) {
 		!strings.Contains(*src.Error, `the snapshot is of version "abc"`) || len(got.Objects) != 6 {
 		t.Errorf("the source = %+v, with %d objects", src, len(got.Objects))
 	}
-	if recorded := recordedResults(t, dataDir, "lib"); len(recorded) != 0 {
+	if recorded := recordedResults(t, dataDir); len(recorded) != 0 {
 		t.Errorf("recorded %d comparisons of a version the database doesn't hold", len(recorded))
+	}
+}
+
+func TestCompareRecordsByTheKeysTheDatabaseHolds(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	env, dataDir, _, configure := compareEnv(t, nb)
+	// The database holds each definition by its identity as JSON, written
+	// with a space here, as no encoder of TrueUp's would: comparisons are
+	// recorded by the keys the database holds, not by keys made again.
+	loaded := storedDefinitions(t, dataDir)
+	l := store.Load{
+		Source: "lib", Version: loaded.Loaded.Version, Reader: loaded.Loaded.Reader, Settings: loaded.Loaded.Settings, StartedAt: time.Now(),
+		Files: loaded.Files, InvalidFiles: loaded.InvalidFiles, Definitions: loaded.Definitions,
+	}
+	for i := range l.Definitions {
+		l.Definitions[i].Identity = strings.Replace(l.Definitions[i].Identity, `":`, `": `, 1)
+	}
+	recordLoadIn(t, dataDir, l)
+	if r := runCLIApp(t, nil, configure, env, "compare", "-o", "json"); r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	recorded := recordedComparisons(t, dataDir)
+	if len(recorded) != len(l.Definitions) {
+		t.Fatalf("recorded %d comparisons, want %d", len(recorded), len(l.Definitions))
+	}
+	for _, d := range l.Definitions {
+		k := d.Path
+		if k == "" {
+			k = d.Identity
+		}
+		if c, ok := recorded[k]; !ok || c.DefinitionKey != d.DefinitionKey {
+			t.Errorf("the comparison of %s is recorded by %+v, want %+v", k, c.DefinitionKey, d.DefinitionKey)
+		}
+	}
+}
+
+func TestCompareAfterAnotherFetch(t *testing.T) {
+	t.Parallel()
+	nb := libraryNetBox(t)
+	env, dataDir, commit, configure := compareEnv(t, nb)
+	// As if the source were fetched again elsewhere into this database,
+	// though not into this cache: the version the database records can't
+	// be read, so the source isn't compared, and nothing is recorded.
+	recordFetch(t, dataDir, "lib", time.Now())
+	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json")
+	if r.code != exitCompareProblems {
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", r.code, exitCompareProblems, r.stderr)
+	}
+	got := decodeCompare(t, r.stdout)
+	want := "the cache holds version " + commit + ", but the database records abc: run 'netbox-trueup-ai source fetch'"
+	if src := got.Sources[0]; src.OK || src.Error == nil || *src.Error != want || len(got.Objects) != 0 {
+		t.Errorf("the source = %+v, with %d objects; want the error %q", src, len(got.Objects), want)
+	}
+	if recorded := recordedResults(t, dataDir); len(recorded) != 0 {
+		t.Errorf("recorded %d comparisons of a version the database doesn't hold", len(recorded))
+	}
+	// This host's cache is the problem, which another host sharing the
+	// database mightn't have, so the attempt isn't recorded.
+	if loaded := storedDefinitions(t, dataDir); loaded.State() != store.LoadReady || loaded.Loaded.Version != commit {
+		t.Errorf("the database's last load is %s, %q, keeping version %q; want ready, keeping %s's definitions", loaded.State(), loaded.Error, loaded.Loaded.Version, commit)
 	}
 }
 
@@ -664,7 +740,7 @@ func TestCompareFailures(t *testing.T) {
 		if r.code != tt.wantCode || r.stdout != "" || !strings.Contains(r.stderr, tt.wantStderr) {
 			t.Errorf("%s: exit code %d, stdout %q, stderr %q; want %d and %q", tt.name, r.code, r.stdout, r.stderr, tt.wantCode, tt.wantStderr)
 		}
-		if recorded := recordedResults(t, dataDir, "lib"); len(recorded) != 0 {
+		if recorded := recordedResults(t, dataDir); len(recorded) != 0 {
 			t.Errorf("%s: recorded %d comparisons", tt.name, len(recorded))
 		}
 	}
@@ -715,7 +791,7 @@ func TestCompareNothingChosen(t *testing.T) {
 	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
 		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
-	before := recordedComparisons(t, dataDir, "lib")
+	before := recordedComparisons(t, dataDir)
 	listed := len(nb.listed("/api/dcim/manufacturers/"))
 
 	// NetBox is checked, but nothing is listed, and what was recorded stays.
@@ -729,7 +805,7 @@ func TestCompareNothingChosen(t *testing.T) {
 	if n := len(nb.listed("/api/dcim/manufacturers/")); n != listed {
 		t.Errorf("listed manufacturers %d more times, with nothing to compare", n-listed)
 	}
-	if after := recordedComparisons(t, dataDir, "lib"); len(after) != len(before) {
+	if after := recordedComparisons(t, dataDir); len(after) != len(before) {
 		t.Errorf("recorded %d comparisons, then %d", len(before), len(after))
 	}
 }
@@ -778,7 +854,7 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
 		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
-	before := recordedComparisons(t, dataDir, "lib")
+	before := recordedComparisons(t, dataDir)
 
 	// The next version breaks GS105's file, which then defines nothing, and
 	// removes Huawei's only device type.
@@ -794,7 +870,7 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	// A file that no longer reads defines nothing, as one the source no
 	// longer holds doesn't: the invalid file is reported, and neither keeps
 	// a comparison that would pass for current.
-	after := recordedComparisons(t, dataDir, "lib")
+	after := recordedComparisons(t, dataDir)
 	for _, gone := range []string{"device-types/Netgear/GS105.yaml", "device-types/Huawei/NE8000-X8.yaml", `{"name":"Huawei"}`} {
 		if _, ok := after[gone]; ok {
 			t.Errorf("the comparison of %s, which the source no longer holds, is kept", gone)
@@ -900,7 +976,7 @@ func TestCheckResults(t *testing.T) {
 		sc := sourceCompared{row: &compareSourceJSON{Name: name, Version: &version}}
 		for _, p := range paths {
 			sc.chosen = append(sc.chosen, def(name, p))
-			sc.chosenKeys = append(sc.chosenKeys, store.ComparisonKey{ObjectType: dt, Path: p})
+			sc.chosenKeys = append(sc.chosenKeys, store.DefinitionKey{ObjectType: dt, Path: p})
 		}
 		return sc
 	}

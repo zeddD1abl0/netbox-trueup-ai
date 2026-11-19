@@ -40,7 +40,7 @@ netbox-trueup-ai netbox check
 netbox-trueup-ai source fetch
 ```
 
-`netbox check` connects, checks NetBox's release and the token, and lists what the token can read ([Connecting to NetBox](configuration.md#connecting-to-netbox)). `source fetch` downloads the library's latest commit into the cache, and records the fetch in the database ([Fetching sources](configuration.md#fetching-sources)). Fetch again whenever you want the library's latest version: `list` and `compare` read the version last fetched, unless you give them `--fetch`.
+`netbox check` connects, checks NetBox's release and the token, and lists what the token can read ([Connecting to NetBox](configuration.md#connecting-to-netbox)). `source fetch` downloads the library's latest commit into the cache, records the fetch in the database, and loads the definitions the library's files hold into the database, which takes a few seconds ([Fetching sources](configuration.md#fetching-sources)). Fetch again whenever you want the library's latest version: `list` and `compare` read the definitions of the version last fetched from the database, unless you give them `--fetch`.
 
 ## List what the library defines
 
@@ -48,9 +48,29 @@ netbox-trueup-ai source fetch
 netbox-trueup-ai list
 ```
 
-`list` prints each source's summary, then each manufacturer followed by its device types, then warnings and invalid files. It needs neither NetBox nor the database. A manufacturer is derived from each name the library's device types give, since the library has no files for manufacturers, with the slug NetBox's web UI would make from the name, marked `(derived)`. TrueUp uses a derived slug only to create a manufacturer, never to change one NetBox has.
+`list` prints each source's summary, then each manufacturer followed by its device types, then warnings and invalid files. It reads them from the database, not NetBox, in about a second for the whole library. A manufacturer is derived from each name the library's device types give, since the library has no files for manufacturers, with the slug NetBox's web UI would make from the name, marked `(derived)`. TrueUp uses a derived slug only to create a manufacturer, never to change one NetBox has.
 
 A file that fails is reported with its path, line, column, field and reason, and skipped, such as a value NetBox would refuse. [Listing definitions](configuration.md#listing-definitions) describes what `list` reads, how it validates each file, and its JSON.
+
+To find a device type, search the manufacturer, model and part number, ignoring case:
+
+```sh
+netbox-trueup-ai list --search r640
+```
+
+```text
+SOURCE              REF     VERSION                                   FILES  INVALID  WARNINGS  MANUFACTURERS  DEVICE TYPES
+devicetype-library  master  193473cbce8d8ce8171779dc9d76b9fd22ea8e7c  13374  0        4         0              1
+
+SOURCE              TYPE         MANUFACTURER  MODEL           SLUG                 FROM
+devicetype-library  device type  Dell          PowerEdge R640  dell-poweredge-r640  device-types/Dell/PowerEdge-R640.yaml
+
+Warnings:
+  devicetype-library: manufacturers "GL-iNet" and "GL.iNet" would both get the slug "gl-inet", which NetBox gives to one manufacturer only: ...
+  ...
+```
+
+The search takes a few hundredths of a second, since it reads only the database, and the warnings and invalid files are the whole source's, as without one. A file's name needn't match its model: `device-types/A10/TH4440.yaml` defines the "Thunder 4440 ADC", which `--search thunder` finds.
 
 ## Compare with NetBox
 

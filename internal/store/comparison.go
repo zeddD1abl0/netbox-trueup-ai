@@ -8,26 +8,13 @@ import (
 )
 
 // ErrSnapshotChanged means a source's recorded snapshot isn't the version a
-// comparison read: the source was fetched again while it was compared, was
+// comparison or a load read: the source was fetched again meanwhile, was
 // removed, or was never fetched into this database. Nothing is recorded.
-var ErrSnapshotChanged = errors.New("the source's recorded snapshot isn't the version compared")
-
-// ComparisonKey says which definition a comparison is of.
-type ComparisonKey struct {
-	// ObjectType is the definition's type, such as dcim.devicetype.
-	ObjectType string
-	// Path is the file that defines the object, or "" for an object the
-	// format derives, such as a manufacturer that devicetype-library only
-	// names.
-	Path string
-	// Identity is the definition's identity, as JSON: what tells a derived
-	// object from the others of its type.
-	Identity string
-}
+var ErrSnapshotChanged = errors.New("the source's recorded snapshot isn't the version read")
 
 // Comparison is the latest comparison of one definition with NetBox.
 type Comparison struct {
-	ComparisonKey
+	DefinitionKey
 	// Outcome is the comparison's outcome, such as candidate.
 	Outcome string
 	// NetBoxID is the NetBox object the definition matches, or 0.
@@ -54,7 +41,7 @@ type ComparisonRun struct {
 	// Defined lists every definition the source holds at SourceVersion,
 	// compared or not. Comparisons of definitions it doesn't list are
 	// removed, and those it lists but Comparisons doesn't are kept.
-	Defined []ComparisonKey
+	Defined []DefinitionKey
 	// Comparisons are the comparisons made, which replace those recorded
 	// before.
 	Comparisons []Comparison
@@ -89,62 +76,42 @@ func (r ComparisonRun) Prepare() (ComparisonRun, error) {
 		return ComparisonRun{}, fmt.Errorf("source %s: a comparison must say when it was made", r.Source)
 	}
 	r.ComparedAt = r.ComparedAt.UTC().Truncate(time.Microsecond)
-	defined := make(map[ComparisonKey]bool, len(r.Defined))
+	defined := make(map[DefinitionKey]bool, len(r.Defined))
 	for _, k := range r.Defined {
 		if err := k.check(); err != nil {
 			return ComparisonRun{}, fmt.Errorf("source %s: %w", r.Source, err)
 		}
 		defined[k] = true
 	}
-	compared := make(map[ComparisonKey]bool, len(r.Comparisons))
+	compared := make(map[DefinitionKey]bool, len(r.Comparisons))
 	for _, c := range r.Comparisons {
 		switch {
-		case !defined[c.ComparisonKey]:
-			return ComparisonRun{}, fmt.Errorf("source %s: a comparison of %s, which Defined doesn't list", r.Source, c.ComparisonKey)
-		case compared[c.ComparisonKey]:
-			return ComparisonRun{}, fmt.Errorf("source %s: two comparisons of %s", r.Source, c.ComparisonKey)
+		case !defined[c.DefinitionKey]:
+			return ComparisonRun{}, fmt.Errorf("source %s: a comparison of %s, which Defined doesn't list", r.Source, c.DefinitionKey)
+		case compared[c.DefinitionKey]:
+			return ComparisonRun{}, fmt.Errorf("source %s: two comparisons of %s", r.Source, c.DefinitionKey)
 		case c.Outcome == "" || !isText(c.Outcome):
-			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s has no outcome", r.Source, c.ComparisonKey)
+			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s has no outcome", r.Source, c.DefinitionKey)
 		case c.NetBoxID < 0 || c.Differences < 0:
-			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s has a negative NetBox ID or count", r.Source, c.ComparisonKey)
+			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s has a negative NetBox ID or count", r.Source, c.DefinitionKey)
 		case !json.Valid(c.Result) || !isText(string(c.Result)):
-			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s isn't JSON text", r.Source, c.ComparisonKey)
+			return ComparisonRun{}, fmt.Errorf("source %s: the comparison of %s isn't JSON text", r.Source, c.DefinitionKey)
 		}
-		compared[c.ComparisonKey] = true
+		compared[c.DefinitionKey] = true
 	}
 	return r, nil
-}
-
-func (k ComparisonKey) check() error {
-	switch {
-	case k.ObjectType == "" || !isText(k.ObjectType):
-		return fmt.Errorf("a definition's object type %q isn't text", k.ObjectType)
-	case !isText(k.Path):
-		return fmt.Errorf("a definition's path %q isn't text", k.Path)
-	case !json.Valid([]byte(k.Identity)) || !isText(k.Identity):
-		return fmt.Errorf("a definition's identity %q isn't JSON text", k.Identity)
-	}
-	return nil
-}
-
-// String names the definition, for an error.
-func (k ComparisonKey) String() string {
-	if k.Path != "" {
-		return fmt.Sprintf("%s %q", k.ObjectType, k.Path)
-	}
-	return fmt.Sprintf("%s %s", k.ObjectType, k.Identity)
 }
 
 // Kept returns the keys of the definitions whose recorded comparisons a run
 // keeps as they are: those defined but not compared. Every other comparison
 // of the source is replaced or removed.
-func (r ComparisonRun) Kept() map[ComparisonKey]bool {
-	kept := make(map[ComparisonKey]bool, len(r.Defined))
+func (r ComparisonRun) Kept() map[DefinitionKey]bool {
+	kept := make(map[DefinitionKey]bool, len(r.Defined))
 	for _, k := range r.Defined {
 		kept[k] = true
 	}
 	for _, c := range r.Comparisons {
-		delete(kept, c.ComparisonKey)
+		delete(kept, c.DefinitionKey)
 	}
 	return kept
 }

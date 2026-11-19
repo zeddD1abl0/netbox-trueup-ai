@@ -40,9 +40,30 @@ type Store interface {
 	// an error wrapping ErrNotFound if the source has none.
 	Snapshot(ctx context.Context, source string) (Snapshot, error)
 	// RemoveSources removes what is recorded about every source not named
-	// in keep, snapshots and comparisons included, and returns the names it
-	// removed, sorted.
+	// in keep, snapshots, definitions and comparisons included, and returns
+	// the names it removed, sorted.
 	RemoveSources(ctx context.Context, keep []string) ([]string, error)
+	// RecordLoad records a load of a source's snapshot as its latest, all
+	// of it or nothing. A load that succeeded replaces the definitions and
+	// problems recorded before; a definition the source still defines, of
+	// the same object in the same file, keeps its ID. One that failed
+	// records only the attempt and its error. It returns an error wrapping
+	// ErrSnapshotChanged, recording nothing, if the source's recorded
+	// snapshot isn't the version loaded. Loads of a source must be recorded
+	// in the order they read the snapshot, as they are when each holds the
+	// source's fetch lock (source.LockCache) until it is recorded.
+	RecordLoad(ctx context.Context, load Load) error
+	// LoadStatus returns what is recorded of the loads of a source's
+	// snapshot. It returns an error wrapping ErrNotFound if the source has
+	// no snapshot.
+	LoadStatus(ctx context.Context, source string) (LoadStatus, error)
+	// Definitions returns a source's recorded definitions, in their
+	// format's order, with its problems and the status of its loads, all
+	// as they were at one moment. With a search, it returns only the
+	// definitions whose manufacturer, model or part number holds it,
+	// ignoring case (Definition.SearchText), and every problem. It returns
+	// an error wrapping ErrNotFound if the source has no snapshot.
+	Definitions(ctx context.Context, source, search string) (SourceDefinitions, error)
 	// RecordComparisons records a run's comparisons of one source's
 	// definitions as their latest, all of them or nothing: it replaces the
 	// comparisons of the definitions compared, keeps those of the others

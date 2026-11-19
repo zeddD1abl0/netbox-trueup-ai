@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, the object model with specs for manufacturers and device types, the devicetype-library format with `list`, and the comparison engine with `compare`, for manufacturers and device types, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, the object model with specs for manufacturers and device types, the devicetype-library format with `list`, each source's definitions loaded into the database, and the comparison engine with `compare`, for manufacturers and device types, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -133,6 +133,7 @@ flowchart TB
     writer -- "POST, PATCH with If-Match" --> api
 
     fetch -.->|snapshots| db
+    format -.->|definitions, loaded once per version| db
     compare -.->|comparisons| db
     planner -.->|plans| db
     executor -.->|"history, links"| db
@@ -152,9 +153,16 @@ sequenceDiagram
 
     Op->>CLI: compare
     CLI->>NB: check NetBox version and token
-    CLI->>Src: read the version last fetched, or fetch it first with --fetch
-    Src->>DB: record snapshot, when fetching
-    Src-->>CLI: definitions, file errors
+    opt with --fetch
+        CLI->>Src: fetch the latest version, and read it with its format
+        Src->>DB: record the snapshot, and load its definitions and file errors
+    end
+    opt the database holds nothing this release read from the version last fetched
+        CLI->>Src: read the version in the cache with its format
+        Src->>DB: load its definitions and file errors
+    end
+    CLI->>DB: read the definitions and file errors
+    DB-->>CLI: definitions, file errors
     CLI->>NB: list manufacturers, and the device types and templates of those named
     NB-->>CLI: observed objects
     CLI->>Cmp: match and diff
@@ -205,6 +213,7 @@ Every kind does the same job behind one interface:
 
 - **Latest only.** A fetch reads the source's latest content and replaces the previous snapshot. Older versions are never read again, for comparing, planning or display.
 - **Snapshots.** A fetch records the source's version, time and outcome in the database, and the files the snapshot contains, each with its path, size and digest. A failed fetch records its outcome and keeps the previous snapshot, as the cache does. Comparisons, plans and links record the version they used, so you can see what they were based on. Nothing outside the source layer knows which kind produced a snapshot.
+- **Loads.** Each version fetched is read once, with the source's format, and its definitions and the problems with its files are kept in the database, which everything else reads them from; a source's files are read again only by its next version, or by a release whose format reads them differently ([ADR 0029](adr/0029-keep-a-lookup-table-of-definitions.md), [Storage](#storage)).
 - **Limits and paths.** Limits on file size, file count and path patterns are applied before any file is parsed. Paths are normalized and confined to the snapshot: no absolute paths and no `..`, and symbolic links are skipped.
 
 ### Git sources (M1)
@@ -315,11 +324,14 @@ TrueUp keeps its state in SQLite on a single node, or in PostgreSQL for high ava
 - **Migrations** go forward only, and run when a command that uses the database opens it, or by `migrate`. Each process holds a shared lock while it has the database open, and a migration needs the exclusive one, so the schema never changes under a running process; while a migration waits for it, processes that start wait for the migration: on SQLite, operating system locks on a file beside the database, and on PostgreSQL advisory locks. A release refuses a schema newer than it knows, and a database that holds another application's tables where TrueUp's belong ([ADR 0021](adr/0021-forward-only-migrations-when-opening.md)).
 - **SQLite** is one file, `<data_dir>/netbox-trueup-ai.db` unless `database.url` names another, created readable by its owner only. On Windows it takes its directory's permissions for now. Connections run in WAL mode with foreign keys enforced, a 30-second busy timeout and every commit synced, and write transactions take the write lock as they begin. Times are UTC text to the microsecond, so that they sort as text and match PostgreSQL's precision.
 - **PostgreSQL** keeps TrueUp's tables in a schema of their own, `netbox_trueup_ai`, marked as TrueUp's by its comment, and every connection's `search_path` names it alone. The schema and everything in it must belong to TrueUp's role, with no other role able to create objects in it, or TrueUp refuses it. The locks are advisory locks: each store holds the shared lock on a connection of its own, and each of its pooled connections holds a third lock, which a migration also takes, so that a store whose own connection drops still holds migrations off; goose holds a fourth on the connection it migrates through, and stores take it shared to read the schema's version, so that a migration whose process loses its other locks is never applied twice, nor read from before it. Poolers must pool by session. Connections are as libpq's parameters in `database.url` say, TLS included ([ADR 0022](adr/0022-postgresql-schema-and-advisory-locks.md)). Times are `timestamptz`, sorted columns use the `"C"` collation, so that they sort by bytes as in SQLite, and file lists are written with `COPY`.
-- **Writes** that belong together share a transaction: recording a fetch replaces the source's snapshot and its file list together, or not at all, and recording a run's comparisons of a source replaces them together, only if the source's snapshot is still the version compared. Fetches of one source take turns, under a lock on its cache held until the fetch is recorded, so the database and the cache agree on its latest version. That lock is in the data directory, so fetches on different hosts that share PostgreSQL don't take turns until high availability (M6). Times record when things happened, but never decide their order.
+- **Writes** that belong together share a transaction: recording a fetch replaces the source's snapshot and its file list together, or not at all; recording a load replaces the source's definitions and problems together, only if the source's snapshot is still the version read; and recording a run's comparisons of a source replaces them together, only if the source's snapshot is still the version compared. Fetches and loads of one source take turns, under a lock on its cache held until each is recorded, so the database and the cache agree on its latest version and its definitions. That lock is in the data directory, so fetches on different hosts that share PostgreSQL don't take turns until high availability (M6). Times record when things happened, but never decide their order.
+- **Definitions** are kept so that a page never reads a source's files ([ADR 0029](adr/0029-keep-a-lookup-table-of-definitions.md)). A load writes each definition as `list --output json` prints it, after checking that it reads back exactly, with what it is searched and shown by: its manufacturer, model, slug and part number. A definition keeps its internal ID for as long as its source defines the same object in the same file, and IDs are never reused. An object's definitions in every source are found by an index on their type and identity. A search looks in the manufacturer, model and part number, which TrueUp lowers itself, so that both engines match alike, with `instr` or `strpos` rather than `LIKE`. With the library loaded, a search takes 6 ms on SQLite, 60 ms across ten copies of it, and an object's definitions a fraction of a millisecond. Each load records the format and version that read it (`format.Reader`), with TrueUp's release, and a digest of the source's settings that chose the files read; a new release, a format whose version is raised, or other settings load the source again.
 
 ```mermaid
 erDiagram
     SOURCE ||--o| SNAPSHOT : "latest content"
+    SNAPSHOT ||--o| LOAD : "read by"
+    LOAD ||--o{ DEFINITION : "holds"
     SNAPSHOT ||--o{ COMPARISON : "compared in"
     SOURCE ||--o{ LINK : "defines"
     LINK ||--o{ OVERRIDE : "adjusted by"
@@ -331,6 +343,7 @@ erDiagram
 | Data | Purpose | Milestone |
 | --- | --- | --- |
 | Sources and snapshots | Each source's latest fetch: time and outcome, and its latest snapshot's version and file list, with the entries it skipped | M1 (exists) |
+| Definitions | Each source's definitions as its format read them from the latest version loaded, with their internal IDs and what they are searched and shown by, the problems with its files, and its loads: what the latest read and why it failed, and what the latest that succeeded read | M1 (exists) |
 | Comparisons | The latest comparison of each definition: when, against which source version and NetBox, and the result, as `compare --output json` prints it | M1 (exists) |
 | Links | Provenance: the primary definition (source and file) each managed NetBox object follows, who linked it and when, and the source version and time of its last sync | M2 |
 | Import requests | Definitions a person asked to import that NetBox doesn't have yet | M2 |
@@ -343,7 +356,7 @@ erDiagram
 | Jobs and leases | Scheduled work and leader election | M6 |
 | Event outbox, webhook endpoints and deliveries | Events waiting to be sent, where they go, and each delivery attempt | M7 |
 
-Not stored: source content, which is read from each node's cache of the latest snapshot, and NetBox state, which is read live. Plans keep the before and after values of the fields they change, for history.
+Not stored: source files, which are read from each node's cache of the latest snapshot when it is loaded, and NetBox state, which is read live. Plans keep the before and after values of the fields they change, for history.
 
 Inside NetBox, the only mark TrueUp leaves is a changelog message on each write ([ADR 0007](adr/0007-provenance-and-changelog-messages.md)). TrueUp's database is the record of where each object came from.
 
@@ -493,9 +506,11 @@ This covers sign-ins and failed sign-ins; changes to users, roles, sources and s
 
 The web UI is server-rendered HTML, built with templ and htmx and served by `net/http` (tooling.md §3.5). CodeMirror 6 provides YAML editing and side-by-side diffs. There is no single-page app.
 
+Each page renders in under a second on a local deployment, however many sources there are: pages read the database, never a source's files, and read NetBox only for the objects they show ([ADR 0029](adr/0029-keep-a-lookup-table-of-definitions.md)). Loading a source and comparing it with NetBox run as jobs, after a fetch, on a schedule or on a webhook; a source still loading says so, from the jobs' leases (M6) once several processes share the work, and a page that waits for NetBox shows what it has first.
+
 Main pages:
 
-- sources and their latest fetch;
+- sources, their latest fetch and load, and a search of every source's definitions by manufacturer, model or part number;
 - objects, filtered by outcome and by the sources that define them;
 - an object's page, built around the side-by-side comparison: a column for each source that defines the object, one for NetBox, one for the live edit area, and the resulting desired object. Here a person imports the object, chooses which column it follows (a source, or NetBox to leave it as it is) and, from M5, ticks Override on any field to take it from another column ([Overrides](#overrides-and-injected-values-m5)). The page also shows the object's sync history;
 - plans: review, approve and apply;
@@ -710,6 +725,7 @@ ADRs that record this design:
 | [0026](adr/0026-compare-children-by-their-key.md) | Compare a device type's component templates by their key, with a row for each child, and leave children only NetBox has unmanaged |
 | [0027](adr/0027-nest-port-mappings-in-their-front-port.md) | Compare port mappings as children of their front port, keyed by position |
 | [0028](adr/0028-no-inventory-item-templates.md) | Don't support inventory item templates |
+| [0029](adr/0029-keep-a-lookup-table-of-definitions.md) | Keep each source's definitions in the database, and read them from there |
 
 ADRs still to write, with the work that needs each one:
 

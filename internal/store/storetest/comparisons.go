@@ -15,22 +15,22 @@ import (
 
 // key returns the key of a device type's definition in a file, or of a
 // derived manufacturer if path is "".
-func key(path, name string) store.ComparisonKey {
+func key(path, name string) store.DefinitionKey {
 	if path == "" {
-		return store.ComparisonKey{ObjectType: "dcim.manufacturer", Identity: fmt.Sprintf(`{"name":%q}`, name)}
+		return store.DefinitionKey{ObjectType: "dcim.manufacturer", Identity: fmt.Sprintf(`{"name":%q}`, name)}
 	}
-	return store.ComparisonKey{ObjectType: "dcim.devicetype", Path: path, Identity: fmt.Sprintf(`{"manufacturer":{"name":"Dell"},"model":%q}`, name)}
+	return store.DefinitionKey{ObjectType: "dcim.devicetype", Path: path, Identity: fmt.Sprintf(`{"manufacturer":{"name":"Dell"},"model":%q}`, name)}
 }
 
 // comparison returns a comparison of the definition k with an outcome.
-func comparison(k store.ComparisonKey, outcome string, id int64) store.Comparison {
+func comparison(k store.DefinitionKey, outcome string, id int64) store.Comparison {
 	return store.Comparison{
-		ComparisonKey: k, Outcome: outcome, NetBoxID: id, Differences: int(id % 3),
+		DefinitionKey: k, Outcome: outcome, NetBoxID: id, Differences: int(id % 3),
 		Result: fmt.Appendf(nil, `{"identity":%s,"outcome":%q}`, k.Identity, outcome),
 	}
 }
 
-func run(source, version string, at time.Time, defined []store.ComparisonKey, comparisons ...store.Comparison) store.ComparisonRun {
+func run(source, version string, at time.Time, defined []store.DefinitionKey, comparisons ...store.Comparison) store.ComparisonRun {
 	return store.ComparisonRun{
 		Source: source, SourceVersion: version, ComparedAt: at,
 		NetBoxURL: "https://netbox.example.com/", NetBoxVersion: "4.7.2",
@@ -71,7 +71,7 @@ func checkComparisons(t *testing.T, s store.Store, source string, want []store.R
 func testComparisons(t *testing.T, s store.Store) {
 	record(t, s, success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml"))
 	dell, a, b := key("", "Dell"), key("Dell/a.yaml", "A"), key("Dell/b.yaml", "B")
-	defined := []store.ComparisonKey{dell, a, b}
+	defined := []store.DefinitionKey{dell, a, b}
 	checkComparisons(t, s, "lib", nil)
 
 	// The first run compares everything, the way it is sorted: by type,
@@ -91,18 +91,18 @@ func testComparisons(t *testing.T, s store.Store) {
 	// definition.
 	record(t, s, success("lib", "v2", t0.Add(3*time.Second), "Dell/b.yaml"))
 	renamed := key("Dell/b.yaml", "B2")
-	r3 := run("lib", "v2", t0.Add(4*time.Second), []store.ComparisonKey{dell, renamed}, comparison(renamed, "absent", 0))
+	r3 := run("lib", "v2", t0.Add(4*time.Second), []store.DefinitionKey{dell, renamed}, comparison(renamed, "absent", 0))
 	recordComparisons(t, s, r3)
 	checkComparisons(t, s, "lib", slicesConcat(recorded(r3, comparison(renamed, "absent", 0)), recorded(r1, comparison(dell, "candidate", 3))))
 
 	// A run that compares nothing removes what the source no longer holds.
-	r4 := run("lib", "v2", t0.Add(5*time.Second), []store.ComparisonKey{dell})
+	r4 := run("lib", "v2", t0.Add(5*time.Second), []store.DefinitionKey{dell})
 	recordComparisons(t, s, r4)
 	checkComparisons(t, s, "lib", recorded(r1, comparison(dell, "candidate", 3)))
 
 	// Other sources' comparisons are their own.
 	record(t, s, success("other", "x1", t0, "Dell/a.yaml"))
-	r5 := run("other", "x1", t0.Add(6*time.Second), []store.ComparisonKey{a}, comparison(a, "absent", 0))
+	r5 := run("other", "x1", t0.Add(6*time.Second), []store.DefinitionKey{a}, comparison(a, "absent", 0))
 	recordComparisons(t, s, r5)
 	checkComparisons(t, s, "lib", recorded(r1, comparison(dell, "candidate", 3)))
 	checkComparisons(t, s, "other", recorded(r5, comparison(a, "absent", 0)))
@@ -118,7 +118,7 @@ func slicesConcat(lists ...[]store.RecordedComparison) []store.RecordedCompariso
 
 func testComparisonsNeedTheSnapshot(t *testing.T, s store.Store) {
 	a := key("a.yaml", "A")
-	r := run("lib", "v1", t0, []store.ComparisonKey{a}, comparison(a, "absent", 0))
+	r := run("lib", "v1", t0, []store.DefinitionKey{a}, comparison(a, "absent", 0))
 	if err := s.RecordComparisons(t.Context(), r); !errors.Is(err, store.ErrSnapshotChanged) {
 		t.Errorf("RecordComparisons of a source never fetched = %v, want ErrSnapshotChanged", err)
 	}
@@ -151,7 +151,7 @@ func testComparisonsRemoved(t *testing.T, s store.Store) {
 	a := key("a.yaml", "A")
 	for _, name := range []string{"gone", "kept"} {
 		record(t, s, success(name, "v1", t0, "a.yaml"))
-		recordComparisons(t, s, run(name, "v1", t0, []store.ComparisonKey{a}, comparison(a, "absent", 0)))
+		recordComparisons(t, s, run(name, "v1", t0, []store.DefinitionKey{a}, comparison(a, "absent", 0)))
 	}
 	removed, err := s.RemoveSources(t.Context(), []string{"kept"})
 	if err != nil {
@@ -169,7 +169,7 @@ func testComparisonsRemoved(t *testing.T, s store.Store) {
 func testInvalidComparisons(t *testing.T, s store.Store) {
 	record(t, s, success("lib", "v1", t0, "a.yaml"))
 	a, b := key("a.yaml", "A"), key("b.yaml", "B")
-	defined := []store.ComparisonKey{a}
+	defined := []store.DefinitionKey{a}
 	valid := comparison(a, "absent", 0)
 	tests := []struct {
 		name string
@@ -184,8 +184,8 @@ func testInvalidComparisons(t *testing.T, s store.Store) {
 		{"no outcome", run("lib", "v1", t0, defined, comparison(a, "", 0))},
 		{"a negative ID", run("lib", "v1", t0, defined, comparison(a, "candidate", -1))},
 		{"a result that isn't JSON", run("lib", "v1", t0, defined, func() store.Comparison { c := valid; c.Result = []byte("{"); return c }())},
-		{"an identity that isn't JSON", run("lib", "v1", t0, []store.ComparisonKey{{ObjectType: "dcim.manufacturer", Identity: "Dell"}})},
-		{"a path that isn't UTF-8", run("lib", "v1", t0, []store.ComparisonKey{{ObjectType: "dcim.devicetype", Path: "a\xff.yaml", Identity: "{}"}})},
+		{"an identity that isn't JSON", run("lib", "v1", t0, []store.DefinitionKey{{ObjectType: "dcim.manufacturer", Identity: "Dell"}})},
+		{"a path that isn't UTF-8", run("lib", "v1", t0, []store.DefinitionKey{{ObjectType: "dcim.devicetype", Path: "a\xff.yaml", Identity: "{}"}})},
 		{"a NUL in the source's name", run("li\x00b", "v1", t0, defined, valid)},
 	}
 	for _, tt := range tests {
@@ -199,7 +199,7 @@ func testInvalidComparisons(t *testing.T, s store.Store) {
 func testComparisonsSorting(t *testing.T, s store.Store) {
 	record(t, s, success("lib", "v1", t0, "x"))
 	// By bytes: upper case before lower, and ASCII before the rest.
-	keys := []store.ComparisonKey{
+	keys := []store.DefinitionKey{
 		key("dell/a.yaml", "A"), key("Dell/b.yaml", "B"), key("Ébène/a.yaml", "A"), key("Dell/a.yaml", "A"),
 		key("", "dell"), key("", "Dell"), key("", "Émile"),
 	}
@@ -236,7 +236,7 @@ func testComparisonsWhileFetching(t *testing.T, s store.Store) {
 	// the source: each recording either finds the version it compared, and
 	// records it whole, or records nothing, and nothing else fails.
 	a, b := key("a.yaml", "A"), key("b.yaml", "B")
-	defined := []store.ComparisonKey{a, b}
+	defined := []store.DefinitionKey{a, b}
 	for i := range 30 {
 		at := t0.Add(time.Duration(i) * time.Second)
 		version := fmt.Sprintf("v%d", i)
@@ -287,7 +287,7 @@ func testLargeComparisons(t *testing.T, s store.Store) {
 	// then half of them again, which keeps the other half.
 	const n = 3000
 	record(t, s, success("lib", "v1", t0, "x"))
-	defined := make([]store.ComparisonKey, n)
+	defined := make([]store.DefinitionKey, n)
 	cs := make([]store.Comparison, n)
 	padding := strings.Repeat("x", 2000)
 	for i := range n {

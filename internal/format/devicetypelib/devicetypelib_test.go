@@ -3,6 +3,8 @@ package devicetypelib
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -24,7 +27,7 @@ import (
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source/sourcetest"
 )
 
-var update = flag.Bool("update", false, "rewrite testdata/library.golden.json from what Read makes of testdata/library")
+var update = flag.Bool("update", false, "rewrite testdata/library.golden.json from what Read makes of testdata/library, and add the format's version to testdata/versions.json")
 
 // TestReadLibrary reads the files copied from devicetype-library and checks
 // the result against testdata/library.golden.json: every definition, field
@@ -56,6 +59,68 @@ func TestReadLibrary(t *testing.T) {
 	}
 	if res.Files != 20 || res.Invalid != 0 {
 		t.Errorf("read %d files, %d invalid; want 20 and none", res.Files, res.Invalid)
+	}
+}
+
+// TestVersion holds Format.Version to what Read gives for the files copied
+// from devicetype-library, as TrueUp keeps it: testdata/versions.json gives
+// each version the SHA-256 of every definition as EncodeDefinition writes
+// it, and every problem. When what Read gives changes, the version must
+// change too, since a database keeps the definitions an older version read
+// until the version changes. -update adds the current version, but never
+// changes one already there.
+func TestVersion(t *testing.T) {
+	t.Parallel()
+	snap := sourcetest.Snapshot(t, "lib", os.DirFS("testdata/library"))
+	res, err := Format{}.Read(t.Context(), snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.New()
+	for _, d := range res.Definitions {
+		data, err := format.EncodeDefinition(specs, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Write(append(data, '\n'))
+	}
+	problems, err := json.Marshal(struct {
+		Problems       []format.Problem
+		Files, Invalid int
+	}{res.Problems, res.Files, res.Invalid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Write(problems)
+	got := "sha256:" + hex.EncodeToString(h.Sum(nil))
+
+	const file = "testdata/versions.json"
+	versions := map[string]string{}
+	data, err := os.ReadFile(file)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err == nil {
+		if err := json.Unmarshal(data, &versions); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+	}
+	version := strconv.Itoa(Format{}.Version())
+	want, known := versions[version]
+	switch {
+	case known && want != got:
+		t.Errorf("what Read gives for testdata/library has changed, but Format.Version is still %s: raise it, and run go test -update", version)
+	case !known && *update:
+		versions[version] = got
+		data, err := json.MarshalIndent(versions, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, append(data, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	case !known:
+		t.Errorf("%s has no version %s: run go test -update", file, version)
 	}
 }
 

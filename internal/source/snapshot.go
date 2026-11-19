@@ -133,7 +133,8 @@ func newSnapshot(ctx context.Context, spec Spec, content Content, limits walkLim
 
 // ReadFile returns the content of one of the snapshot's files. It refuses a
 // path that isn't among Files, and content that no longer matches the
-// file's size and digest.
+// file's size and digest. An error reading a file that is among Files is a
+// *ReadError.
 func (s *Snapshot) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	file, ok := s.byPath[path]
 	if !ok {
@@ -142,14 +143,23 @@ func (s *Snapshot) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Grow(int(file.Size)) // at most max_file_size, which is at most 64 MiB
 	if _, err := s.copy(ctx, &buf, path, file.id); err != nil {
-		return nil, err
+		return nil, &ReadError{Err: err}
 	}
 	sum := sha256.Sum256(buf.Bytes())
 	if int64(buf.Len()) != file.Size || "sha256:"+hex.EncodeToString(sum[:]) != file.Digest {
-		return nil, fmt.Errorf("file %s of source %s changed in the cache since it was listed", quote(path), s.Source)
+		return nil, &ReadError{Err: fmt.Errorf("file %s of source %s changed in the cache since it was listed", quote(path), s.Source)}
 	}
 	return buf.Bytes(), nil
 }
+
+// ReadError is an error reading a file the snapshot lists, such as an I/O
+// error, or content changed since it was listed: a fault of where the
+// snapshot's content is kept, such as this host's cache, not of the
+// version's files, which were read once already to list them.
+type ReadError struct{ Err error }
+
+func (e *ReadError) Error() string { return e.Err.Error() }
+func (e *ReadError) Unwrap() error { return e.Err }
 
 // Close releases what the snapshot holds open.
 func (s *Snapshot) Close() error {

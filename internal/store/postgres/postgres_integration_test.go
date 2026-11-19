@@ -236,7 +236,10 @@ func TestMigrations(t *testing.T) {
 	}
 
 	pool := srv.Pool(t, database)
-	want := []string{"comparisons", "goose_db_version", "snapshot_files", "snapshot_skipped", "snapshots", "sources"}
+	want := []string{
+		"comparisons", "definition_loads", "definition_problems", "definitions", "goose_db_version",
+		"snapshot_files", "snapshot_skipped", "snapshots", "sources",
+	}
 	if got := tables(t, pool, Schema); !slices.Equal(got, want) {
 		t.Errorf("tables in %s = %v, want %v", Schema, got, want)
 	}
@@ -264,6 +267,28 @@ func TestNewerSchemaRefused(t *testing.T) {
 	if migrated.VersionBefore != newer || len(migrated.Applied) != 0 {
 		t.Errorf("migrated = %+v, want version %d found and nothing applied", migrated, newer)
 	}
+}
+
+func TestDefinitionsMigrationKeepsData(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+	files, after := storetest.MigrationsUpTo(t, migrationFiles, 2)
+	before, _, err := open(t.Context(), Options{URL: url}, files, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := storetest.FillForMigration(t, before)
+	closeStore(t, before)
+	s, migrated, err := Open(t.Context(), Options{URL: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	if diff := cmp.Diff(after, migrated.Applied); diff != "" {
+		t.Errorf("applied (-want +got):\n%s", diff)
+	}
+	check(t, s)
 }
 
 func TestFailedMigration(t *testing.T) {
@@ -1282,14 +1307,14 @@ func TestRecordComparisonsSeesAFetchItWaitedFor(t *testing.T) {
 	}
 
 	// A comparison of v1 is recorded meanwhile, and waits for the fetch.
-	k := store.ComparisonKey{ObjectType: "dcim.devicetype", Path: "a.yaml", Identity: "{}"}
+	k := store.DefinitionKey{ObjectType: "dcim.devicetype", Path: "a.yaml", Identity: "{}"}
 	done := make(chan error, 1)
 	go func() {
 		done <- s.RecordComparisons(context.Background(), store.ComparisonRun{
 			Source: "lib", SourceVersion: "v1", ComparedAt: time.Now(),
 			NetBoxURL: "https://netbox.example.com", NetBoxVersion: "4.7.2",
-			Defined:     []store.ComparisonKey{k},
-			Comparisons: []store.Comparison{{ComparisonKey: k, Outcome: "absent", Result: []byte("{}")}},
+			Defined:     []store.DefinitionKey{k},
+			Comparisons: []store.Comparison{{DefinitionKey: k, Outcome: "absent", Result: []byte("{}")}},
 		})
 	}()
 	deadline := time.Now().Add(10 * time.Second)

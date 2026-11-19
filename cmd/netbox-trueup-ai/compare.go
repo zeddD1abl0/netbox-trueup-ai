@@ -45,6 +45,12 @@ with their console, power, interface, port and bay templates, and each front
 port's mappings to rear ports. Inventory items, which NetBox has deprecated,
 aren't compared.
 
+The definitions are read from TrueUp's database, where "source fetch" loads
+each version it fetches. A version the database holds nothing of, or what
+another release of TrueUp or other settings of the source read, is loaded
+first, which takes a few seconds for devicetype-library, after waiting for
+another process's fetch of the source, if one is running.
+
 Each definition is matched to NetBox's objects by NetBox's own uniqueness
 rules, exactly, case included: a manufacturer's name and slug, and a device
 type's manufacturer and model, and manufacturer and slug. Its outcome is:
@@ -206,23 +212,19 @@ type compareSourceJSON struct {
 // summary says what went wrong, for the error after the result.
 func (r compareJSON) summary() string {
 	var failed []string
-	invalid := 0
+	invalid, fileless := 0, 0
 	for _, s := range r.Sources {
 		if s.Error != nil {
 			failed = append(failed, s.Name)
 		}
 		invalid += s.InvalidFiles
+		fileless += filelessErrors(s.Problems)
 	}
 	var parts []string
 	if len(failed) > 0 {
 		parts = append(parts, fmt.Sprintf("%d of the %d sources couldn't be read or recorded: %s", len(failed), len(r.Sources), strings.Join(failed, ", ")))
 	}
-	switch {
-	case invalid == 1:
-		parts = append(parts, "1 file is invalid")
-	case invalid > 1:
-		parts = append(parts, fmt.Sprintf("%d files are invalid", invalid))
-	}
+	parts = append(parts, problemSummary(invalid, fileless)...)
 	if len(r.unknown) > 0 {
 		quoted := make([]string, len(r.unknown))
 		for i, name := range r.unknown {
@@ -238,9 +240,9 @@ type sourceCompared struct {
 	row *compareSourceJSON
 	// defined are the keys of all the source's definitions, chosen the
 	// definitions compared, and chosenKeys their keys.
-	defined    []store.ComparisonKey
+	defined    []store.DefinitionKey
 	chosen     []compare.Definition
-	chosenKeys []store.ComparisonKey
+	chosenKeys []store.DefinitionKey
 }
 
 // runCompare opens the database, connects to NetBox, fetches the sources if
@@ -274,11 +276,7 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 		if err != nil {
 			return compareJSON{}, err
 		}
-		for _, s := range fetched.Sources {
-			if s.Error != nil {
-				fetchErrors[s.Name] = *s.Error
-			}
-		}
+		fetchErrors = fetchProblems(fetched)
 	}
 	return a.compareSources(ctx, cfg, db, c, sources, fetchErrors, manufacturers, forText)
 }
@@ -294,7 +292,6 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	for _, name := range manufacturers {
 		chosen[name] = true
 	}
-	kinds := a.sourceKinds(cachePath(cfg))
 	result := compareJSON{OK: true, Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}}
 	var compared []sourceCompared
 	named := map[string]bool{}
@@ -302,23 +299,25 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		row := &compareSourceJSON{Name: s.Name, Format: s.Format, Problems: []problemJSON{}}
 		sc := sourceCompared{row: row}
 		if msg, ok := fetchErrors[s.Name]; ok {
-			a.failSource(row, "the fetch failed: "+msg)
-		} else if read, err := a.readSource(ctx, kinds, s); err != nil {
+			a.failSource(row, msg)
+		} else if read, err := a.readLoaded(ctx, db, cfg, s, ""); err != nil {
 			if ctx.Err() != nil {
 				return compareJSON{}, fmt.Errorf("interrupted while reading source %s: %w", s.Name, ctx.Err())
+			}
+			if _, ok := errors.AsType[sourceProblem](err); !ok {
+				return compareJSON{}, err
 			}
 			a.failSource(row, err.Error())
 		} else {
 			res := read.result
 			row.Ref, row.Version = &read.ref, &read.version
 			row.Files, row.InvalidFiles, row.Definitions = res.Files, res.Invalid, len(res.Definitions)
-			row.OK = res.Invalid == 0
+			row.OK = readCleanly(res)
 			row.Problems = problemsOf(res.Problems)
-			for _, d := range res.Definitions {
-				k, err := comparisonKey(d)
-				if err != nil {
-					return compareJSON{}, fmt.Errorf("source %s: %w", s.Name, err)
-				}
+			for i, d := range res.Definitions {
+				// The key the database holds the definition by, so that
+				// its comparison is recorded by the same key.
+				k := read.keys[i]
 				sc.defined = append(sc.defined, k)
 				name, ok := manufacturerName(d)
 				if ok {
@@ -507,18 +506,10 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, o
 	}
 	for i, o := range outcomes {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{
-			ComparisonKey: sc.chosenKeys[i], Outcome: string(o.outcome), NetBoxID: o.netboxID, Differences: o.differences, Result: written[i],
+			DefinitionKey: sc.chosenKeys[i], Outcome: string(o.outcome), NetBoxID: o.netboxID, Differences: o.differences, Result: written[i],
 		})
 	}
 	return db.RecordComparisons(ctx, rec)
-}
-
-func comparisonKey(d format.Definition) (store.ComparisonKey, error) {
-	identity, err := json.Marshal(d.Identity)
-	if err != nil {
-		return store.ComparisonKey{}, fmt.Errorf("write the identity of a %s: %w", d.Object.Type, err)
-	}
-	return store.ComparisonKey{ObjectType: d.Object.Type, Path: d.Path, Identity: string(identity)}, nil
 }
 
 // manufacturerName returns the name of the manufacturer a definition is, or
