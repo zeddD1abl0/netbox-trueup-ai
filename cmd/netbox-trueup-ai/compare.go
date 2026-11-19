@@ -392,14 +392,19 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	// A name nothing defines, such as a typing mistake, leaves the
 	// comparison short of what was asked for, so the run isn't OK.
 	invalid := slices.ContainsFunc(compared, func(sc sourceCompared) bool { return sc.row.InvalidFiles > 0 })
-	for _, msg := range sel.choose(specs, compared) {
-		a.logger.Warn(msg)
+	for _, u := range sel.choose(specs, compared) {
+		if u.flag == "manufacturer" {
+			a.logger.Warn("no source read defines the manufacturer", "manufacturer", u.name)
+		} else {
+			a.logger.Warn("no source read defines a device type with the model", "model", u.name, "manufacturers", u.of)
+		}
+		msg := u.message()
+		result.unknown = append(result.unknown, msg)
 		if invalid {
 			msg += "; some files are invalid, and one of them may"
 		}
 		result.Warnings = append(result.Warnings, warningJSON{Message: msg})
 		result.OK = false
-		result.unknown = append(result.unknown, msg)
 	}
 
 	// NetBox's objects that stand on their own, which the definitions
@@ -560,8 +565,8 @@ func (a *app) readSource(ctx context.Context, db store.Store, cfg *config.Config
 
 // choose chooses the definitions of each source to compare, by their index
 // in its rows: every one, by default, for matching with NetBox first, and
-// with --all; or what --manufacturer and --model name. It returns a
-// warning for each name given that no source read defines.
+// with --all; or what --manufacturer and --model name. It returns
+// each name given that no source read defines.
 //
 // A selection compares the manufacturers that --manufacturer names, the
 // device types of those manufacturers, or of any, with the models --model
@@ -569,7 +574,7 @@ func (a *app) readSource(ctx context.Context, db store.Store, cfg *config.Config
 // import of them needs, and as their comparisons say what their
 // manufacturers' are. Names count as NetBox would store them: without
 // white space at either end, as the specs normalize them.
-func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared) []string {
+func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared) []unknownName {
 	if sel.scope() != scopeSelection {
 		for j := range sources {
 			sc := &sources[j]
@@ -619,25 +624,43 @@ func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared
 			}
 		}
 	}
-	var unknown []string
-	for _, m := range slices.Sorted(maps.Keys(manufacturers)) {
+	var unknown []unknownName
+	of := slices.Sorted(maps.Keys(manufacturers))
+	for _, m := range of {
 		if !named[m] {
-			unknown = append(unknown, "no source read defines the manufacturer "+strconv.Quote(m))
+			unknown = append(unknown, unknownName{flag: "manufacturer", name: m})
 		}
-	}
-	var of string
-	switch quoted := quoteAll(slices.Sorted(maps.Keys(manufacturers))); {
-	case len(quoted) == 1:
-		of = " of the manufacturer " + quoted[0]
-	case len(quoted) > 1:
-		of = " of any of the manufacturers " + strings.Join(quoted, ", ")
 	}
 	for _, m := range slices.Sorted(maps.Keys(models)) {
 		if !found[m] {
-			unknown = append(unknown, "no source read defines a device type with the model "+strconv.Quote(m)+of)
+			unknown = append(unknown, unknownName{flag: "model", name: m, of: of})
 		}
 	}
 	return unknown
+}
+
+// unknownName is a name given to --manufacturer or --model, as NetBox would
+// store it, that no source read defines.
+type unknownName struct {
+	// flag is manufacturer or model, and of, for a model, the
+	// manufacturers --manufacturer names, sorted.
+	flag, name string
+	of         []string
+}
+
+func (u unknownName) message() string {
+	if u.flag == "manufacturer" {
+		return "no source read defines the manufacturer " + strconv.Quote(u.name)
+	}
+	msg := "no source read defines a device type with the model " + strconv.Quote(u.name)
+	switch len(u.of) {
+	case 0:
+	case 1:
+		msg += " of the manufacturer " + format.Quote(u.of[0])
+	default:
+		msg += " of any of the manufacturers " + format.ListQuoted(u.of)
+	}
+	return msg
 }
 
 // normalizer returns a function that gives text as NetBox would store it in
@@ -654,14 +677,6 @@ func normalizer(specs []*model.Spec, typ, field string) func(string) string {
 		v, _ := f.Normalize(model.String(text)).(model.String)
 		return string(v)
 	}
-}
-
-func quoteAll(names []string) []string {
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = strconv.Quote(n)
-	}
-	return quoted
 }
 
 // readChosen reads the definitions chosen of a source whole. They must be

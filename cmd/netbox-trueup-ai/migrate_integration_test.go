@@ -19,7 +19,7 @@ func TestMigratePostgreSQL(t *testing.T) {
 	location := "postgres://127.0.0.1:" + pg.Port + "/" + database
 
 	r := runCLI(t, nil, env, "migrate")
-	want := "Database:  PostgreSQL, " + location + "\nSchema:    version 3, was 0\nApplied:   00001_sources.sql\n           00002_comparisons.sql\n           00003_definitions.sql\n"
+	want := "Database:  PostgreSQL, " + location + "\nSchema:    version 4, was 0\nApplied:   00001_sources.sql\n           00002_comparisons.sql\n           00003_definitions.sql\n           00004_comparisons_by_definition.sql\n"
 	if r.code != exitOK || r.stdout != want {
 		t.Errorf("migrate: exit code %d, stdout %q, want %q\nstderr: %s", r.code, r.stdout, want, r.stderr)
 	}
@@ -35,7 +35,7 @@ func TestMigratePostgreSQL(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
 		t.Fatalf("migrate -o json printed %q: %v", r.stdout, err)
 	}
-	wantJSON := migrateJSON{Engine: "postgres", Location: location, VersionBefore: 3, Version: 3, Applied: []migrationJSON{}}
+	wantJSON := migrateJSON{Engine: "postgres", Location: location, VersionBefore: 4, Version: 4, Applied: []migrationJSON{}}
 	if diff := cmp.Diff(wantJSON, got); diff != "" {
 		t.Errorf("migrate -o json (-want +got):\n%s", diff)
 	}

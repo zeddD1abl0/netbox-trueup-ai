@@ -128,7 +128,7 @@ func TestCompareScopes(t *testing.T) {
 			"a model of none of the manufacturers",
 			[]string{"--manufacturer", "Netgear", "--manufacturer", "Huawei", "--model", "GS510TLP"},
 			[]string{"candidate Huawei 0", "candidate Netgear 0"},
-			`no source read defines a device type with the model "GS510TLP" of any of the manufacturers "Huawei", "Netgear"`,
+			`no source read defines a device type with the model "GS510TLP" of any of the manufacturers "Huawei" and "Netgear"`,
 		},
 		{"a manufacturer nothing defines", []string{"--manufacturer", "netgear"}, nil, `no source read defines the manufacturer "netgear"`},
 	} {
@@ -144,6 +144,12 @@ func TestCompareScopes(t *testing.T) {
 		if r.code != exitOK || strings.Contains(r.stdout, "NetBox hasn't got") {
 			t.Errorf("compare %v: exit code %d, and says what NetBox hasn't got:\n%s", args, r.code, r.stdout)
 		}
+	}
+
+	// A name nothing defines is logged with its flag's key.
+	r := runCLIApp(t, nil, configure, env, "compare", "--model", "gs105", "--manufacturer", "Netgear")
+	if !strings.Contains(r.stderr, `msg="no source read defines a device type with the model" model=gs105 manufacturers=[Netgear]`) {
+		t.Errorf("compare --model gs105 logged:\n%s", r.stderr)
 	}
 
 	// --all with a selection is a mistake on the command line.

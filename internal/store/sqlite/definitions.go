@@ -200,6 +200,9 @@ func (s *Store) UniqueValues(ctx context.Context, source string) (store.SourceDe
 // DefinitionsByID returns those of a source's recorded definitions with the
 // IDs given, with the status of its loads, in one read-only transaction.
 func (s *Store) DefinitionsByID(ctx context.Context, source string, ids []int64) (store.SourceDefinitions, error) {
+	if ids == nil {
+		ids = []int64{}
+	}
 	list, err := json.Marshal(ids)
 	if err != nil {
 		return store.SourceDefinitions{}, fmt.Errorf("read the definitions of source %s: %w", source, err)

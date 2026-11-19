@@ -889,6 +889,12 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	if !strings.Contains(r.stdout, `no source read defines the manufacturer "Nobody"; some files are invalid, and one of them may`) {
 		t.Errorf("compare --manufacturer with invalid files:\n%s", r.stdout)
 	}
+	// The error after the result says so once: the warning's last clause
+	// repeats what it says of the invalid files.
+	if !strings.Contains(r.stderr, `manufacturer=Nobody`) || strings.Contains(r.stderr, "one of them may") ||
+		!strings.HasSuffix(r.stderr, `1 file is invalid; no source read defines the manufacturer "Nobody"`+"\n") {
+		t.Errorf("compare --manufacturer with invalid files: stderr %q", r.stderr)
+	}
 }
 
 // TestCompareJSONIsWrittenAsWriteJSONWould checks that writing compare's
