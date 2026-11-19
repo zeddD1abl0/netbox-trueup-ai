@@ -70,6 +70,10 @@ type Format struct{}
 // Name returns devicetype-library.
 func (Format) Name() string { return config.FormatDeviceTypeLibrary }
 
+// Version is the version of how the format reads files. TestVersion fails
+// when what Read gives for testdata/library changes and it doesn't.
+func (Format) Version() int { return 1 }
+
 // Needs returns the library's JSON schemas, which validate its files.
 func (Format) Needs() []string { return []string{schemaDir + "/*.json"} }
 

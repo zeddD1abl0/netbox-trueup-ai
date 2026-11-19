@@ -6,14 +6,19 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source/sourcetest"
 )
 
 // FuzzReadDeviceType checks that no file makes the adapter panic, or give a
-// definition that NetBox's rules would refuse, with the library's schemas or
-// without them, and that every problem says where it is and stays short.
+// definition that NetBox's rules would refuse, or that doesn't read back
+// from its JSON exactly as it was, with the library's schemas or without
+// them, and that every problem says where it is and stays short.
 func FuzzReadDeviceType(f *testing.F) {
 	seeds, err := filepath.Glob("testdata/library/device-types/*/*")
 	if err != nil {
@@ -70,7 +75,8 @@ func FuzzReadDeviceType(f *testing.F) {
 
 // checkRead reads a file and checks that each problem says where it is and
 // stays short, and that a valid file gives a definition NetBox's rules
-// would take. It reports whether the file is valid.
+// would take, which reads back from its JSON as it was. It reports whether
+// the file is valid.
 func checkRead(t *testing.T, r *reader, data []byte) bool {
 	t.Helper()
 	const p = "device-types/Acme/box.yaml"
@@ -108,7 +114,29 @@ func checkRead(t *testing.T, r *reader, data []byte) bool {
 			t.Fatalf("a valid file has no %s", name)
 		}
 	}
+	checkRoundTrip(t, def)
 	return true
+}
+
+// specs are the specs a definition's JSON is read back through.
+var specs = dcim.Specs()
+
+// checkRoundTrip checks that a definition reads back from its JSON exactly
+// as it was, as TrueUp's database keeps it: not only Equal, but with the
+// same kinds of value, children in the same order.
+func checkRoundTrip(t *testing.T, def format.Definition) {
+	t.Helper()
+	data, err := format.EncodeDefinition(specs, def)
+	if err != nil {
+		t.Fatalf("a valid file's definition: %v", err)
+	}
+	back, err := format.UnmarshalDefinition(specs, data)
+	if err != nil {
+		t.Fatalf("a valid file's definition: %v", err)
+	}
+	if diff := cmp.Diff(def, back, cmp.AllowUnexported(model.Decimal{}, model.Date{}), cmpopts.EquateEmpty()); diff != "" {
+		t.Fatalf("a valid file's definition reads back from its JSON otherwise (-read +back):\n%s", diff)
+	}
 }
 
 // checkChildren checks that the children a valid file gives in a collection

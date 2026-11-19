@@ -101,11 +101,16 @@ func TestSourceFetchText(t *testing.T) {
 	if r.code != exitOK {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
-	want := `SOURCE  REF     VERSION                                   FILES  SKIPPED
-lib     master  ` + commit + `  2      1
+	// The repository isn't devicetype-library, whose schemas it lacks, so
+	// the version fetched can't be read, but the fetch succeeded.
+	want := `SOURCE  REF     VERSION                                   FILES  SKIPPED  DEFINITIONS  INVALID
+lib     master  ` + commit + `  2      1        -            -
 
 Skipped files (--output json lists them all):
   lib: 1 larger than max_file_size, such as elevation-images/mx204.png
+
+Errors:
+  lib: fetched, but its files couldn't be read: ` + noSchemas + `
 `
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
 		t.Errorf("source fetch (-want +got):\n%s", diff)
@@ -140,16 +145,19 @@ func TestSourceFetchJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
 		t.Fatalf("source fetch -o json printed %q: %v", r.stdout, err)
 	}
-	ref, files, sshErr := "master", 1, "an ssh repository needs credentials, which TrueUp doesn't support yet: use the repository's https URL"
+	ref, files, sshErr, loadErr := "master", 1, "an ssh repository needs credentials, which TrueUp doesn't support yet: use the repository's https URL", noSchemas
 	want := fetchJSON{Sources: []fetchSourceJSON{
-		{Name: "lib", Kind: "git", URL: repoURL, Ref: &ref, OK: true, Version: &commit, Files: &files, Skipped: []skippedJSON{}},
+		{Name: "lib", Kind: "git", URL: repoURL, Ref: &ref, OK: true, Version: &commit, Files: &files, Skipped: []skippedJSON{}, LoadError: &loadErr},
 		{Name: "private", Kind: "git", URL: "git@git.example.com:defs.git", Skipped: []skippedJSON{}, Error: &sshErr},
 	}}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("source fetch -o json (-want +got):\n%s", diff)
 	}
 	// The field names are public interface.
-	for _, field := range []string{`"ok": false`, `"sources"`, `"name"`, `"kind"`, `"url"`, `"ref": null`, `"version": null`, `"files": null`, `"skipped": []`, `"error"`} {
+	for _, field := range []string{
+		`"ok": false`, `"sources"`, `"name"`, `"kind"`, `"url"`, `"ref": null`, `"version": null`, `"files": null`, `"skipped": []`,
+		`"definitions": null`, `"invalid_files": null`, `"error"`, `"load_error"`,
+	} {
 		if !strings.Contains(r.stdout, field) {
 			t.Errorf("source fetch -o json has no %s:\n%s", field, r.stdout)
 		}
@@ -180,6 +188,71 @@ func TestSourceFetchJSON(t *testing.T) {
 	}
 }
 
+// noSchemas is why a repository that isn't devicetype-library can't be
+// read as it.
+const noSchemas = "format devicetype-library: the source has no schema/devicetype.json, devicetype-library's schema for device types, " +
+	"which TrueUp validates its files against: check that the source is devicetype-library, and that its exclude patterns leave schema/ in"
+
+func TestSourceFetchLoadsDefinitions(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := libraryRepo(t, map[string]string{"device-types/Acme/bad.yaml": "manufacturer: Acme\nmodel: [\n"})
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	r := runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	// Three device types and their three manufacturers, Huawei, Netgear
+	// and NETGEAR, and one invalid file, which only list reports, as it
+	// does the warning that both of Netgear's names would get one slug.
+	want := `SOURCE  REF     VERSION                                   FILES  SKIPPED  DEFINITIONS  INVALID
+lib     master  ` + commit + `  10     0        6            1
+`
+	if diff := cmp.Diff(want, r.stdout); diff != "" {
+		t.Errorf("source fetch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(r.stderr, `msg="loaded the source's definitions into the database" source=lib version=`+commit+` definitions=6`) {
+		t.Errorf("stderr doesn't log the load:\n%s", r.stderr)
+	}
+	loaded := storedDefinitions(t, dataDir)
+	if loaded.Loaded.Version != commit || loaded.Loaded.Reader != "devicetype-library/1 (TrueUp dev)" || loaded.State() != store.LoadReady ||
+		len(loaded.Definitions) != 6 || len(loaded.Problems) != 2 {
+		t.Errorf("the database holds version %q read by %q, %s, with %d definitions and %d problems; want %s, devicetype-library/1 (TrueUp dev), ready, 6 and 2",
+			loaded.Loaded.Version, loaded.Loaded.Reader, loaded.State(), len(loaded.Definitions), len(loaded.Problems), commit)
+	}
+
+	// Fetched again, the version is the same, so it isn't loaded again.
+	r = runCLIApp(t, nil, trust(pool), env, "source", "fetch")
+	if r.code != exitOK || r.stdout != want {
+		t.Errorf("fetching again: exit code %d, stdout %q; want 0 and %q", r.code, r.stdout, want)
+	}
+	if strings.Contains(r.stderr, "loaded the source's definitions") {
+		t.Errorf("fetching the same version again loaded it again:\n%s", r.stderr)
+	}
+	if again := storedDefinitions(t, dataDir); !again.LoadedAt.Equal(loaded.LoadedAt) {
+		t.Errorf("fetching the same version again loaded it at %v, after %v", again.LoadedAt, loaded.LoadedAt)
+	}
+}
+
+// storedDefinitions returns what the database in dataDir holds of the
+// definitions of the source lib.
+func storedDefinitions(t *testing.T, dataDir string) store.SourceDefinitions {
+	t.Helper()
+	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	loaded, err := s.Definitions(t.Context(), "lib", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
 // recordOld records a fetch of a source named old in the database in
 // dataDir.
 func recordOld(t *testing.T, dataDir string) {
@@ -191,18 +264,22 @@ func recordOld(t *testing.T, dataDir string) {
 // database in dataDir.
 func recordFetch(t *testing.T, dataDir, name string, at time.Time) {
 	t.Helper()
-	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
-	if err != nil {
+	if err := recordFetchErr(t, dataDir, name, at); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// recordFetchErr is recordFetch for goroutines other than the test's.
+func recordFetchErr(t *testing.T, dataDir, name string, at time.Time) error {
+	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
+	if err != nil {
+		return err
+	}
 	defer func() { _ = s.Close() }()
-	err = s.RecordFetch(t.Context(), store.Fetch{
+	return s.RecordFetch(t.Context(), store.Fetch{
 		Source:    store.SourceConfig{Name: name, Kind: "git", URL: "https://git.example.com/" + name + ".git"},
 		FetchedAt: at, Version: "abc",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestSourceFetchAfterTheClockWentBack(t *testing.T) {

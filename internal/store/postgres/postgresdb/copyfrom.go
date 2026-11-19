@@ -53,6 +53,46 @@ func (q *Queries) InsertComparisons(ctx context.Context, arg []InsertComparisons
 	return q.db.CopyFrom(ctx, []string{"comparisons"}, []string{"source", "object_type", "path", "identity", "source_version", "compared_at", "netbox_url", "netbox_version", "outcome", "netbox_id", "differences", "result"}, &iteratorForInsertComparisons{rows: arg})
 }
 
+// iteratorForInsertDefinitionProblems implements pgx.CopyFromSource.
+type iteratorForInsertDefinitionProblems struct {
+	rows                 []InsertDefinitionProblemsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForInsertDefinitionProblems) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForInsertDefinitionProblems) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].Source,
+		r.rows[0].Seq,
+		r.rows[0].Severity,
+		r.rows[0].Path,
+		r.rows[0].LineNumber,
+		r.rows[0].ColumnNumber,
+		r.rows[0].Field,
+		r.rows[0].Reason,
+	}, nil
+}
+
+func (r iteratorForInsertDefinitionProblems) Err() error {
+	return nil
+}
+
+// Adds a source's problems, all in one COPY.
+func (q *Queries) InsertDefinitionProblems(ctx context.Context, arg []InsertDefinitionProblemsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"definition_problems"}, []string{"source", "seq", "severity", "path", "line_number", "column_number", "field", "reason"}, &iteratorForInsertDefinitionProblems{rows: arg})
+}
+
 // iteratorForInsertSnapshotFiles implements pgx.CopyFromSource.
 type iteratorForInsertSnapshotFiles struct {
 	rows                 []InsertSnapshotFilesParams

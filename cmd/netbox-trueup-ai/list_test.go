@@ -3,14 +3,20 @@ package main
 import (
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
 
 // libraryFiles returns files copied from devicetype-library, with the
@@ -106,14 +112,14 @@ Warnings:
 // those whose manufacturer it does.
 func TestListTextKeepsWhatNoManufacturerHolds(t *testing.T) {
 	t.Parallel()
-	deviceType := func(manufacturer, name string) definitionJSON {
-		return definitionJSON{Type: "dcim.devicetype", Identity: map[string]model.Value{
+	deviceType := func(manufacturer, name string) format.Definition {
+		return format.Definition{Object: model.Object{Type: "dcim.devicetype"}, Identity: map[string]model.Value{
 			"manufacturer": model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"name": model.String(manufacturer)}},
 			"model":        model.String(name),
 		}}
 	}
-	got := definitionLines(listSourceJSON{Name: "lib", Definitions: []definitionJSON{
-		{Type: "dcim.manufacturer", Identity: map[string]model.Value{"name": model.String("Acme")}},
+	got := definitionLines(listSourceJSON{Name: "lib", defs: []format.Definition{
+		{Object: model.Object{Type: "dcim.manufacturer"}, Identity: map[string]model.Value{"name": model.String("Acme")}},
 		deviceType("Acme", "Box 1"),
 		deviceType("Zeta", "Box 2"),
 	}})
@@ -299,6 +305,261 @@ func TestListEscapes(t *testing.T) {
 	for _, escaped := range []string{`"Ac\x1b[31mme"`, `"Box\u202e1"`, `"Box\u20283"`, `["extra\a"]: isn't a key the schema allows here`} {
 		if !strings.Contains(r.stdout, escaped) {
 			t.Errorf("list doesn't show %s:\n%s", escaped, r.stdout)
+		}
+	}
+}
+
+func TestListSearch(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := libraryRepo(t, nil)
+	env, _ := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	fetched(t, pool, env)
+
+	// The model, ignoring case, and the manufacturer, whose own definition
+	// matches too; not the slug.
+	r := runCLIApp(t, nil, trust(pool), env, "list", "--search", " gs1 ")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	want := `SOURCE  REF     VERSION                                   FILES  INVALID  WARNINGS  MANUFACTURERS  DEVICE TYPES
+lib     master  ` + commit + `  3      0        1         0              1
+
+SOURCE  TYPE         MANUFACTURER  MODEL  SLUG           FROM
+lib     device type  Netgear       GS105  netgear-gs105  device-types/Netgear/GS105.yaml
+
+Warnings:
+  lib: manufacturers "NETGEAR" and "Netgear" would both get the slug "netgear", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source
+`
+	if diff := cmp.Diff(want, r.stdout); diff != "" {
+		t.Errorf("list --search gs1 (-want +got):\n%s", diff)
+	}
+
+	r = runCLIApp(t, nil, trust(pool), env, "list", "--search", "netgear", "-o", "json")
+	if r.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
+	}
+	var got listResult
+	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	// In the format's order: manufacturers by name, then device types by
+	// path.
+	var found []string
+	for _, d := range got.Sources[0].Definitions {
+		where := "derived"
+		if d.Path != nil {
+			where = *d.Path
+		}
+		found = append(found, fmt.Sprintf("%s %v %s", d.Type, d.Identity, where))
+	}
+	wantFound := []string{
+		"dcim.manufacturer map[name:NETGEAR] derived",
+		"dcim.manufacturer map[name:Netgear] derived",
+		"dcim.devicetype map[manufacturer:map[name:Netgear] model:GS105] device-types/Netgear/GS105.yaml",
+		"dcim.devicetype map[manufacturer:map[name:NETGEAR] model:GS510TLP] device-types/Netgear/GS510TLP.yml",
+	}
+	if diff := cmp.Diff(wantFound, found); diff != "" {
+		t.Errorf("list --search netgear -o json (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(r.stdout, `"search": "netgear"`) || len(got.Sources[0].Problems) != 1 {
+		t.Errorf("list --search netgear -o json doesn't give the search and every problem:\n%s", r.stdout)
+	}
+
+	// Nothing found is no problem; text that can't be searched is.
+	if r := runCLIApp(t, nil, trust(pool), env, "list", "--search", "dell-poweredge"); r.code != exitOK || strings.Contains(r.stdout, "device type") {
+		t.Errorf("list --search dell-poweredge: exit code %d\nstdout: %s", r.code, r.stdout)
+	}
+	for _, search := range []string{"", "  ", "a\nb"} {
+		if r := runCLIApp(t, nil, trust(pool), env, "list", "--search", search); r.code != exitUsage {
+			t.Errorf("list --search %q: exit code %d, want %d\nstderr: %s", search, r.code, exitUsage, r.stderr)
+		}
+	}
+}
+
+func TestListReadsTheDatabase(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := libraryRepo(t, nil)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	fetched(t, pool, env)
+	want := runCLIApp(t, nil, trust(pool), env, "list", "-o", "json")
+	if want.code != exitOK {
+		t.Fatalf("exit code = %d\nstderr: %s", want.code, want.stderr)
+	}
+
+	// Once loaded, the definitions are read from the database alone.
+	if err := os.RemoveAll(filepath.Join(dataDir, "cache")); err != nil {
+		t.Fatal(err)
+	}
+	r := runCLIApp(t, nil, trust(pool), env, "list", "-o", "json")
+	if r.code != exitOK || r.stdout != want.stdout {
+		t.Errorf("list without the cache: exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+}
+
+func TestListLoadsWhatTheDatabaseLacks(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, commit := libraryRepo(t, nil)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	fetched(t, pool, env)
+	want := runCLIApp(t, nil, trust(pool), env, "list", "-o", "json")
+	if want.code != exitOK || strings.Contains(want.stderr, "loaded the source's definitions") {
+		t.Fatalf("list after a fetch: exit code %d\nstderr: %s", want.code, want.stderr)
+	}
+	loadedBy := storedDefinitions(t, dataDir).Loaded
+	reader, settings := loadedBy.Reader, loadedBy.Settings
+	broken := func(t *testing.T) store.Definition {
+		t.Helper()
+		key, err := definitionKey(format.Definition{Object: model.Object{Type: "dcim.manufacturer"}, Identity: map[string]model.Value{"name": model.String("Acme")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store.Definition{DefinitionKey: key, Manufacturer: "Acme", JSON: []byte(`{"type":"dcim.manufacturer"}`)}
+	}
+	for _, tt := range []struct {
+		name, reader, settings, log string
+		defs                        []store.Definition
+	}{
+		// What another release's format read is read again, and so is what
+		// other settings of the source chose.
+		{"another reader", "devicetype-library/0", settings, `msg="loaded the source's definitions into the database"`, nil},
+		{"another release", "devicetype-library/1 (TrueUp 0.9.0)", settings, `msg="loaded the source's definitions into the database"`, nil},
+		{"other settings", reader, "sha256:other", `msg="loaded the source's definitions into the database"`, nil},
+		// So is what this release can't read back, which a format whose
+		// version wasn't raised would leave.
+		{
+			"definitions that don't read back", reader, settings,
+			`msg="the database holds definitions of the source that this release can't read back`,
+			[]store.Definition{broken(t)},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recordLoadIn(t, dataDir, store.Load{
+				Source: "lib", Version: commit, Reader: tt.reader, Settings: tt.settings, StartedAt: time.Now(), Definitions: tt.defs,
+			})
+			r := runCLIApp(t, nil, trust(pool), env, "list", "-o", "json")
+			if r.code != exitOK || r.stdout != want.stdout {
+				t.Errorf("exit code %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+			}
+			if !strings.Contains(r.stderr, tt.log) {
+				t.Errorf("stderr doesn't log %s:\n%s", tt.log, r.stderr)
+			}
+			if loaded := storedDefinitions(t, dataDir); loaded.Loaded.Reader != reader || len(loaded.Definitions) != 6 {
+				t.Errorf("the database holds %d definitions read by %q, want 6 read by %s", len(loaded.Definitions), loaded.Loaded.Reader, reader)
+			}
+		})
+	}
+}
+
+func TestListLoadsAgainWhenTheSettingsChange(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := libraryRepo(t, nil)
+	sources := func(extra string) string {
+		return `[{"name":"lib","kind":"git","url":"` + repoURL + `","format":"devicetype-library"` + extra + `}]`
+	}
+	env, dataDir := sourcesEnv(t, sources(""))
+	fetched(t, pool, env)
+	countLoaded := func(env []string) (definitions int, loaded bool) {
+		t.Helper()
+		r := runCLIApp(t, nil, trust(pool), env, "list", "-o", "json")
+		if r.code != exitOK {
+			t.Fatalf("exit code %d\nstderr: %s", r.code, r.stderr)
+		}
+		var got listResult
+		if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+			t.Fatal(err)
+		}
+		return len(got.Sources[0].Definitions), strings.Contains(r.stderr, "loaded the source's definitions")
+	}
+	if n, loaded := countLoaded(env); n != 6 || loaded {
+		t.Errorf("list after a fetch: %d definitions, loaded again: %t; want 6 and false", n, loaded)
+	}
+	// Excluding Huawei's device types, though the version is the same, is
+	// another load, without a fetch; and fetching then loads nothing more.
+	excluded := []string{"TRUEUP_DATA_DIR=" + dataDir, "TRUEUP_SOURCES=" + sources(`,"exclude":["device-types/Huawei"]`)}
+	if n, loaded := countLoaded(excluded); n != 4 || !loaded {
+		t.Errorf("list once Huawei is excluded: %d definitions, loaded again: %t; want 4 and true", n, loaded)
+	}
+	if r := runCLIApp(t, nil, trust(pool), excluded, "source", "fetch"); r.code != exitOK || strings.Contains(r.stderr, "loaded the source's definitions") {
+		t.Errorf("fetching with the settings loaded: exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+	if n, loaded := countLoaded(excluded); n != 4 || loaded {
+		t.Errorf("list again: %d definitions, loaded again: %t; want 4 and false", n, loaded)
+	}
+	if n, loaded := countLoaded(env); n != 6 || !loaded {
+		t.Errorf("list with the settings as they were: %d definitions, loaded again: %t; want 6 and true", n, loaded)
+	}
+}
+
+// recordLoadIn records a load in the database in dataDir.
+func recordLoadIn(t *testing.T, dataDir string, l store.Load) {
+	t.Helper()
+	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.RecordLoad(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAFailedLoadIsTriedAgainByAFetch(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := libraryRepo(t, nil)
+	sources := func(extra string) []string {
+		return []string{"TRUEUP_SOURCES=" + `[{"name":"lib","kind":"git","url":"` + repoURL + `","format":"devicetype-library"` + extra + `}]`}
+	}
+	env, dataDir := sourcesEnv(t, "[]")
+	noSchemas := append(slices.Clone(env[:1]), sources(`,"exclude":["schema"]`)...)
+	fetched(t, pool, noSchemas)
+	first := storedDefinitions(t, dataDir)
+	if first.State() != store.LoadFailed || !strings.Contains(first.Error, "no schema/devicetype.json") {
+		t.Fatalf("after the fetch, the load is %s: %q", first.State(), first.Error)
+	}
+
+	// list reports what the load found, without reading the files again.
+	r := runCLIApp(t, nil, trust(pool), noSchemas, "list")
+	if r.code != exitListProblems || !strings.Contains(r.stdout, "lib: format devicetype-library: the source has no schema/devicetype.json") {
+		t.Errorf("list: exit code %d\nstdout: %s", r.code, r.stdout)
+	}
+	if again := storedDefinitions(t, dataDir); !again.StartedAt.Equal(first.StartedAt) {
+		t.Errorf("list loaded the source again, at %v", again.StartedAt)
+	}
+	// A fetch tries again.
+	fetched(t, pool, noSchemas)
+	if again := storedDefinitions(t, dataDir); !again.StartedAt.After(first.StartedAt) || again.State() != store.LoadFailed {
+		t.Errorf("after another fetch, the load is %s, started at %v, after %v", again.State(), again.StartedAt, first.StartedAt)
+	}
+	// So do other settings, as when the schemas are let in again.
+	withSchemas := append(slices.Clone(env[:1]), sources("")...)
+	if r := runCLIApp(t, nil, trust(pool), withSchemas, "list"); r.code != exitOK {
+		t.Errorf("list with the schemas: exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+}
+
+// A source that isn't OK always gets a reason in the error after the
+// result, even when no file is invalid.
+func TestSummariesSayWhyASourceIsntOK(t *testing.T) {
+	t.Parallel()
+	path := "device-types/Acme/W1.yaml"
+	for _, tt := range []struct {
+		name     string
+		problems []problemJSON
+		invalid  int
+		want     string
+	}{
+		{"an error with no file", []problemJSON{{Severity: "error", Reason: "x"}}, 0, "1 error concerns no one file"},
+		{"two errors with no file", []problemJSON{{Severity: "error", Reason: "x"}, {Severity: "error", Reason: "y"}}, 0, "2 errors concern no one file"},
+		{"an invalid file, and an error with no file", []problemJSON{{Severity: "error", Path: &path, Reason: "x"}, {Severity: "error", Reason: "y"}}, 1, "1 file is invalid; 1 error concerns no one file"},
+		{"a warning with no file", []problemJSON{{Severity: "warning", Reason: "x"}}, 0, ""},
+	} {
+		list := listJSON{Sources: []listSourceJSON{{Name: "lib", InvalidFiles: tt.invalid, Problems: tt.problems}}}
+		if got := list.summary(); got != tt.want {
+			t.Errorf("%s: list's summary = %q, want %q", tt.name, got, tt.want)
+		}
+		compared := compareJSON{Sources: []compareSourceJSON{{Name: "lib", InvalidFiles: tt.invalid, Problems: tt.problems}}}
+		if got := compared.summary(); got != tt.want {
+			t.Errorf("%s: compare's summary = %q, want %q", tt.name, got, tt.want)
 		}
 	}
 }

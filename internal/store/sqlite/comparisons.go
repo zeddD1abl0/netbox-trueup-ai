@@ -40,7 +40,7 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 				return err
 			}
 			for _, k := range keys {
-				if kept[store.ComparisonKey{ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity}] {
+				if kept[store.DefinitionKey{ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity}] {
 					continue
 				}
 				if err := q.DeleteComparison(ctx, sqlitedb.DeleteComparisonParams{
@@ -65,7 +65,7 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 				Differences:   int64(c.Differences),
 				Result:        string(c.Result),
 			}); err != nil {
-				return fmt.Errorf("the comparison of %s: %w", c.ComparisonKey, err)
+				return fmt.Errorf("the comparison of %s: %w", c.DefinitionKey, err)
 			}
 		}
 		return nil
@@ -90,7 +90,7 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 		}
 		out = append(out, store.RecordedComparison{
 			Comparison: store.Comparison{
-				ComparisonKey: store.ComparisonKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
+				DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
 				Outcome:       r.Outcome,
 				NetBoxID:      r.NetboxID.Int64,
 				Differences:   int(r.Differences),

@@ -184,7 +184,10 @@ func TestMigrations(t *testing.T) {
 		t.Errorf("opening a new database (-want +got):\n%s", diff)
 	}
 	tables := query(t, s.db, "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
-	wantTables := []string{"comparisons", "goose_db_version", "snapshot_files", "snapshot_skipped", "snapshots", "sources", "sqlite_sequence"}
+	wantTables := []string{
+		"comparisons", "definition_loads", "definition_problems", "definitions", "goose_db_version",
+		"snapshot_files", "snapshot_skipped", "snapshots", "sources", "sqlite_sequence",
+	}
 	if diff := cmp.Diff(wantTables, tables); diff != "" {
 		t.Errorf("tables (-want +got):\n%s", diff)
 	}
@@ -203,6 +206,27 @@ func TestMigrations(t *testing.T) {
 	if diff := cmp.Diff(want, migrated); diff != "" {
 		t.Errorf("opening it again (-want +got):\n%s", diff)
 	}
+}
+
+func TestDefinitionsMigrationKeepsData(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "trueup.db")
+	files, after := storetest.MigrationsUpTo(t, migrationFiles, 2)
+	before, _, err := open(t.Context(), Options{Path: dbPath}, files, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := storetest.FillForMigration(t, before)
+	closeStore(t, before)
+	s, migrated, err := Open(t.Context(), Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	if diff := cmp.Diff(after, migrated.Applied); diff != "" {
+		t.Errorf("applied (-want +got):\n%s", diff)
+	}
+	check(t, s)
 }
 
 func TestNewerSchemaRefused(t *testing.T) {

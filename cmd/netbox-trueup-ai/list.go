@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,15 +15,15 @@ import (
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
-	"github.com/zeddD1abl0/netbox-trueup-ai/internal/glob"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
-	"github.com/zeddD1abl0/netbox-trueup-ai/internal/source"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 )
 
 func newListCommand(a *app) *cobra.Command {
 	var (
-		out   output
-		fetch bool
+		out    output
+		fetch  bool
+		search string
 	)
 	cmd := &cobra.Command{
 		Use:   "list [source...]",
@@ -31,7 +32,16 @@ func newListCommand(a *app) *cobra.Command {
 objects each one defines, read from the version of the source that was last
 fetched. For devicetype-library, that is its device types, and a manufacturer
 for each name they give, with the slug NetBox's web UI would make from the
-name, which TrueUp uses only to create the manufacturer.
+name, which TrueUp uses only to create the manufacturer. --search lists only
+those whose manufacturer, model or part number holds the text given,
+ignoring case.
+
+The definitions are read from TrueUp's database, where "source fetch" loads
+each version it fetches. A version the database holds nothing of, or what
+another release of TrueUp or other settings of the source read, is loaded
+first, which takes a few seconds for devicetype-library, after waiting for
+another process's fetch of the source, if one is running. A version whose
+load failed reports what it found, until a fetch reads it again.
 
 Files that fail to read are reported with their path, line and reason, and
 skipped: YAML that isn't valid, or that uses what TrueUp doesn't read, such
@@ -40,24 +50,23 @@ the same version of the source; and values NetBox would refuse. Warnings
 point at what TrueUp reads but NetBox may not take as it is, such as two
 manufacturers that would get the same slug.
 
-The source isn't fetched, and nothing is written, unless --fetch is given:
-then each source is fetched first, as "source fetch" fetches it, and the
-fetch is recorded in TrueUp's database. A source whose fetch fails isn't
-listed, even if an earlier version is in the cache: list without --fetch
-lists that.
+The source isn't fetched unless --fetch is given: then each source is
+fetched first, as "source fetch" fetches it. A source whose fetch fails
+isn't listed, even if an earlier version is in the cache: list without
+--fetch lists that.
 
 Exit codes:
   0  Every source was read, and every file in it is valid.
-  1  The command couldn't run, such as when, with --fetch, the data
-     directory can't be written to, or the database can't be opened or
-     written.
-  2  A name given isn't a configured source.
-  3  The configuration is invalid, no sources are configured, or, with
-     --fetch, database.url names a database this release can't use.
-  4  Some sources couldn't be read, such as one never fetched, whose
+  1  The command couldn't run, such as when the data directory can't be
+     written to, or the database can't be opened, read or written.
+  2  A name given isn't a configured source, or --search holds a control
+     character, such as a line break.
+  3  The configuration is invalid, no sources are configured, or
+     database.url names a database this release can't use.
+  4  Some sources couldn't be read, such as one never fetched, or whose
      cache can't be read or, with --fetch, whose fetch failed, or some
-     files are invalid. The result is printed
-     as usual, with each problem.`,
+     files are invalid. The result is printed as usual, with each
+     problem.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := a.loadConfig(cmd)
 			if err != nil {
@@ -67,21 +76,21 @@ Exit codes:
 			if err != nil {
 				return err
 			}
-			fetchErrors := map[string]string{}
-			if fetch {
-				fetched, err := a.fetchSources(cmd.Context(), cfg, sources)
-				if err != nil {
-					return err
+			searching := cmd.Flags().Changed("search")
+			if searching {
+				if search = strings.TrimSpace(search); search == "" {
+					return usageError{errors.New("--search needs some text to look for")}
 				}
-				for _, s := range fetched.Sources {
-					if s.Error != nil {
-						fetchErrors[s.Name] = *s.Error
-					}
+				if _, err := store.PrepareSearch(search); err != nil {
+					return usageError{fmt.Errorf("--search: %w", err)}
 				}
 			}
-			result, err := a.listSources(cmd.Context(), cfg, sources, fetchErrors)
+			result, err := a.runList(cmd.Context(), cfg, sources, fetch, search)
 			if err != nil {
 				return err
+			}
+			if searching {
+				result.Search = &search
 			}
 			if out == outputJSON {
 				err = writeJSON(cmd.OutOrStdout(), result)
@@ -99,13 +108,44 @@ Exit codes:
 	}
 	addOutputFlag(cmd, &out)
 	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does")
+	cmd.Flags().StringVar(&search, "search", "", "list only the definitions whose manufacturer, model or part number holds this text, ignoring case")
 	return cmd
+}
+
+// runList opens the database, fetches the sources if asked, and reads
+// their definitions. It closes the database before it returns, so that
+// nothing is printed if closing it fails.
+func (a *app) runList(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, search string) (_ listJSON, err error) {
+	db, _, err := a.openStore(ctx, cfg)
+	if err != nil {
+		return listJSON{}, err
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	fetchErrors := map[string]string{}
+	if fetch {
+		root, err := cacheRoot(cfg)
+		if err != nil {
+			return listJSON{}, err
+		}
+		fetched, err := a.fetchInto(ctx, db, cfg, root, sources)
+		if err != nil {
+			return listJSON{}, err
+		}
+		fetchErrors = fetchProblems(fetched)
+	}
+	return a.listSources(ctx, db, cfg, sources, fetchErrors, search)
 }
 
 // listJSON is the result of `list`, printed as text or JSON. Its JSON fields
 // are part of the CLI's public interface (ADR 0018).
 type listJSON struct {
-	OK      bool             `json:"ok"` // every source was read, and every file is valid
+	OK bool `json:"ok"` // every source was read, and every file is valid
+	// Search is the text --search looks for, or null.
+	Search  *string          `json:"search"`
 	Sources []listSourceJSON `json:"sources"`
 }
 
@@ -122,33 +162,15 @@ type listSourceJSON struct {
 	Error *string `json:"error"`
 	// Files is how many files were read as definitions, and InvalidFiles
 	// how many of them were skipped with an error.
-	Files        int              `json:"files"`
-	InvalidFiles int              `json:"invalid_files"`
-	Definitions  []definitionJSON `json:"definitions"`
-	Problems     []problemJSON    `json:"problems"`
-}
+	Files        int `json:"files"`
+	InvalidFiles int `json:"invalid_files"`
+	// Definitions are the definitions listed, each as
+	// format.MarshalDefinition writes it.
+	Definitions []json.RawMessage `json:"definitions"`
+	Problems    []problemJSON     `json:"problems"`
 
-type definitionJSON struct {
-	// Type is the object type, such as dcim.devicetype.
-	Type string `json:"type"`
-	// Identity holds the fields that tell the object from others of its
-	// type, such as a device type's manufacturer and model.
-	Identity map[string]model.Value `json:"identity"`
-	// Path is the file that defines the object, or null for one derived
-	// from other files, which DerivedFrom lists.
-	Path        *string  `json:"path"`
-	DerivedFrom []string `json:"derived_from"`
-	// Fields are the fields the definition sets, as NetBox's API writes
-	// them: a reference as the natural key of what it refers to.
-	Fields map[string]model.Value `json:"fields"`
-	// Derived lists fields made rather than read, which TrueUp uses only
-	// to create the object.
-	Derived []string `json:"derived"`
-	// Metadata holds what the file says that isn't a NetBox field.
-	Metadata map[string]model.Value `json:"metadata"`
-	// Unmapped counts the lists of children the file holds that TrueUp is
-	// to read but doesn't yet (format.Definition.Unmapped).
-	Unmapped map[string]int `json:"unmapped"`
+	// defs are the Definitions, for text output.
+	defs []format.Definition
 }
 
 type problemJSON struct {
@@ -168,45 +190,86 @@ type problemJSON struct {
 // summary says what went wrong, for the error after the result.
 func (r listJSON) summary() string {
 	var failed []string
-	invalid := 0
+	invalid, fileless := 0, 0
 	for _, s := range r.Sources {
 		if s.Error != nil {
 			failed = append(failed, s.Name)
 		}
 		invalid += s.InvalidFiles
+		fileless += filelessErrors(s.Problems)
 	}
 	var parts []string
 	if len(failed) > 0 {
 		parts = append(parts, fmt.Sprintf("%d of the %d sources couldn't be read: %s", len(failed), len(r.Sources), strings.Join(failed, ", ")))
 	}
+	return strings.Join(append(parts, problemSummary(invalid, fileless)...), "; ")
+}
+
+// filelessErrors counts the errors that concern no one file, such as a
+// derived definition TrueUp couldn't keep, which make a source not OK
+// (readCleanly) without any file being invalid.
+func filelessErrors(ps []problemJSON) int {
+	n := 0
+	for _, p := range ps {
+		if p.Severity == string(format.Error) && p.Path == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// problemSummary says how many files are invalid, and how many errors
+// concern no one file, for the error after a result.
+func problemSummary(invalid, fileless int) []string {
+	var parts []string
 	switch {
 	case invalid == 1:
 		parts = append(parts, "1 file is invalid")
 	case invalid > 1:
 		parts = append(parts, fmt.Sprintf("%d files are invalid", invalid))
 	}
-	return strings.Join(parts, "; ")
+	switch {
+	case fileless == 1:
+		parts = append(parts, "1 error concerns no one file")
+	case fileless > 1:
+		parts = append(parts, fmt.Sprintf("%d errors concern no one file", fileless))
+	}
+	return parts
 }
 
-// listSources reads each source's last fetched version. A source that
-// can't be read is reported in the result, with fetchErrors giving why for
-// those whose fetch failed; only an interrupt is an error.
-func (a *app) listSources(ctx context.Context, cfg *config.Config, sources []config.Source, fetchErrors map[string]string) (listJSON, error) {
-	kinds := a.sourceKinds(cachePath(cfg))
+// listSources reads the definitions of each source's last fetched version
+// from the database, loading the version first if need be, those search
+// chooses if it isn't "". A source that can't be read is reported in the
+// result, with fetchErrors giving why for those --fetch couldn't fetch or
+// load (fetchProblems); a problem with the database, or an interrupt, is
+// an error.
+func (a *app) listSources(ctx context.Context, db store.Store, cfg *config.Config, sources []config.Source,
+	fetchErrors map[string]string, search string,
+) (listJSON, error) {
 	result := listJSON{OK: true, Sources: []listSourceJSON{}}
 	for _, s := range sources {
-		row := listSourceJSON{Name: s.Name, Format: s.Format, Definitions: []definitionJSON{}, Problems: []problemJSON{}}
+		row := listSourceJSON{Name: s.Name, Format: s.Format, Definitions: []json.RawMessage{}, Problems: []problemJSON{}}
 		fail := func(msg string) {
 			row.OK, row.Error = false, &msg
 			a.logger.Warn("can't read source", "source", s.Name, "error", msg)
 		}
 		if msg, ok := fetchErrors[s.Name]; ok {
-			fail("the fetch failed: " + msg)
-		} else if err := a.listSource(ctx, kinds, s, &row); err != nil {
+			fail(msg)
+		} else if read, err := a.readLoaded(ctx, db, cfg, s, search); err != nil {
 			if ctx.Err() != nil {
 				return listJSON{}, fmt.Errorf("interrupted while reading source %s: %w", s.Name, ctx.Err())
 			}
+			if _, ok := errors.AsType[sourceProblem](err); !ok {
+				return listJSON{}, err
+			}
 			fail(err.Error())
+		} else {
+			res := read.result
+			row.Ref, row.Version = &read.ref, &read.version
+			row.Files, row.InvalidFiles = res.Files, res.Invalid
+			row.OK = readCleanly(res)
+			row.Definitions, row.defs = read.json, res.Definitions
+			row.Problems = problemsOf(res.Problems)
 		}
 		result.OK = result.OK && row.OK
 		result.Sources = append(result.Sources, row)
@@ -214,92 +277,27 @@ func (a *app) listSources(ctx context.Context, cfg *config.Config, sources []con
 	return result, nil
 }
 
-// listSource reads one source's last fetched version into its row.
-func (a *app) listSource(ctx context.Context, kinds map[string]source.Kind, s config.Source, row *listSourceJSON) error {
-	read, err := a.readSource(ctx, kinds, s)
-	if err != nil {
-		return err
-	}
-	res := read.result
-	row.Ref, row.Version = &read.ref, &read.version
-	row.Files, row.InvalidFiles = res.Files, res.Invalid
-	row.OK = res.Invalid == 0
-	for _, d := range res.Definitions {
-		row.Definitions = append(row.Definitions, definitionOf(d))
-	}
-	row.Problems = problemsOf(res.Problems)
-	return nil
-}
-
-// sourceRead is what a source's format read from its last fetched version.
-type sourceRead struct {
-	ref, version string
-	result       *format.Result
-}
-
-// readSource reads a source's last fetched version with its format, from
-// the cache, without touching the network or the database.
-func (a *app) readSource(ctx context.Context, kinds map[string]source.Kind, s config.Source) (sourceRead, error) {
-	kind, ok := kinds[s.Kind]
-	if !ok {
-		return sourceRead{}, fmt.Errorf("TrueUp can't read sources of kind %q", s.Kind)
-	}
-	spec, f, err := sourceSpec(s)
-	if err != nil {
-		return sourceRead{}, err
-	}
-	// Walk, and hash, only the files the format reads, not the library's
-	// images.
-	if spec.Only, err = glob.CompileAll(f.Reads()); err != nil {
-		return sourceRead{}, fmt.Errorf("format %s: %w", f.Name(), err)
-	}
-	snap, err := source.Open(ctx, kind, spec)
-	if errors.Is(err, source.ErrNotFetched) {
-		// The kind says why, such as that the source's url changed since.
-		return sourceRead{}, fmt.Errorf("%w: run 'netbox-trueup-ai source fetch', or use --fetch", err)
-	}
-	if err != nil {
-		return sourceRead{}, fmt.Errorf("open the cached version: %w", err)
-	}
-	defer func() {
-		if err := snap.Close(); err != nil {
-			a.logger.Warn("can't close the source's cache", "source", s.Name, "error", err)
+// fetchProblems returns why each source that --fetch fetched can't be read,
+// by name: its fetch failed, or the load that followed couldn't read its
+// files, which reading them again would find too.
+func fetchProblems(fetched fetchJSON) map[string]string {
+	problems := map[string]string{}
+	for _, s := range fetched.Sources {
+		switch {
+		case s.Error != nil:
+			problems[s.Name] = "the fetch failed: " + *s.Error
+		case s.LoadError != nil:
+			problems[s.Name] = *s.LoadError
 		}
-	}()
-	res, err := f.Read(ctx, snap)
-	if err != nil {
-		return sourceRead{}, fmt.Errorf("format %s: %w", f.Name(), err)
 	}
-	return sourceRead{ref: snap.Ref, version: snap.Version, result: res}, nil
+	return problems
 }
 
-func definitionOf(d format.Definition) definitionJSON {
-	out := definitionJSON{
-		Type:        d.Object.Type,
-		Identity:    d.Identity,
-		DerivedFrom: d.DerivedFrom,
-		Fields:      d.Object.Fields,
-		Derived:     d.Derived,
-		Metadata:    d.Metadata,
-		Unmapped:    d.Unmapped,
-	}
-	if d.Path != "" {
-		out.Path = &d.Path
-	}
-	// Empty rather than null, so that scripts needn't check.
-	if out.DerivedFrom == nil {
-		out.DerivedFrom = []string{}
-	}
-	if out.Derived == nil {
-		out.Derived = []string{}
-	}
-	if out.Metadata == nil {
-		out.Metadata = map[string]model.Value{}
-	}
-	if out.Unmapped == nil {
-		out.Unmapped = map[string]int{}
-	}
-	return out
+// readCleanly reports whether a source's files all read as definitions:
+// none invalid, and no error that concerns no one file, such as a derived
+// definition TrueUp couldn't keep.
+func readCleanly(res *format.Result) bool {
+	return res.Invalid == 0 && !slices.ContainsFunc(res.Problems, func(p format.Problem) bool { return p.Severity == format.Error })
 }
 
 // problemsOf returns problems as list and compare print them.
@@ -344,8 +342,8 @@ func writeListText(w io.Writer, r listJSON) error {
 			continue
 		}
 		count := map[string]int{}
-		for _, d := range s.Definitions {
-			count[d.Type]++
+		for _, d := range s.defs {
+			count[d.Object.Type]++
 		}
 		warnings := 0
 		for _, p := range s.Problems {
@@ -408,10 +406,10 @@ func writeListText(w io.Writer, r listJSON) error {
 // definitionLines returns a source's definitions as rows of the text
 // output's table: each manufacturer, followed by its device types.
 func definitionLines(s listSourceJSON) []string {
-	byManufacturer := map[string][]definitionJSON{}
-	var manufacturers []definitionJSON
-	for _, d := range s.Definitions {
-		switch d.Type {
+	byManufacturer := map[string][]format.Definition{}
+	var manufacturers []format.Definition
+	for _, d := range s.defs {
+		switch d.Object.Type {
 		case "dcim.manufacturer":
 			manufacturers = append(manufacturers, d)
 		default:
@@ -420,23 +418,23 @@ func definitionLines(s listSourceJSON) []string {
 		}
 	}
 	var lines []string
-	row := func(d definitionJSON, manufacturer, model string) {
-		slug := text(d.Fields["slug"])
+	row := func(d format.Definition, manufacturer, model string) {
+		slug := text(d.Object.Fields["slug"])
 		if slices.Contains(d.Derived, "slug") {
 			slug += " (derived)"
 		}
 		from := "-"
 		switch {
-		case d.Path != nil:
-			from = *d.Path
+		case d.Path != "":
+			from = d.Path
 		case len(d.DerivedFrom) == 1:
 			from = "1 file"
 		case len(d.DerivedFrom) > 1:
 			from = fmt.Sprintf("%d files", len(d.DerivedFrom))
 		}
-		typ := typeNames[d.Type]
+		typ := typeNames[d.Object.Type]
 		if typ == "" {
-			typ = d.Type
+			typ = d.Object.Type
 		}
 		lines = append(lines, strings.Join([]string{s.Name, typ, cell(manufacturer), cell(model), cell(slug), cell(from)}, "\t"))
 	}
@@ -448,8 +446,9 @@ func definitionLines(s listSourceJSON) []string {
 		}
 		delete(byManufacturer, name)
 	}
-	// Definitions whose manufacturer the source doesn't define, which
-	// devicetype-library's format never gives, are still listed.
+	// Definitions whose manufacturer isn't listed are still listed, after
+	// the others: those --search finds without their manufacturer, or a
+	// format that names a manufacturer it doesn't define.
 	for _, name := range slices.Sorted(maps.Keys(byManufacturer)) {
 		for _, d := range byManufacturer[name] {
 			row(d, name, text(d.Identity["model"]))

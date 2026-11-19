@@ -23,6 +23,48 @@ type Comparison struct {
 	Result        string
 }
 
+type Definition struct {
+	ID           int64
+	Source       string
+	ObjectType   string
+	Path         string
+	Identity     string
+	Seq          int64
+	Manufacturer string
+	Model        string
+	Slug         string
+	PartNumber   string
+	Search       string
+	Digest       string
+	Definition   string
+}
+
+type DefinitionLoad struct {
+	Source         string
+	StartedAt      pgtype.Timestamptz
+	Version        string
+	Reader         string
+	Settings       string
+	Error          pgtype.Text
+	LoadedAt       pgtype.Timestamptz
+	LoadedVersion  pgtype.Text
+	LoadedReader   pgtype.Text
+	LoadedSettings pgtype.Text
+	Files          int64
+	InvalidFiles   int64
+}
+
+type DefinitionProblem struct {
+	Source       string
+	Seq          int64
+	Severity     string
+	Path         string
+	LineNumber   int64
+	ColumnNumber int64
+	Field        string
+	Reason       string
+}
+
 type Snapshot struct {
 	Source    string
 	Url       string

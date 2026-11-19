@@ -309,13 +309,18 @@ func TestSnapshotFiles(t *testing.T) {
 	content.mu.Lock()
 	content.files["root/1/0/0"] = "model: MX205"
 	content.mu.Unlock()
-	if _, err := snap.ReadFile(t.Context(), "device-types/Juniper/MX204.yaml"); err == nil || !strings.Contains(err.Error(), "changed in the cache") {
-		t.Errorf("ReadFile of changed content = %v, want an error saying it changed", err)
+	_, err = snap.ReadFile(t.Context(), "device-types/Juniper/MX204.yaml")
+	if _, ok := errors.AsType[*ReadError](err); !ok || !strings.Contains(err.Error(), "changed in the cache") {
+		t.Errorf("ReadFile of changed content = %v, want a *ReadError saying it changed", err)
+	}
+	// A path not listed is the caller's mistake, not the content's.
+	if _, err := snap.ReadFile(t.Context(), "device-types/Cisco/C9300.yaml"); errors.As(err, new(*ReadError)) {
+		t.Errorf("ReadFile of a path not listed = %v, want no *ReadError", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := snap.ReadFile(ctx, "device-types/Juniper/MX204.yaml"); !errors.Is(err, context.Canceled) {
-		t.Errorf("ReadFile with a cancelled context = %v, want context.Canceled", err)
+	if _, err := snap.ReadFile(ctx, "device-types/Juniper/MX204.yaml"); !errors.Is(err, context.Canceled) || !errors.As(err, new(*ReadError)) {
+		t.Errorf("ReadFile with a cancelled context = %v, want a *ReadError wrapping context.Canceled", err)
 	}
 }
 
