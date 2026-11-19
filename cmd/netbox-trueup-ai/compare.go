@@ -124,6 +124,9 @@ Exit codes:
 			if sel.all && (len(sel.manufacturers) > 0 || len(sel.models) > 0) {
 				return usageError{errors.New("--all compares every definition, so it can't be given with --manufacturer or --model")}
 			}
+			if err := sel.check(dcim.Specs()); err != nil {
+				return usageError{err}
+			}
 			cfg, err := a.loadConfig(cmd)
 			if err != nil {
 				return err
@@ -187,6 +190,29 @@ const (
 type compareSelection struct {
 	manufacturers, models []string
 	all                   bool
+}
+
+// check refuses a name that NetBox would store as nothing, such as white
+// space alone, which no definition has.
+func (sel compareSelection) check(specs []*model.Spec) error {
+	for _, flag := range []struct {
+		name, typ, field string
+		values           []string
+	}{
+		{"--manufacturer", "dcim.manufacturer", "name", sel.manufacturers},
+		{"--model", "dcim.devicetype", "model", sel.models},
+	} {
+		normalize, err := normalizer(specs, flag.typ, flag.field)
+		if err != nil {
+			return err
+		}
+		for _, v := range flag.values {
+			if normalize(v) == "" {
+				return fmt.Errorf("%s needs a name, not %s", flag.name, strconv.Quote(v))
+			}
+		}
+	}
+	return nil
 }
 
 func (sel compareSelection) scope() compareScope {
@@ -441,7 +467,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			return compareJSON{}, fmt.Errorf("compare with NetBox: %d results for the %d definitions matched", len(outcomes), len(first))
 		}
 		for i, r := range outcomes {
-			if d := first[i]; r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
+			if !resultOf(r, first[i]) {
 				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of those matched is of another definition", i)
 			}
 		}
@@ -769,7 +795,7 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 		}
 		for i, d := range sc.whole {
 			r := results[i]
-			if r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
+			if !resultOf(r, d) {
 				return fmt.Errorf("compare with NetBox: result %d of source %s is of another definition", i, sc.row.Name)
 			}
 			key := sc.rows[sc.chosen[i]].DefinitionKey
@@ -789,6 +815,12 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 		return fmt.Errorf("compare with NetBox: %d results of no definition", len(results))
 	}
 	return nil
+}
+
+// resultOf reports whether r is the result of comparing d: of its type,
+// source and file.
+func resultOf(r compare.Result, d compare.Definition) bool {
+	return r.Type == d.Object.Type && len(r.Columns) > 0 && r.Columns[0].Source == d.Source && r.Columns[0].Path == d.Path
 }
 
 func (a *app) failSource(row *compareSourceJSON, msg string) {
@@ -837,24 +869,6 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, s
 		})
 	}
 	return db.RecordComparisons(ctx, rec)
-}
-
-// manufacturerName returns the name of the manufacturer a definition is, or
-// that a device type's refers to.
-func manufacturerName(d format.Definition) (string, bool) {
-	var name model.Value
-	switch d.Object.Type {
-	case "dcim.manufacturer":
-		name = d.Identity["name"]
-	case "dcim.devicetype":
-		ref, ok := d.Identity["manufacturer"].(model.Reference)
-		if !ok {
-			return "", false
-		}
-		name = ref.Key["name"]
-	}
-	s, ok := name.(model.String)
-	return string(s), ok
 }
 
 // readStandalone reads the NetBox objects that stand on their own, which the

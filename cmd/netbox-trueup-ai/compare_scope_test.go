@@ -171,6 +171,14 @@ func TestCompareScopes(t *testing.T) {
 			t.Errorf("compare %v: exit code %d, stderr %q", args, r.code, r.stderr)
 		}
 	}
+
+	// So is a name NetBox would store as nothing.
+	for _, args := range [][]string{{"--model", " "}, {"--manufacturer", "\t", "--model", "GS105"}} {
+		r := runCLIApp(t, nil, configure, env, append([]string{"compare"}, args...)...)
+		if r.code != exitUsage || !strings.Contains(r.stderr, "needs a name") {
+			t.Errorf("compare %q: exit code %d, stderr %q", args, r.code, r.stderr)
+		}
+	}
 }
 
 // TestCompareAModelInTwoManufacturers checks that --model compares every

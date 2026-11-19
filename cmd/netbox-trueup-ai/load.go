@@ -528,6 +528,24 @@ func definitionKey(d format.Definition) (store.DefinitionKey, error) {
 	return store.DefinitionKey{ObjectType: d.Object.Type, Path: d.Path, Identity: string(identity)}, nil
 }
 
+// manufacturerName returns the name of the manufacturer a definition is, or
+// that a device type's refers to.
+func manufacturerName(d format.Definition) (string, bool) {
+	var name model.Value
+	switch d.Object.Type {
+	case "dcim.manufacturer":
+		name = d.Identity["name"]
+	case "dcim.devicetype":
+		ref, ok := d.Identity["manufacturer"].(model.Reference)
+		if !ok {
+			return "", false
+		}
+		name = ref.Key["name"]
+	}
+	s, ok := name.(model.String)
+	return string(s), ok
+}
+
 // stringField returns a string field's value, or "" for any other.
 func stringField(v model.Value) string {
 	s, _ := v.(model.String)
