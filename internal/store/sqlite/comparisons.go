@@ -11,41 +11,31 @@ import (
 )
 
 // RecordComparisons records a run's comparisons in one transaction, which
-// holds SQLite's write lock from its start, so that fetches and removals of
-// the source wait for it, or it for them.
+// holds SQLite's write lock from its start, so that fetches, loads and
+// removals of the source wait for it, or it for them.
 func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) error {
 	run, err := run.Prepare()
 	if err != nil {
 		return fmt.Errorf("record comparisons: %w", err)
 	}
-	kept := run.Kept()
 	at := run.ComparedAt.Format(timeLayout)
 	err = s.inTx(ctx, nil, func(q *sqlitedb.Queries) error {
-		version, err := q.GetSnapshotVersion(ctx, run.Source)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
+		status, err := loadStatus(ctx, q, run.Source)
+		if errors.Is(err, store.ErrNotFound) {
 			return fmt.Errorf("%w: it has no snapshot", store.ErrSnapshotChanged)
-		case err != nil:
+		} else if err != nil {
 			return err
-		case version != run.SourceVersion:
-			return fmt.Errorf("%w: the snapshot is of version %q, not %q", store.ErrSnapshotChanged, version, run.SourceVersion)
 		}
-		if len(kept) == 0 {
+		if err := run.CheckLoad(status); err != nil {
+			return err
+		}
+		if run.Whole {
 			if err := q.DeleteComparisons(ctx, run.Source); err != nil {
 				return err
 			}
 		} else {
-			keys, err := q.ListComparisonKeys(ctx, run.Source)
-			if err != nil {
-				return err
-			}
-			for _, k := range keys {
-				if kept[store.DefinitionKey{ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity}] {
-					continue
-				}
-				if err := q.DeleteComparison(ctx, sqlitedb.DeleteComparisonParams{
-					Source: run.Source, ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity,
-				}); err != nil {
+			for _, c := range run.Comparisons {
+				if err := q.DeleteComparison(ctx, sqlitedb.DeleteComparisonParams{Source: run.Source, DefinitionID: c.DefinitionID}); err != nil {
 					return err
 				}
 			}
@@ -53,10 +43,8 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		for _, c := range run.Comparisons {
 			if err := q.InsertComparison(ctx, sqlitedb.InsertComparisonParams{
 				Source:        run.Source,
-				ObjectType:    c.ObjectType,
-				Path:          c.Path,
-				Identity:      c.Identity,
-				SourceVersion: run.SourceVersion,
+				DefinitionID:  c.DefinitionID,
+				SourceVersion: run.Loaded.Version,
 				ComparedAt:    at,
 				NetboxUrl:     run.NetBoxURL,
 				NetboxVersion: run.NetBoxVersion,
@@ -65,7 +53,7 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 				Differences:   int64(c.Differences),
 				Result:        string(c.Result),
 			}); err != nil {
-				return fmt.Errorf("the comparison of %s: %w", c.DefinitionKey, err)
+				return fmt.Errorf("the comparison of definition #%d: %w", c.DefinitionID, err)
 			}
 		}
 		return nil
@@ -90,12 +78,13 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 		}
 		out = append(out, store.RecordedComparison{
 			Comparison: store.Comparison{
-				DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
-				Outcome:       r.Outcome,
-				NetBoxID:      r.NetboxID.Int64,
-				Differences:   int(r.Differences),
-				Result:        []byte(r.Result),
+				DefinitionID: r.ID,
+				Outcome:      r.Outcome,
+				NetBoxID:     r.NetboxID.Int64,
+				Differences:  int(r.Differences),
+				Result:       []byte(r.Result),
 			},
+			DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
 			Source:        source,
 			SourceVersion: r.SourceVersion,
 			ComparedAt:    at,

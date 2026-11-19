@@ -153,11 +153,14 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - Measured against the whole library: `list` takes 1 second from the database instead of 3 from the files, a search 0.04 seconds, and `compare` 3.8 seconds instead of 6.7 to 12.8, at the same memory and with the same output; two copies of the library take 7.5 seconds instead of 13 to 14. A load takes about 5 seconds and 580 MB, and the database grows by about 32 MB for each copy of the library.
     - No new dependency.
 
-14. **`feat(compare): compare what NetBox has, or what a selection names`.**
-    - With no selection, `compare` compares the definitions that match a NetBox object, or would collide with one, candidates and conflicts, matching every definition from the database's identity and slug columns, and reading the whole definition only of those. Absent definitions are counted, not compared, listed or recorded.
-    - A selection compares what it names, absent included: `--manufacturer`, as today, and `--model`, exact and repeatable, which narrows `--manufacturer`. `--all` compares everything. Linked objects join the default scope in milestone 2.
-    - `--exit-code` counts only what was compared. JSON gains a top-level `scope`. Comparisons gain their definition's ID, outcome and NetBox ID as columns, and a run of the default scope removes the records of definitions it found absent.
-    - Tests: a definition cut down to its unique values gets the same outcome as the whole; the parity test's default scope compares exactly what it imported.
+14. **`feat(compare): compare what NetBox has, or what a selection names`.** Done in #PR.
+    - By default `compare` compares what NetBox has: the definitions that match a NetBox object, or would collide with one, candidates and conflicts. Those NetBox hasn't got are counted, not compared, listed or recorded, and `--exit-code` counts only what was compared ([ADR 0030](adr/0030-compare-what-netbox-has-by-default.md)).
+    - A selection compares what it names, absent included: `--manufacturer`, and `--model`, repeatable, which `--manufacturer` narrows, with the manufacturers of the device types it names. Names match as NetBox would store them, and one nothing defines exits 4. `--all` compares everything, and is a usage error beside a selection. JSON output gains a top-level `scope`. Linked objects join the default scope in milestone 2.
+    - `internal/compare`: `UniqueValues` cuts a definition down to what matching reads, which a load stores beside it, so that `compare` matches every definition by its unique values, then reads whole only those it compares. `FuzzCompare` holds the cut-down to the whole's match and outcome.
+    - `internal/store`: migration 00004 on both engines adds the unique values, and keys comparisons by their definition's ID. A whole run replaces a source's comparisons, a selection only its own, and a load removes those of the definitions it removes; recording checks the load compared as well as the snapshot.
+    - The parity test's source holds more than NetBox imports: the default scope compares what was imported, all in step, and only conflicts besides.
+    - Measured against the whole library: by default 0.4 seconds and 100 MB with an empty NetBox, 0.5 seconds with 15 manufacturers and 33 device types, and 1.3 seconds with 400 device types, against 3.7 to 4.7 seconds and 680 to 700 MB for comparing everything, which `--all` still takes.
+    - No new dependency.
 
 15. **`feat(compare): compare definitions across sources`.**
     - Definitions from every configured source grouped into objects by type and identity; an object is in scope if any of its definitions is. A source that defines an object twice, and objects that would share another unique value NetBox keeps unique, are conflicts.

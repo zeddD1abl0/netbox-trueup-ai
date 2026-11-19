@@ -278,7 +278,7 @@ func TestDefinitionsMigrationKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := storetest.FillForMigration(t, before)
+	check := storetest.FillForMigration(t, before, execOn(before))
 	closeStore(t, before)
 	s, migrated, err := Open(t.Context(), Options{URL: url})
 	if err != nil {
@@ -289,6 +289,38 @@ func TestDefinitionsMigrationKeepsData(t *testing.T) {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	check(t, s)
+}
+
+func TestComparisonsMigrationKeepsData(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+	files, after := storetest.MigrationsUpTo(t, migrationFiles, 3)
+	before, _, err := open(t.Context(), Options{URL: url}, files, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := storetest.FillForComparisonsMigration(t, before, execOn(before))
+	closeStore(t, before)
+	s, migrated, err := Open(t.Context(), Options{URL: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	if diff := cmp.Diff(after, migrated.Applied); diff != "" {
+		t.Errorf("applied (-want +got):\n%s", diff)
+	}
+	check(t, s)
+}
+
+// execOn returns a function that runs a statement on a store's database.
+func execOn(s *Store) func(*testing.T, string) {
+	return func(t *testing.T, statement string) {
+		t.Helper()
+		if _, err := s.pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
 }
 
 func TestFailedMigration(t *testing.T) {
@@ -1279,63 +1311,85 @@ func TestOneWaitForAMigration(t *testing.T) {
 
 func TestRecordComparisonsSeesAFetchItWaitedFor(t *testing.T) {
 	t.Parallel()
-	database := srv.NewDatabase(t)
-	s := openURL(t, config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)))
-	fetch := store.Fetch{
-		Source:    store.SourceConfig{Name: "lib", Kind: "git", URL: "https://git.example.com/lib.git"},
-		FetchedAt: time.Now(), Version: "v1",
-	}
-	if err := s.RecordFetch(t.Context(), fetch); err != nil {
-		t.Fatal(err)
-	}
-
-	// A fetch of v2 being recorded, as RecordFetch does it: the source's row
-	// first, then its snapshot, then its file lists, which can take a while.
-	pool := srv.Pool(t, database)
-	tx, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	for _, q := range []string{
-		"UPDATE netbox_trueup_ai.sources SET fetched_at = now() WHERE name = 'lib'",
-		"UPDATE netbox_trueup_ai.snapshots SET version = 'v2' WHERE source = 'lib'",
+	for _, tt := range []struct {
+		name string
+		// change is what the fetch or load, taking the source's lock
+		// first, changes.
+		change string
+		want   string
+	}{
+		{"a fetch", "UPDATE netbox_trueup_ai.snapshots SET version = 'v2' WHERE source = 'lib'", `"v2"`},
+		{"a load", "UPDATE netbox_trueup_ai.definition_loads SET loaded_at = loaded_at + interval '1 second' WHERE source = 'lib'", "loaded again"},
 	} {
-		if _, err := tx.Exec(t.Context(), q); err != nil {
-			t.Fatal(err)
-		}
-	}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			database := srv.NewDatabase(t)
+			s := openURL(t, config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database)))
+			fetch := store.Fetch{
+				Source:    store.SourceConfig{Name: "lib", Kind: "git", URL: "https://git.example.com/lib.git"},
+				FetchedAt: time.Now(), Version: "v1",
+			}
+			if err := s.RecordFetch(t.Context(), fetch); err != nil {
+				t.Fatal(err)
+			}
+			k := store.DefinitionKey{ObjectType: "dcim.manufacturer", Identity: `{"name":"Dell"}`}
+			if err := s.RecordLoad(t.Context(), store.Load{
+				Source: "lib", Version: "v1", Reader: "r/1", Settings: "s", StartedAt: time.Now(),
+				Definitions: []store.Definition{{DefinitionKey: k, JSON: []byte("{}"), UniqueValues: []byte("{}")}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := s.UniqueValues(t.Context(), "lib")
+			if err != nil || len(loaded.Definitions) != 1 {
+				t.Fatalf("UniqueValues = %+v, %v", loaded, err)
+			}
 
-	// A comparison of v1 is recorded meanwhile, and waits for the fetch.
-	k := store.DefinitionKey{ObjectType: "dcim.devicetype", Path: "a.yaml", Identity: "{}"}
-	done := make(chan error, 1)
-	go func() {
-		done <- s.RecordComparisons(context.Background(), store.ComparisonRun{
-			Source: "lib", SourceVersion: "v1", ComparedAt: time.Now(),
-			NetBoxURL: "https://netbox.example.com", NetBoxVersion: "4.7.2",
-			Defined:     []store.DefinitionKey{k},
-			Comparisons: []store.Comparison{{DefinitionKey: k, Outcome: "absent", Result: []byte("{}")}},
+			// A fetch or load being recorded, as RecordFetch and
+			// RecordLoad do it: the source's row first, then the rest,
+			// which can take a while.
+			pool := srv.Pool(t, database)
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			for _, q := range []string{"UPDATE netbox_trueup_ai.sources SET fetched_at = now() WHERE name = 'lib'", tt.change} {
+				if _, err := tx.Exec(t.Context(), q); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// A comparison of what was loaded is recorded meanwhile, and
+			// waits for it.
+			done := make(chan error, 1)
+			go func() {
+				done <- s.RecordComparisons(context.Background(), store.ComparisonRun{
+					Source: "lib", Loaded: loaded.Loaded, LoadedAt: loaded.LoadedAt, ComparedAt: time.Now(),
+					NetBoxURL: "https://netbox.example.com", NetBoxVersion: "4.7.2", Whole: true,
+					Comparisons: []store.Comparison{{DefinitionID: loaded.Definitions[0].ID, Outcome: "absent", Result: []byte("{}")}},
+				})
+			}()
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				waiting := query(t, pool, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'")
+				if slices.Equal(waiting, []string{"1"}) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("RecordComparisons never waited")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := <-done; !errors.Is(err, store.ErrSnapshotChanged) || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("RecordComparisons, after %s it waited for = %v, want ErrSnapshotChanged saying %s", tt.name, err, tt.want)
+			}
+			if got, err := s.Comparisons(t.Context(), "lib"); err != nil || len(got) != 0 {
+				t.Errorf("Comparisons = %d, %v; want none", len(got), err)
+			}
 		})
-	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		waiting := query(t, pool, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'")
-		if slices.Equal(waiting, []string{"1"}) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("RecordComparisons never waited for the fetch")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := <-done; !errors.Is(err, store.ErrSnapshotChanged) || !strings.Contains(err.Error(), `"v2"`) {
-		t.Errorf("RecordComparisons of v1, after a fetch of v2 it waited for = %v, want ErrSnapshotChanged naming v2", err)
-	}
-	if got, err := s.Comparisons(t.Context(), "lib"); err != nil || len(got) != 0 {
-		t.Errorf("Comparisons = %d, %v; want none", len(got), err)
 	}
 }

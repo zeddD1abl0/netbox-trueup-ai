@@ -64,13 +64,25 @@ type Store interface {
 	// ignoring case (Definition.SearchText), and every problem. It returns
 	// an error wrapping ErrNotFound if the source has no snapshot.
 	Definitions(ctx context.Context, source, search string) (SourceDefinitions, error)
+	// UniqueValues returns a source's recorded definitions as Definitions
+	// does, without a search, but each with its unique values and not the
+	// whole of it: their JSON is nil.
+	UniqueValues(ctx context.Context, source string) (SourceDefinitions, error)
+	// DefinitionsByID returns the status of a source's loads and those of
+	// its recorded definitions with the IDs given, whole, in their format's
+	// order, as they were at one moment, and no problems. An ID that isn't
+	// one of the source's definitions is left out. It returns an error
+	// wrapping ErrNotFound if the source has no snapshot.
+	DefinitionsByID(ctx context.Context, source string, ids []int64) (SourceDefinitions, error)
 	// RecordComparisons records a run's comparisons of one source's
 	// definitions as their latest, all of them or nothing: it replaces the
-	// comparisons of the definitions compared, keeps those of the others
-	// the source defines, and removes those of definitions it no longer
-	// defines. It returns an error wrapping ErrSnapshotChanged, recording
-	// nothing, if the source's recorded snapshot isn't the version
-	// compared. Recordings and fetches of one source take turns.
+	// comparisons of the definitions compared, and for a whole run removes
+	// the source's others, or keeps them. It returns an error wrapping
+	// ErrSnapshotChanged, recording nothing, if the source's recorded
+	// snapshot or latest load isn't the one compared
+	// (ComparisonRun.CheckLoad). Recordings, loads and fetches of one source
+	// take turns. A load removes the comparisons of the definitions it
+	// removes.
 	RecordComparisons(ctx context.Context, run ComparisonRun) error
 	// Comparisons returns the comparisons recorded of a source's
 	// definitions, sorted by object type, path and identity.

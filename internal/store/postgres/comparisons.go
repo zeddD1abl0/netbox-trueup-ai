@@ -13,16 +13,16 @@ import (
 )
 
 // RecordComparisons records a run's comparisons in one transaction, which
-// first locks the source's row, as fetches and removals of the source do,
-// so that they take turns, and writes the comparisons in one COPY. It reads
-// committed data, whatever the server's default, so that once it has the
-// lock it sees the snapshot that a fetch it waited for recorded.
+// first locks the source's row, as fetches, loads and removals of the
+// source do, so that they take turns, and writes the comparisons in one
+// COPY. It reads committed data, whatever the server's default, so that
+// once it has the lock it sees the snapshot and load that a fetch or load
+// it waited for recorded.
 func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) error {
 	run, err := run.Prepare()
 	if err != nil {
 		return fmt.Errorf("record comparisons: %w", err)
 	}
-	kept := run.Kept()
 	at := pgtype.Timestamptz{Time: run.ComparedAt, Valid: true}
 	err = s.inTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(q *postgresdb.Queries) error {
 		if _, err := q.LockSource(ctx, run.Source); errors.Is(err, pgx.ErrNoRows) {
@@ -30,29 +30,23 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		} else if err != nil {
 			return err
 		}
-		version, err := q.GetSnapshotVersion(ctx, run.Source)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
+		// A statement of its own, after the lock: see LockSource.
+		status, err := loadStatus(ctx, q, run.Source)
+		if errors.Is(err, store.ErrNotFound) {
 			return fmt.Errorf("%w: it has no snapshot", store.ErrSnapshotChanged)
-		case err != nil:
+		} else if err != nil {
 			return err
-		case version != run.SourceVersion:
-			return fmt.Errorf("%w: the snapshot is of version %q, not %q", store.ErrSnapshotChanged, version, run.SourceVersion)
 		}
-		if len(kept) == 0 {
-			if err := q.DeleteComparisons(ctx, run.Source); err != nil {
-				return err
-			}
+		if err := run.CheckLoad(status); err != nil {
+			return err
+		}
+		if run.Whole {
+			err = q.DeleteComparisons(ctx, run.Source)
 		} else {
-			except := postgresdb.DeleteComparisonsExceptParams{Source: run.Source}
-			for k := range kept {
-				except.ObjectTypes = append(except.ObjectTypes, k.ObjectType)
-				except.Paths = append(except.Paths, k.Path)
-				except.Identities = append(except.Identities, k.Identity)
-			}
-			if err := q.DeleteComparisonsExcept(ctx, except); err != nil {
-				return err
-			}
+			err = q.DeleteComparisonsOf(ctx, postgresdb.DeleteComparisonsOfParams{Source: run.Source, Ids: run.IDs()})
+		}
+		if err != nil {
+			return err
 		}
 		if len(run.Comparisons) == 0 {
 			return nil
@@ -61,10 +55,8 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		for i, c := range run.Comparisons {
 			rows[i] = postgresdb.InsertComparisonsParams{
 				Source:        run.Source,
-				ObjectType:    c.ObjectType,
-				Path:          c.Path,
-				Identity:      c.Identity,
-				SourceVersion: run.SourceVersion,
+				DefinitionID:  c.DefinitionID,
+				SourceVersion: run.Loaded.Version,
 				ComparedAt:    at,
 				NetboxUrl:     run.NetBoxURL,
 				NetboxVersion: run.NetBoxVersion,
@@ -99,12 +91,13 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 		}
 		out = append(out, store.RecordedComparison{
 			Comparison: store.Comparison{
-				DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
-				Outcome:       r.Outcome,
-				NetBoxID:      r.NetboxID.Int64,
-				Differences:   int(r.Differences),
-				Result:        []byte(r.Result),
+				DefinitionID: r.ID,
+				Outcome:      r.Outcome,
+				NetBoxID:     r.NetboxID.Int64,
+				Differences:  int(r.Differences),
+				Result:       []byte(r.Result),
 			},
+			DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
 			Source:        source,
 			SourceVersion: r.SourceVersion,
 			ComparedAt:    at,

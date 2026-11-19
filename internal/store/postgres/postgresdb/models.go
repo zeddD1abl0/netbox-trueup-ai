@@ -10,9 +10,6 @@ import (
 
 type Comparison struct {
 	Source        string
-	ObjectType    string
-	Path          string
-	Identity      string
 	SourceVersion string
 	ComparedAt    pgtype.Timestamptz
 	NetboxUrl     string
@@ -21,6 +18,7 @@ type Comparison struct {
 	NetboxID      pgtype.Int8
 	Differences   int64
 	Result        string
+	DefinitionID  int64
 }
 
 type Definition struct {
@@ -37,6 +35,7 @@ type Definition struct {
 	Search       string
 	Digest       string
 	Definition   string
+	UniqueValues string
 }
 
 type DefinitionLoad struct {

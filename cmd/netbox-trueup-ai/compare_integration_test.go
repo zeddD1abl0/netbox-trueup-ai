@@ -32,11 +32,12 @@ var (
 const testLibrary = "../../internal/format/devicetypelib/testdata/library"
 
 // libraryTree reads a devicetype-library checkout's schemas and device
-// types, by their paths in it: every device type, or if sample isn't 0, that
-// many, spread evenly through them.
-func libraryTree(t *testing.T, root string, sample int) map[string]string {
+// types, by their paths in it, and returns them with the device types for
+// NetBox to import: if sample isn't 0, that many, spread evenly through
+// them, or else all but those left out.
+func libraryTree(t *testing.T, root string, sample int, leftOut ...string) (files map[string]string, imported []string) {
 	t.Helper()
-	files := map[string]string{}
+	files = map[string]string{}
 	var deviceTypes []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -59,12 +60,15 @@ func libraryTree(t *testing.T, root string, sample int) map[string]string {
 		t.Fatal(err)
 	}
 	slices.Sort(deviceTypes)
+	imported = slices.DeleteFunc(slices.Clone(deviceTypes), func(p string) bool { return slices.Contains(leftOut, p) })
+	if len(imported) != len(deviceTypes)-len(leftOut) {
+		t.Fatalf("the library hasn't got every device type left out: %v", leftOut)
+	}
 	if sample > 0 && sample < len(deviceTypes) {
-		chosen := make([]string, 0, sample)
+		imported = make([]string, 0, sample)
 		for i := range sample {
-			chosen = append(chosen, deviceTypes[i*len(deviceTypes)/sample])
+			imported = append(imported, deviceTypes[i*len(deviceTypes)/sample])
 		}
-		deviceTypes = chosen
 	}
 	for _, p := range deviceTypes {
 		files[p] = ""
@@ -76,7 +80,7 @@ func libraryTree(t *testing.T, root string, sample int) map[string]string {
 		}
 		files[p] = string(data)
 	}
-	return files
+	return files, imported
 }
 
 // parityEnv configures a source at repo, the NetBox and the PostgreSQL that
@@ -94,13 +98,14 @@ func parityEnv(t *testing.T, repo string) []string {
 	}
 }
 
-// importLibrary creates the source's manufacturers and device types through
-// NetBox's own YAML import, as a person following devicetype-library's
-// instructions does: each manufacturer with the slug NetBox's UI would give
-// it, or, where two would share one, another, and then each device type
-// file as it is. It fails the test for each file NetBox refuses, since
-// TrueUp read every one as valid.
-func importLibrary(t *testing.T, env []string, configure func(*app), files map[string]string) {
+// importLibrary creates some of the source's device types, by their
+// paths, and their manufacturers, through NetBox's own YAML import, as a
+// person following devicetype-library's instructions does: each
+// manufacturer with the slug NetBox's UI would give it, or, where two would
+// share one, another, and then each device type file as it is. It fails the
+// test for each file NetBox refuses, since TrueUp read every one as valid.
+// It returns the keys of the definitions imported (objectJSON.key).
+func importLibrary(t *testing.T, env []string, configure func(*app), files map[string]string, paths []string) map[string]bool {
 	t.Helper()
 	r := runCLIApp(t, nil, configure, env, "list", "-o", "json")
 	if r.code != exitOK {
@@ -110,35 +115,48 @@ func importLibrary(t *testing.T, env []string, configure func(*app), files map[s
 	if err := json.Unmarshal([]byte(r.stdout), &listed); err != nil {
 		t.Fatal(err)
 	}
+	imported := map[string]bool{}
+	makers := map[string]bool{}
+	for _, d := range listed.Sources[0].Definitions {
+		if d.Type == "dcim.devicetype" && d.Path != nil && slices.Contains(paths, *d.Path) {
+			imported[*d.Path] = true
+			maker, _ := d.Identity["manufacturer"].(map[string]any)
+			name, _ := maker["name"].(string)
+			makers[name] = true
+		}
+	}
+	if len(imported) != len(paths) {
+		t.Fatalf("list defines %d of the %d device types to import", len(imported), len(paths))
+	}
 	var b strings.Builder
 	slugs := map[string]bool{}
 	for _, d := range listed.Sources[0].Definitions {
-		if d.Type != "dcim.manufacturer" {
+		name, _ := d.Fields["name"].(string)
+		if d.Type != "dcim.manufacturer" || !makers[name] {
 			continue
 		}
+		identity, err := json.Marshal(map[string]string{"name": name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		imported[string(identity)] = true
 		slug, _ := d.Fields["slug"].(string)
 		for slugs[slug] {
 			slug += "-2"
 		}
 		slugs[slug] = true
 		// JSON's strings are YAML's double-quoted scalars.
-		name, _ := json.Marshal(d.Fields["name"])
+		quotedName, _ := json.Marshal(name)
 		quoted, _ := json.Marshal(slug)
-		b.WriteString("- name: " + string(name) + "\n  slug: " + string(quoted) + "\n")
+		b.WriteString("- name: " + string(quotedName) + "\n  slug: " + string(quoted) + "\n")
 	}
 	if err := nb.Import(t.Context(), "/dcim/manufacturers/import/", b.String()); err != nil {
 		t.Fatalf("import the manufacturers: %v", err)
 	}
-	var paths []string
-	for p := range files {
-		if strings.HasPrefix(p, "device-types/") {
-			paths = append(paths, p)
-		}
-	}
-	slices.Sort(paths)
 	for _, p := range paths {
 		importDeviceType(t, p, files[p])
 	}
+	return imported
 }
 
 func importDeviceType(t *testing.T, p, content string) {
@@ -245,21 +263,54 @@ func compareJSONRun(t *testing.T, env []string, configure func(*app), args ...st
 // and checks that compare finds them in step, and that changing a field in
 // NetBox makes exactly that difference appear.
 func TestCompareParity(t *testing.T) {
-	root, sample := testLibrary, 0
+	// The source holds the whole library, and NetBox some of it: of the
+	// test library, all but a device type of a manufacturer it has, and
+	// one of a manufacturer it hasn't.
+	var files map[string]string
+	var paths []string
 	if *parityLibrary != "" {
-		root, sample = *parityLibrary, *paritySample
+		files, paths = libraryTree(t, *parityLibrary, *paritySample)
+	} else {
+		files, paths = libraryTree(t, testLibrary, 0, "device-types/Generic/shelf-2he.yaml", "device-types/Ubiquiti/UVC-G4-INS.yaml")
 	}
-	files := libraryTree(t, root, sample)
 	repo, pool, _ := gitRepoWith(t, files)
 	env := parityEnv(t, repo)
 	configure := trust(pool)
 	fetched(t, pool, env)
-	importLibrary(t, env, configure, files)
+	imported := importLibrary(t, env, configure, files, paths)
 
+	// By default, compare compares what was imported, all in step, and
+	// what collides with it, which can only be a conflict, such as a
+	// manufacturer not imported whose slug is one imported. The rest is
+	// counted.
 	got, code := compareJSONRun(t, env, configure, "--exit-code")
-	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" || code != exitOK {
-		t.Fatalf("after NetBox's import, compare --exit-code exits with %d, and finds (-want +got):\n%s", code, diff)
+	compared, colliding := map[string]bool{}, 0
+	for _, o := range got.Objects {
+		k := o.key(t)
+		compared[k] = true
+		switch {
+		case imported[k] && !o.InStep:
+			t.Errorf("%s, imported, is %s, not in step: %v", k, o.Outcome, notInStep(compareResult{Objects: []objectJSON{o}}))
+		case !imported[k] && o.Outcome != "conflict":
+			t.Errorf("%s, not imported, is compared, as a %s", k, o.Outcome)
+		case !imported[k]:
+			colliding++
+		}
 	}
+	for k := range imported {
+		if !compared[k] {
+			t.Errorf("%s, imported, isn't compared", k)
+		}
+	}
+	src := got.Sources[0]
+	if wantCode := map[bool]int{true: exitOK, false: exitNotInStep}[colliding == 0]; code != wantCode || src.Compared != len(got.Objects) || src.Definitions <= src.Compared {
+		t.Fatalf("after NetBox's import, compare --exit-code exits with %d, want %d, comparing %d of %d definitions",
+			code, wantCode, src.Compared, src.Definitions)
+	}
+	if *parityLibrary == "" && colliding > 0 {
+		t.Errorf("%d definitions not imported are compared", colliding)
+	}
+	t.Logf("%d definitions imported, %d not imported but colliding with them, %d not compared", len(imported), colliding, src.Definitions-src.Compared)
 	t.Logf("%d definitions in step with what NetBox's import made of them", len(got.Objects))
 	checkRecorded(t, env, got)
 	if *parityLibrary != "" {
@@ -489,21 +540,29 @@ func TestCompareParity(t *testing.T) {
 		t.Errorf("after creating the console port again, compare finds (-want +got):\n%s", diff)
 	}
 
-	// A device type deleted from NetBox is absent, until it is imported
-	// again.
+	// A device type deleted from NetBox is no longer compared by default,
+	// and its comparison goes, but compared by its model, it is absent;
+	// until it is imported again.
 	gs105 := "/api/dcim/device-types/" + strconv.Itoa(gs105ID) + "/"
 	if err := nb.Delete(t.Context(), gs105); err != nil {
 		t.Fatal(err)
 	}
+	before := len(got.Objects)
 	got, _ = compareJSONRun(t, env, configure)
-	if diff := cmp.Diff([]string{"absent GS105"}, notInStep(got)); diff != "" {
-		t.Errorf("deleting a device type in NetBox: compare finds (-want +got):\n%s", diff)
+	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" || len(got.Objects) != before-1 {
+		t.Errorf("deleting a device type in NetBox: compare compares %d of %d, and finds (-want +got):\n%s", len(got.Objects), before, diff)
+	}
+	checkRecorded(t, env, got)
+	selected, _ := compareJSONRun(t, env, configure, "--model", "GS105")
+	if diff := cmp.Diff([]string{"absent GS105"}, notInStep(selected)); diff != "" {
+		t.Errorf("deleting a device type in NetBox: compare --model GS105 finds (-want +got):\n%s", diff)
 	}
 	importDeviceType(t, "device-types/Netgear/GS105.yaml", files["device-types/Netgear/GS105.yaml"])
 	got, _ = compareJSONRun(t, env, configure)
-	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" {
-		t.Errorf("after importing the device type again, compare finds (-want +got):\n%s", diff)
+	if diff := cmp.Diff([]string{}, notInStep(got)); diff != "" || len(got.Objects) != before {
+		t.Errorf("after importing the device type again, compare compares %d of %d, and finds (-want +got):\n%s", len(got.Objects), before, diff)
 	}
+	checkRecorded(t, env, got)
 }
 
 // checkRecorded checks that the database, PostgreSQL here, records each
@@ -528,9 +587,20 @@ func checkRecorded(t *testing.T, env []string, got compareResult) {
 	if len(recorded) != len(got.Objects) {
 		t.Errorf("PostgreSQL records %d comparisons, want %d", len(recorded), len(got.Objects))
 	}
+	outcomes := map[string]string{}
+	for _, o := range got.Objects {
+		outcomes[o.key(t)] = o.Outcome
+	}
 	for _, c := range recorded {
-		if c.Outcome != "candidate" || c.NetBoxID == 0 || c.Differences != 0 || c.NetBoxVersion != "4.7.2" {
-			t.Errorf("recorded %+v, want a candidate in step", c.Comparison)
+		k := c.Path
+		if k == "" {
+			k = c.Identity
+		}
+		switch {
+		case c.Outcome != outcomes[k] || c.NetBoxVersion != "4.7.2":
+			t.Errorf("recorded %+v of %s, want what compare printed: %q", c.Comparison, k, outcomes[k])
+		case c.Outcome == "candidate" && (c.NetBoxID == 0 || c.Differences != 0):
+			t.Errorf("recorded %+v of %s, want a candidate in step", c.Comparison, k)
 		}
 	}
 }

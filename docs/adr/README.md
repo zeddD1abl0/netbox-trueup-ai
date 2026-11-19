@@ -35,6 +35,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0027](0027-nest-port-mappings-in-their-front-port.md) | Compare port mappings as children of their front port, keyed by position | Accepted |
 | [0028](0028-no-inventory-item-templates.md) | Don't support inventory item templates | Accepted |
 | [0029](0029-keep-a-lookup-table-of-definitions.md) | Keep each source's definitions in the database, and read them from there | Accepted |
+| [0030](0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first | Accepted |
 
 ## When to write one
 

@@ -206,7 +206,7 @@ func (q *Queries) ListDefinitionProblems(ctx context.Context, source string) ([]
 const listDefinitions = `-- name: ListDefinitions :many
 SELECT
     id, object_type, path, identity,
-    manufacturer, model, slug, part_number, digest, definition
+    manufacturer, model, slug, part_number, digest, definition, unique_values
 FROM definitions
 WHERE source = $1
 ORDER BY seq
@@ -223,6 +223,7 @@ type ListDefinitionsRow struct {
 	PartNumber   string
 	Digest       string
 	Definition   string
+	UniqueValues string
 }
 
 func (q *Queries) ListDefinitions(ctx context.Context, source string) ([]ListDefinitionsRow, error) {
@@ -245,6 +246,123 @@ func (q *Queries) ListDefinitions(ctx context.Context, source string) ([]ListDef
 			&i.PartNumber,
 			&i.Digest,
 			&i.Definition,
+			&i.UniqueValues,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDefinitionsByID = `-- name: ListDefinitionsByID :many
+SELECT
+    id, object_type, path, identity,
+    manufacturer, model, slug, part_number, digest, definition, unique_values
+FROM definitions
+WHERE source = $1 AND id = ANY($2::bigint[])
+ORDER BY seq
+`
+
+type ListDefinitionsByIDParams struct {
+	Source string
+	Ids    []int64
+}
+
+type ListDefinitionsByIDRow struct {
+	ID           int64
+	ObjectType   string
+	Path         string
+	Identity     string
+	Manufacturer string
+	Model        string
+	Slug         string
+	PartNumber   string
+	Digest       string
+	Definition   string
+	UniqueValues string
+}
+
+// Returns those of a source's definitions with the IDs given.
+func (q *Queries) ListDefinitionsByID(ctx context.Context, arg ListDefinitionsByIDParams) ([]ListDefinitionsByIDRow, error) {
+	rows, err := q.db.Query(ctx, listDefinitionsByID, arg.Source, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDefinitionsByIDRow
+	for rows.Next() {
+		var i ListDefinitionsByIDRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ObjectType,
+			&i.Path,
+			&i.Identity,
+			&i.Manufacturer,
+			&i.Model,
+			&i.Slug,
+			&i.PartNumber,
+			&i.Digest,
+			&i.Definition,
+			&i.UniqueValues,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUniqueValues = `-- name: ListUniqueValues :many
+SELECT
+    id, object_type, path, identity,
+    manufacturer, model, slug, part_number, digest, unique_values
+FROM definitions
+WHERE source = $1
+ORDER BY seq
+`
+
+type ListUniqueValuesRow struct {
+	ID           int64
+	ObjectType   string
+	Path         string
+	Identity     string
+	Manufacturer string
+	Model        string
+	Slug         string
+	PartNumber   string
+	Digest       string
+	UniqueValues string
+}
+
+// Returns a source's definitions, each with its unique values, but not the
+// whole of it.
+func (q *Queries) ListUniqueValues(ctx context.Context, source string) ([]ListUniqueValuesRow, error) {
+	rows, err := q.db.Query(ctx, listUniqueValues, source)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUniqueValuesRow
+	for rows.Next() {
+		var i ListUniqueValuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ObjectType,
+			&i.Path,
+			&i.Identity,
+			&i.Manufacturer,
+			&i.Model,
+			&i.Slug,
+			&i.PartNumber,
+			&i.Digest,
+			&i.UniqueValues,
 		); err != nil {
 			return nil, err
 		}
@@ -259,7 +377,7 @@ func (q *Queries) ListDefinitions(ctx context.Context, source string) ([]ListDef
 const searchDefinitions = `-- name: SearchDefinitions :many
 SELECT
     id, object_type, path, identity,
-    manufacturer, model, slug, part_number, digest, definition
+    manufacturer, model, slug, part_number, digest, definition, unique_values
 FROM definitions
 WHERE source = $1 AND strpos(search, $2) > 0
 ORDER BY seq
@@ -281,6 +399,7 @@ type SearchDefinitionsRow struct {
 	PartNumber   string
 	Digest       string
 	Definition   string
+	UniqueValues string
 }
 
 // Returns a source's definitions whose search text holds the search, which
@@ -305,6 +424,7 @@ func (q *Queries) SearchDefinitions(ctx context.Context, arg SearchDefinitionsPa
 			&i.PartNumber,
 			&i.Digest,
 			&i.Definition,
+			&i.UniqueValues,
 		); err != nil {
 			return nil, err
 		}
@@ -319,7 +439,8 @@ func (q *Queries) SearchDefinitions(ctx context.Context, arg SearchDefinitionsPa
 const upsertDefinitions = `-- name: UpsertDefinitions :exec
 INSERT INTO definitions (
     source, object_type, path, identity, seq,
-    manufacturer, model, slug, part_number, search, digest, definition
+    manufacturer, model, slug, part_number, search, digest, definition,
+    unique_values
 )
 SELECT
     $1::text,
@@ -333,7 +454,8 @@ SELECT
     unnest($9::text[]),
     unnest($10::text[]),
     unnest($11::text[]),
-    unnest($12::text[])
+    unnest($12::text[]),
+    unnest($13::text[])
 ON CONFLICT (source, object_type, path, identity) DO UPDATE SET
     seq = excluded.seq,
     manufacturer = excluded.manufacturer,
@@ -342,13 +464,16 @@ ON CONFLICT (source, object_type, path, identity) DO UPDATE SET
     part_number = excluded.part_number,
     search = excluded.search,
     digest = excluded.digest,
-    definition = excluded.definition
+    definition = excluded.definition,
+    unique_values = excluded.unique_values
 WHERE (
     definitions.seq, definitions.manufacturer, definitions.model, definitions.slug,
-    definitions.part_number, definitions.search, definitions.digest, definitions.definition
+    definitions.part_number, definitions.search, definitions.digest, definitions.definition,
+    definitions.unique_values
 ) IS DISTINCT FROM (
     excluded.seq, excluded.manufacturer, excluded.model, excluded.slug,
-    excluded.part_number, excluded.search, excluded.digest, excluded.definition
+    excluded.part_number, excluded.search, excluded.digest, excluded.definition,
+    excluded.unique_values
 )
 `
 
@@ -365,6 +490,7 @@ type UpsertDefinitionsParams struct {
 	Searches      []string
 	Digests       []string
 	Definitions   []string
+	UniqueValues  []string
 }
 
 // Records definitions, the nth of each list making the nth definition, as
@@ -385,6 +511,7 @@ func (q *Queries) UpsertDefinitions(ctx context.Context, arg UpsertDefinitionsPa
 		arg.Searches,
 		arg.Digests,
 		arg.Definitions,
+		arg.UniqueValues,
 	)
 	return err
 }

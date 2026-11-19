@@ -82,13 +82,13 @@ netbox-trueup-ai compare
 NetBox:  https://netbox.example.com, release 4.7.2
 
 SOURCE              REF     VERSION                                   COMPARED  IN STEP  DIFFERING  ABSENT  CONFLICTS  INVALID  WARNINGS
-devicetype-library  master  193473cbce8d8ce8171779dc9d76b9fd22ea8e7c  13781     5        1          13774   1          0        4
+devicetype-library  master  193473cbce8d8ce8171779dc9d76b9fd22ea8e7c  7         5        1          0       1          0        4
+
+13774 definitions NetBox hasn't got weren't compared: --all compares every definition, and --manufacturer or --model those named.
 
 SOURCE              OUTCOME    TYPE          MANUFACTURER  MODEL           NETBOX  DIFFERENCES  FROM
-devicetype-library  absent     manufacturer  2N            -               -       -            2 files
 devicetype-library  conflict   manufacturer  NETGEAR       -               -       -            1 file
 devicetype-library  candidate  device type   Dell          PowerEdge R640  #3      1            device-types/Dell/PowerEdge-R640.yaml
-...
 
 Conflicts:
   devicetype-library: manufacturer "NETGEAR" (1 file): its slug matches NetBox's manufacturer #3, "Netgear"
@@ -102,7 +102,7 @@ Warnings:
   devicetype-library: manufacturers "NETGEAR" and "Netgear" would both get the slug "netgear", ...
 ```
 
-The summary counts each source's definitions by outcome. The table below it lists every definition that isn't in step with NetBox; those in step are only counted. Then come the conflicts, the differences of each definition NetBox has, and the warnings and invalid files that `list` would show.
+By default `compare` compares what NetBox has: the definitions that match one of its objects, or would collide with one. The summary counts them by outcome, and says how many NetBox hasn't got, which aren't compared. The table below it lists every definition compared that isn't in step with NetBox; those in step are only counted. Then come the conflicts, the differences of each definition NetBox has, and the warnings and invalid files that `list` would show.
 
 ### Outcomes
 
@@ -142,8 +142,12 @@ A difference names its template by its list and name, such as `interfaces["eth0"
 
 ### Choosing what to compare
 
+- By default, `compare` compares what NetBox has: candidates and conflicts. A definition NetBox hasn't got is counted, but not compared, listed or recorded. It is matched with NetBox by its unique values alone, the fields NetBox keeps unique, which TrueUp keeps beside each definition, and only what is compared is read whole ([ADR 0030](adr/0030-compare-what-netbox-has-by-default.md)).
 - `compare devicetype-library` compares only the sources named.
-- `--manufacturer NAME` compares only that manufacturer, by its exact name, and its device types. Repeat it for more. A name no source defines gets a warning, and the exit code 4, so that a mistyped name doesn't pass for a comparison in step. TrueUp then reads only those manufacturers' device types from NetBox.
+- `--manufacturer NAME` compares that manufacturer and its device types, absent included. Repeat it for more. TrueUp then reads only those manufacturers' device types from NetBox.
+- `--model MODEL` compares the device types with that model, in every manufacturer, absent included, and their manufacturers, which importing them needs. Repeat it for more. With `--manufacturer`, it compares only those manufacturers' device types with that model, and the manufacturers.
+- A name matches as NetBox would store it: without white space at either end, and otherwise exactly, case included. A name no source defines gets a warning, and the exit code 4, so that a mistyped name doesn't pass for a comparison in step.
+- `--all` compares every definition, as `compare` did before step 14 of the roadmap. It can't be given with `--manufacturer` or `--model`.
 - `--fetch` fetches each source first, as `source fetch` does.
 
 ### Exit codes
@@ -152,12 +156,12 @@ A difference names its template by its list and name, such as `interfaces["eth0"
 | --- | --- |
 | 0 | Every source was read and its comparisons recorded, and every file is valid, whatever the outcomes. |
 | 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers, device types or the component templates compared, or the database can't be opened or written. |
-| 2 | A name given isn't a configured source. |
+| 2 | A name given isn't a configured source, or `--all` is given with `--manufacturer` or `--model`. |
 | 3 | The configuration is invalid, or `netbox.url` or the token isn't set. |
-| 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid, or no source defines a manufacturer `--manufacturer` names. The rest is compared and printed as usual. |
-| 5 | Only with `--exit-code`: everything was read, and some definitions are absent, in conflict or differ. |
+| 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid, or no source defines a manufacturer `--manufacturer` names or a model `--model` names. The rest is compared and printed as usual. |
+| 5 | Only with `--exit-code`: everything was read, and some definitions compared are absent, in conflict or differ. |
 
-`--exit-code` suits a scheduled job that should fail when NetBox falls behind the library.
+`--exit-code` counts only what was compared, so by default it suits a scheduled job that should fail when what NetBox has falls behind the library; with `--all`, it fails while NetBox lacks anything the library defines.
 
 ### Permissions
 
@@ -165,16 +169,17 @@ TrueUp sees what the token's permissions let it see. A token that can't read man
 
 ### Recorded comparisons
 
-Each run records the comparison of each definition it compared in the database, as the latest of that definition, replacing the one before: when it was made, against which version of the source and which NetBox, and the result, as `--output json` prints it. Comparisons of definitions the library no longer holds are removed, and so are those of files that no longer read, which define nothing: the invalid file is reported instead, and its comparison returns when it reads again. With `--manufacturer`, the other definitions keep the comparisons recorded before. A comparison is recorded only against the version of the source that the database holds: if the source was fetched again while it was compared, nothing is recorded for it, and `compare` says so and exits with 4. The web UI will read these records; for now they are in the `comparisons` table.
+Each run records the comparison of each definition it compared in the database, as the latest of that definition, replacing the one before: when it was made, against which version of the source and which NetBox, and the result, as `--output json` prints it. By default, and with `--all`, a run's comparisons replace all of the source's, so the comparisons of definitions NetBox no longer has go; with `--manufacturer` or `--model`, the other definitions keep the comparisons recorded before. Loading a version of the source removes the comparisons of the definitions it no longer holds, and of files that no longer read, which define nothing: the invalid file is reported instead, and its comparison returns when it reads again. A comparison is recorded only against the version of the source that the database holds, as the database loaded it: if the source was fetched or loaded again while it was compared, nothing is recorded for it, and `compare` says so and exits with 4. The web UI will read these records; for now they are in the `comparisons` table.
 
 ## Reading the JSON
 
 With `--output json`, `compare` prints one document whose fields scripts can rely on ([ADR 0018](adr/0018-cli-conventions.md)):
 
 - `ok`: whether every source was read and recorded, and every file is valid;
+- `scope`: what was compared: `netbox`, what NetBox has, by default; `selection`, what `--manufacturer` and `--model` name; or `all`;
 - `netbox`: its `url` and `version`; and `compared_at`, in UTC;
-- `sources`: for each, `name`, `format`, `ref`, `version`, `ok`, `error`, `files`, `invalid_files`, `definitions` and `compared`, the counts `in_step`, `differing`, `absent` and `conflicts`, and `problems`, as `list` gives them;
-- `objects`: the comparison of each definition, source by source;
+- `sources`: for each, `name`, `format`, `ref`, `version`, `ok`, `error`, `files`, `invalid_files`, `definitions` and `compared`, of which, by default, `definitions` − `compared` is how many NetBox hasn't got, the counts of those compared `in_step`, `differing`, `absent` and `conflicts`, and `problems`, as `list` gives them;
+- `objects`: the comparison of each definition compared, source by source;
 - `warnings`, each with a `message`.
 
 Each object has:
@@ -182,7 +187,7 @@ Each object has:
 - `type` and `identity`, such as `{"manufacturer": {"name": "Dell"}, "model": "PowerEdge R640"}`;
 - `outcome`, `in_step`, `netbox_id` (null unless the identity matches) and `differences`, the count;
 - `collisions`, each with its `rule`, such as `["manufacturer", "slug"]`, and the NetBox object's `netbox_id` and `identity`, and its `path`: empty for an object such as a device type, and the template's path, such as `["interfaces", {"name": "eth0"}]`, for one of two templates NetBox holds under one name. A port mapping's collision has a null `netbox_id`, since NetBox gives mappings no ID;
-- `unresolved`: references to objects NetBox lacks, each with its `field`, `type`, `key`, `netbox_ids`, the objects that all have the key when NetBox holds more than one, and the `outcome` of that object's own definition, or null;
+- `unresolved`: references to objects NetBox lacks, each with its `field`, `type`, `key`, `netbox_ids`, the objects that all have the key when NetBox holds more than one, and the `outcome` of that object's own definition in the same source, which is compared with it, or null;
 - `columns`: the versions compared, the definition first, with its `source`, `path` (null for a derived manufacturer), `derived_from` and `unmapped`, the lists of children the file holds that TrueUp is to read but doesn't yet, which for devicetype-library is always empty (inventory items, which TrueUp doesn't support, get a warning instead), then NetBox's object, with its `netbox_id`, when there is one;
 - `rows`: each field any version sets, with its `path`, a list of steps, one `cell` per column, `{"value": ...}` or `{}` where that version doesn't set the field, `differs`, `managed` and `derived`, and `netbox_id`, which is null but on a template's row. A port mapping's row has none, since NetBox gives mappings no ID.
 
@@ -191,8 +196,9 @@ A path is a list of steps: a field's or a list's name, as a string, and a templa
 Some questions it answers, with [jq](https://jqlang.org):
 
 ```sh
-# The device types NetBox lacks, as manufacturer and model.
-netbox-trueup-ai compare -o json | jq -r '.objects[]
+# The device types NetBox lacks, as manufacturer and model: only --all, or
+# a selection, compares those.
+netbox-trueup-ai compare --all -o json | jq -r '.objects[]
   | select(.type == "dcim.devicetype" and .outcome == "absent")
   | "\(.identity.manufacturer.name)\t\(.identity.model)"'
 
@@ -244,4 +250,4 @@ Then import a few of the library's device types through NetBox's own YAML import
 
 2. Under Devices, Device Types, Import, paste a file from the library, such as `device-types/Dell/PowerEdge-R640.yaml`, as it is.
 
-Run `netbox-trueup-ai compare --manufacturer Dell`: the manufacturer and the device type you imported are in step, and Dell's other device types are absent. Edit the device type in NetBox, such as its height, and compare again to see the difference. `make netbox-down` removes it all.
+Run `netbox-trueup-ai compare`: the manufacturer and the device type you imported are compared, and in step, and the rest of the library is counted. `netbox-trueup-ai compare --manufacturer Dell` adds Dell's other device types, absent. Edit the device type in NetBox, such as its height, and compare again to see the difference. `make netbox-down` removes it all.

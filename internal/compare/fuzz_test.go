@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 )
 
 // The values fuzzing picks from: few, so that definitions and NetBox's
@@ -212,6 +214,12 @@ func FuzzCompare(f *testing.F) {
 	// on PSU2; and a definition of it with eth0, ETH0, PSU1, and O1 on
 	// PSU1.
 	f.Add([]byte{1, 0, 0, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1, 3, 0, 2, 0, 1, 1, 1, 0, 1, 0, 0, 2, 0, 0, 2, 1, 1, 0, 1, 0, 0, 0})
+	// A manufacturer whose name matches one of NetBox's, and whose derived
+	// slug another's: a candidate, cut down to its unique values too.
+	f.Add([]byte("90010111"))
+	// A manufacturer whose name NetBox lacks, but whose slug it has: a
+	// conflict, cut down too.
+	f.Add([]byte("9000011101"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		in := &fuzzInput{data: data}
 		defs, observed := in.build()
@@ -285,7 +293,63 @@ func FuzzCompare(f *testing.F) {
 			}
 			checkRows(t, r)
 		}
+		checkUniqueValues(t, defs, observed, results)
 	})
+}
+
+// checkUniqueValues checks that each definition, cut down to its unique
+// values as the database keeps them, and matched with NetBox's objects
+// but not their children, as compare's default scope first matches it,
+// gets what NetBox's rules give the whole without its children: the same
+// match, collisions and outcome, and the whole's unresolved references. So
+// it is absent exactly when the whole is.
+func checkUniqueValues(t *testing.T, defs []compare.Definition, observed []compare.Observed, results []compare.Result) {
+	t.Helper()
+	specs := dcim.Specs()
+	var standalone []compare.Observed
+	for _, o := range observed {
+		if s := model.SpecOf(specs, o.Object.Type); s != nil && len(s.Identity) > 0 {
+			standalone = append(standalone, o)
+		}
+	}
+	cut := make([]compare.Definition, len(defs))
+	for i, d := range defs {
+		u, err := compare.UniqueValues(specs, d.Definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := format.EncodeDefinition(specs, u)
+		if err != nil {
+			t.Fatalf("definition %d's unique values: %v", i, err)
+		}
+		back, err := format.UnmarshalDefinition(specs, data)
+		if err != nil {
+			t.Fatalf("definition %d's unique values: %v", i, err)
+		}
+		cut[i] = compare.Definition{Source: d.Source, Definition: back}
+	}
+	for i, c := range run(t, cut, standalone) {
+		want, whole := oracle(defs[i], observed), results[i]
+		var got []int64
+		for _, col := range c.Collisions {
+			got = append(got, col.ID)
+		}
+		slices.Sort(got)
+		switch {
+		case c.Outcome != want.outcome || c.NetBoxID != want.match:
+			t.Fatalf("definition %d (%v) cut down to %v: %s matching #%d, NetBox's rules say %s matching #%d",
+				i, defs[i].Object.Fields, cut[i].Object.Fields, c.Outcome, c.NetBoxID, want.outcome, want.match)
+		case !slices.Equal(slices.Compact(got), want.collisions):
+			t.Fatalf("definition %d cut down collides with %v, want %v", i, got, want.collisions)
+		case (c.Outcome == compare.Absent) != (whole.Outcome == compare.Absent):
+			t.Fatalf("definition %d cut down is %s, the whole %s", i, c.Outcome, whole.Outcome)
+		}
+		a, _ := json.Marshal(c.Unresolved)
+		b, _ := json.Marshal(whole.Unresolved)
+		if string(a) != string(b) {
+			t.Fatalf("definition %d cut down leaves %s unresolved, the whole %s", i, a, b)
+		}
+	}
 }
 
 // checkRows checks a result's rows against its columns and outcome.

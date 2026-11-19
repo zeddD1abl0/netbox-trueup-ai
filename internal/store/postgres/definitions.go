@@ -74,6 +74,7 @@ func (s *Store) RecordLoad(ctx context.Context, load store.Load) error {
 				p.Searches = append(p.Searches, d.SearchText())
 				p.Digests = append(p.Digests, d.Digest)
 				p.Definitions = append(p.Definitions, string(d.JSON))
+				p.UniqueValues = append(p.UniqueValues, string(d.UniqueValues))
 			}
 			if err := q.UpsertDefinitions(ctx, p); err != nil {
 				return fmt.Errorf("record definitions %d to %d: %w", start+1, start+len(batch), err)
@@ -104,10 +105,13 @@ func (s *Store) RecordLoad(ctx context.Context, load store.Load) error {
 }
 
 // deleteGoneDefinitions deletes the source's definitions that a load
-// doesn't hold, by their IDs, worked out here rather than by a NOT IN over
+// doesn't hold, with their comparisons, by their IDs, worked out here rather than by a NOT IN over
 // every definition, which PostgreSQL can't always hash.
 func deleteGoneDefinitions(ctx context.Context, q *postgresdb.Queries, load store.Load) error {
 	if len(load.Definitions) == 0 {
+		if err := q.DeleteComparisons(ctx, load.Source); err != nil {
+			return err
+		}
 		return q.DeleteDefinitions(ctx, load.Source)
 	}
 	keep := load.Keys()
@@ -123,6 +127,9 @@ func deleteGoneDefinitions(ctx context.Context, q *postgresdb.Queries, load stor
 	}
 	if len(gone) == 0 {
 		return nil
+	}
+	if err := q.DeleteComparisonsOf(ctx, postgresdb.DeleteComparisonsOfParams{Source: load.Source, Ids: gone}); err != nil {
+		return err
 	}
 	return q.DeleteDefinitionsByID(ctx, gone)
 }
@@ -172,13 +179,7 @@ func (s *Store) Definitions(ctx context.Context, source, search string) (store.S
 	if err != nil {
 		return store.SourceDefinitions{}, fmt.Errorf("read the definitions of source %s: %w", source, err)
 	}
-	var loaded store.SourceDefinitions
-	err = s.inTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(q *postgresdb.Queries) error {
-		status, err := loadStatus(ctx, q, source)
-		if err != nil {
-			return err
-		}
-		loaded.LoadStatus = status
+	return s.readDefinitions(ctx, source, true, func(q *postgresdb.Queries) ([]store.Definition, error) {
 		var rows []postgresdb.ListDefinitionsRow
 		if search == "" {
 			rows, err = q.ListDefinitions(ctx, source)
@@ -189,18 +190,81 @@ func (s *Store) Definitions(ctx context.Context, source, search string) (store.S
 				rows = append(rows, postgresdb.ListDefinitionsRow(r))
 			}
 		}
-		if err != nil {
-			return fmt.Errorf("list its definitions: %w", err)
-		}
-		loaded.Definitions = make([]store.Definition, len(rows))
+		return wholeDefinitions(rows), err
+	})
+}
+
+// UniqueValues returns a source's recorded definitions, each with its
+// unique values but not the whole of it, and its problems, with the status
+// of its loads, in one read-only transaction at REPEATABLE READ.
+func (s *Store) UniqueValues(ctx context.Context, source string) (store.SourceDefinitions, error) {
+	return s.readDefinitions(ctx, source, true, func(q *postgresdb.Queries) ([]store.Definition, error) {
+		rows, err := q.ListUniqueValues(ctx, source)
+		defs := make([]store.Definition, len(rows))
 		for i, r := range rows {
-			loaded.Definitions[i] = store.Definition{
+			defs[i] = store.Definition{
 				DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
 				ID:            r.ID,
 				Manufacturer:  r.Manufacturer, Model: r.Model, Slug: r.Slug, PartNumber: r.PartNumber,
-				Digest: r.Digest,
-				JSON:   []byte(r.Definition),
+				Digest:       r.Digest,
+				UniqueValues: []byte(r.UniqueValues),
 			}
+		}
+		return defs, err
+	})
+}
+
+// DefinitionsByID returns those of a source's recorded definitions with the
+// IDs given, with the status of its loads, in one read-only transaction at
+// REPEATABLE READ.
+func (s *Store) DefinitionsByID(ctx context.Context, source string, ids []int64) (store.SourceDefinitions, error) {
+	if ids == nil {
+		ids = []int64{}
+	}
+	return s.readDefinitions(ctx, source, false, func(q *postgresdb.Queries) ([]store.Definition, error) {
+		rows, err := q.ListDefinitionsByID(ctx, postgresdb.ListDefinitionsByIDParams{Source: source, Ids: ids})
+		whole := make([]postgresdb.ListDefinitionsRow, len(rows))
+		for i, r := range rows {
+			whole[i] = postgresdb.ListDefinitionsRow(r)
+		}
+		return wholeDefinitions(whole), err
+	})
+}
+
+// wholeDefinitions returns the definitions of rows.
+func wholeDefinitions(rows []postgresdb.ListDefinitionsRow) []store.Definition {
+	defs := make([]store.Definition, len(rows))
+	for i, r := range rows {
+		defs[i] = store.Definition{
+			DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
+			ID:            r.ID,
+			Manufacturer:  r.Manufacturer, Model: r.Model, Slug: r.Slug, PartNumber: r.PartNumber,
+			Digest:       r.Digest,
+			JSON:         []byte(r.Definition),
+			UniqueValues: []byte(r.UniqueValues),
+		}
+	}
+	return defs
+}
+
+// readDefinitions reads the status of a source's loads, the definitions
+// list returns, and its problems if withProblems, in one read-only
+// transaction at REPEATABLE READ, so that all of them are as they were at
+// one moment.
+func (s *Store) readDefinitions(ctx context.Context, source string, withProblems bool,
+	list func(*postgresdb.Queries) ([]store.Definition, error),
+) (store.SourceDefinitions, error) {
+	var loaded store.SourceDefinitions
+	err := s.inTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(q *postgresdb.Queries) error {
+		var err error
+		if loaded.LoadStatus, err = loadStatus(ctx, q, source); err != nil {
+			return err
+		}
+		if loaded.Definitions, err = list(q); err != nil {
+			return fmt.Errorf("list its definitions: %w", err)
+		}
+		if !withProblems {
+			return nil
 		}
 		problems, err := q.ListDefinitionProblems(ctx, source)
 		if err != nil {
