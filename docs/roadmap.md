@@ -153,7 +153,7 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - Measured against the whole library: `list` takes 1 second from the database instead of 3 from the files, a search 0.04 seconds, and `compare` 3.8 seconds instead of 6.7 to 12.8, at the same memory and with the same output; two copies of the library take 7.5 seconds instead of 13 to 14. A load takes about 5 seconds and 580 MB, and the database grows by about 32 MB for each copy of the library.
     - No new dependency.
 
-14. **`feat(compare): compare what NetBox has, or what a selection names`.** Done in #PR.
+14. **`feat(compare): compare what NetBox has, or what a selection names`.** Done in #27.
     - By default `compare` compares what NetBox has: the definitions that match a NetBox object, or would collide with one, candidates and conflicts. Those NetBox hasn't got are counted, not compared, listed or recorded, and `--exit-code` counts only what was compared ([ADR 0030](adr/0030-compare-what-netbox-has-by-default.md)).
     - A selection compares what it names, absent included: `--manufacturer`, and `--model`, repeatable, which `--manufacturer` narrows, with the manufacturers of the device types it names. Names match as NetBox would store them, and one nothing defines exits 4. `--all` compares everything, and is a usage error beside a selection. JSON output gains a top-level `scope`. Linked objects join the default scope in milestone 2.
     - `internal/compare`: `UniqueValues` cuts a definition down to what matching reads, which a load stores beside it, so that `compare` matches every definition by its unique values, then reads whole only those it compares. `FuzzCompare` holds the cut-down to the whole's match and outcome.
