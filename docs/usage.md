@@ -145,7 +145,7 @@ A difference names its template by its list and name, such as `interfaces["eth0"
 - By default, `compare` compares what NetBox has: candidates and conflicts. A definition NetBox hasn't got is counted, but not compared, listed or recorded. It is matched with NetBox by its unique values alone, the fields NetBox keeps unique, which TrueUp keeps beside each definition, and only what is compared is read whole ([ADR 0030](adr/0030-compare-what-netbox-has-by-default.md)).
 - `compare devicetype-library` compares only the sources named.
 - `--manufacturer NAME` compares that manufacturer and its device types, absent included. Repeat it for more. TrueUp then reads only those manufacturers' device types from NetBox.
-- `--model MODEL` compares the device types with that model, in every manufacturer, absent included, and their manufacturers, which importing them needs. Repeat it for more. With `--manufacturer`, it compares only those manufacturers' device types with that model, and the manufacturers.
+- `--model MODEL` compares the device types with that model, in every manufacturer, absent included, and their manufacturers, from every source that defines them, which importing them needs. Repeat it for more. With `--manufacturer`, it compares only those manufacturers' device types with that model, and the manufacturers.
 - A name matches as NetBox would store it: without white space at either end, and otherwise exactly, case included. A name no source defines gets a warning, and the exit code 4, so that a mistyped name doesn't pass for a comparison in step.
 - `--all` compares every definition, as `compare` did before step 14 of the roadmap. It can't be given with `--manufacturer` or `--model`.
 - `--fetch` fetches each source first, as `source fetch` does.

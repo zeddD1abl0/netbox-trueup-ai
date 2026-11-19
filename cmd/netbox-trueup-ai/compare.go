@@ -393,7 +393,11 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	// A name nothing defines, such as a typing mistake, leaves the
 	// comparison short of what was asked for, so the run isn't OK.
 	invalid := slices.ContainsFunc(compared, func(sc sourceCompared) bool { return sc.row.InvalidFiles > 0 })
-	for _, u := range sel.choose(specs, compared) {
+	unknown, err := sel.choose(specs, compared)
+	if err != nil {
+		return compareJSON{}, err
+	}
+	for _, u := range unknown {
 		if u.flag == "manufacturer" {
 			a.logger.Warn("no source read defines the manufacturer", "manufacturer", u.name)
 		} else {
@@ -430,6 +434,16 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		outcomes, err := compare.Compare(specs, first, observed)
 		if err != nil {
 			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
+		}
+		// Used by position below, so checked as checkResults checks the
+		// whole definitions' results.
+		if len(outcomes) != len(first) {
+			return compareJSON{}, fmt.Errorf("compare with NetBox: %d results for the %d definitions matched", len(outcomes), len(first))
+		}
+		for i, r := range outcomes {
+			if d := first[i]; r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
+				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of those matched is of another definition", i)
+			}
 		}
 		for j := range compared {
 			sc := &compared[j]
@@ -503,6 +517,13 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			continue
 		}
 		sc.row.Compared = len(sc.chosen)
+		if scope == scopeSelection && len(sc.chosen) == 0 {
+			// Nothing of it was compared, so it has nothing to record:
+			// its comparisons are kept, whatever it holds now.
+			result.OK = result.OK && sc.row.OK
+			result.Sources = append(result.Sources, *sc.row)
+			continue
+		}
 		mine := results[:len(sc.chosen)]
 		results = results[len(sc.chosen):]
 		// Each result is written as JSON once, for the database and for
@@ -573,11 +594,11 @@ func (a *app) readSource(ctx context.Context, db store.Store, cfg *config.Config
 //
 // A selection compares the manufacturers that --manufacturer names, the
 // device types of those manufacturers, or of any, with the models --model
-// names, or with any, and the manufacturers of those device types, as an
-// import of them needs, and as their comparisons say what their
-// manufacturers' are. Names count as NetBox would store them: without
+// names, or with any, and the manufacturers of those device types, from
+// every source that defines them, as an import of them needs, and as their
+// comparisons say what their manufacturers' are. Names count as NetBox would store them: without
 // white space at either end, as the specs normalize them.
-func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared) []unknownName {
+func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared) ([]unknownName, error) {
 	if sel.scope() != scopeSelection {
 		for j := range sources {
 			sc := &sources[j]
@@ -586,10 +607,16 @@ func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared
 				sc.chosen[i] = i
 			}
 		}
-		return nil
+		return nil, nil
 	}
-	name := normalizer(specs, "dcim.manufacturer", "name")
-	modelName := normalizer(specs, "dcim.devicetype", "model")
+	name, err := normalizer(specs, "dcim.manufacturer", "name")
+	if err != nil {
+		return nil, err
+	}
+	modelName, err := normalizer(specs, "dcim.devicetype", "model")
+	if err != nil {
+		return nil, err
+	}
 	manufacturers, models := map[string]bool{}, map[string]bool{}
 	for _, m := range sel.manufacturers {
 		manufacturers[name(m)] = true
@@ -597,11 +624,12 @@ func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared
 	for _, m := range sel.models {
 		models[modelName(m)] = true
 	}
-	named, found := map[string]bool{}, map[string]bool{}
-	for j := range sources {
-		sc := &sources[j]
-		take := make([]bool, len(sc.rows))
-		makers := map[string]bool{}
+	// The device types first, in every source, so that their
+	// manufacturers are taken from every source that defines them.
+	named, found, makers := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	take := make([][]bool, len(sources))
+	for j, sc := range sources {
+		take[j] = make([]bool, len(sc.rows))
 		for i, d := range sc.rows {
 			maker := name(d.Manufacturer)
 			if d.Manufacturer != "" {
@@ -614,15 +642,13 @@ func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared
 			if len(models) > 0 && !models[m] {
 				continue
 			}
-			take[i], makers[maker], found[m] = true, true, true
+			take[j][i], makers[maker], found[m] = true, true, true
 		}
+	}
+	for j := range sources {
+		sc := &sources[j]
 		for i, d := range sc.rows {
-			if d.ObjectType == "dcim.manufacturer" && (manufacturers[name(d.Manufacturer)] || makers[name(d.Manufacturer)]) {
-				take[i] = true
-			}
-		}
-		for i := range take {
-			if take[i] {
+			if take[j][i] || d.ObjectType == "dcim.manufacturer" && (manufacturers[name(d.Manufacturer)] || makers[name(d.Manufacturer)]) {
 				sc.chosen = append(sc.chosen, i)
 			}
 		}
@@ -639,7 +665,7 @@ func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared
 			unknown = append(unknown, unknownName{flag: "model", name: m, of: of})
 		}
 	}
-	return unknown
+	return unknown, nil
 }
 
 // unknownName is a name given to --manufacturer or --model, as NetBox would
@@ -672,19 +698,20 @@ func (u unknownName) message() string {
 }
 
 // normalizer returns a function that gives text as NetBox would store it in
-// a field of a type, as its spec normalizes it.
-func normalizer(specs []*model.Spec, typ, field string) func(string) string {
-	var f *model.Field
-	if s := model.SpecOf(specs, typ); s != nil {
-		f = s.Field(field)
+// a field of a type, as its spec normalizes it. It fails if the spec has
+// no such text field, rather than match names otherwise than NetBox would.
+func normalizer(specs []*model.Spec, typ, field string) (func(string) string, error) {
+	s := model.SpecOf(specs, typ)
+	if s == nil || s.Field(field) == nil || s.Field(field).Kind != model.KindString {
+		return nil, fmt.Errorf("TrueUp has no spec of a %s's %s as text", typeName(typ), field)
 	}
+	f := s.Field(field)
 	return func(text string) string {
-		if f == nil {
-			return text
+		if v, ok := f.Normalize(model.String(text)).(model.String); ok {
+			return string(v)
 		}
-		v, _ := f.Normalize(model.String(text)).(model.String)
-		return string(v)
-	}
+		return text
+	}, nil
 }
 
 // readChosen reads the definitions chosen of a source whole. They must be

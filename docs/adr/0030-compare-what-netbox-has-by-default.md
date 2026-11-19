@@ -19,7 +19,7 @@ What should `compare` compare by default, how does it find that without reading 
 - An operational run compares what NetBox has, and `--exit-code` fails only for that.
 - Whether a definition is in scope is decided by the same matching that compares it ([ADR 0025](0025-match-by-netbox-uniqueness-rules.md)), not by a second set of rules that could disagree.
 - Each object type's rules come from its spec ([ADR 0008](0008-describe-object-types-with-specs.md)), so a new type or rule needs no code of its own here.
-- What is recorded of a source is never older than what was compared, and never mixes two loads of it ([ADR 0029](0029-keep-a-lookup-table-of-definitions.md)).
+- A run records its comparisons only against the load of the source whose definitions it read, never against one that replaced it meanwhile ([ADR 0029](0029-keep-a-lookup-table-of-definitions.md)).
 - `--all` costs no more than comparing everything did.
 
 ## Considered options

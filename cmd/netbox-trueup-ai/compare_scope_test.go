@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
@@ -319,6 +320,72 @@ func TestCompareLoadsWhatAMigrationLeftWithoutUniqueValues(t *testing.T) {
 	for _, d := range storedDefinitions(t, dataDir).Definitions {
 		if len(d.UniqueValues) == 0 {
 			t.Errorf("%s's unique values weren't loaded again", d.DefinitionKey)
+		}
+	}
+}
+
+// TestCompareSelectionAcrossSources checks that --model compares the
+// manufacturers of the device types it names from every source that
+// defines them, and that a source a selection compares nothing of records
+// nothing, so that its being fetched meanwhile isn't a failure.
+func TestCompareSelectionAcrossSources(t *testing.T) {
+	t.Parallel()
+	gs105 := libraryFiles(t, nil)["device-types/Netgear/GS105.yaml"]
+	gs999 := strings.Replace(strings.Replace(gs105, "model: GS105", "model: GS999", 1), "slug: netgear-gs105", "slug: netgear-gs999", 1)
+	if !strings.Contains(gs999, "model: GS999") || !strings.Contains(gs999, "slug: netgear-gs999") {
+		t.Fatalf("GS105's file changed: %s", gs105)
+	}
+	nb := libraryNetBox(t)
+	// Two sources from one repository: the library, and GS999 alone.
+	repo, pool, _ := libraryRepo(t, map[string]string{"device-types/Netgear/GS999.yaml": gs999})
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repo+`","format":"devicetype-library","exclude":["device-types/Netgear/GS999.yaml"]},`+
+		`{"name":"extra","kind":"git","url":"`+repo+`","format":"devicetype-library","include":["device-types/Netgear/GS999.yaml"]}]`)
+	fetched(t, pool, env)
+	env = append(env, checkEnv(t, nb.srv, checkToken)...)
+	configure := trust(pool)
+
+	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--model", "GS999")
+	if r.code != exitOK {
+		t.Fatalf("compare --model GS999: exit code %d\nstderr: %s", r.code, r.stderr)
+	}
+	if diff := cmp.Diff([]string{"candidate Netgear 0", "candidate Netgear 0", "absent GS999 0"}, outcomes(decodeCompare(t, r.stdout))); diff != "" {
+		t.Errorf("compare --model GS999 (-want +got):\n%s", diff)
+	}
+
+	var once sync.Once
+	nb.onManufacturers = func() {
+		once.Do(func() {
+			if err := recordFetchErr(t, dataDir, "extra", time.Now()); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	r = runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--model", "NE8000-X8")
+	if r.code != exitOK {
+		t.Fatalf("compare --model NE8000-X8, with the other source fetched meanwhile: exit code %d\nstderr: %s\nstdout: %s", r.code, r.stderr, r.stdout)
+	}
+	got := decodeCompare(t, r.stdout)
+	if src := got.Sources[1]; src.Name != "extra" || !src.OK || src.Compared != 0 {
+		t.Errorf("the source compared nothing of = %+v", src)
+	}
+}
+
+// TestNormalizer checks that names are normalized as the specs say, and
+// that a spec without the field fails rather than match otherwise.
+func TestNormalizer(t *testing.T) {
+	t.Parallel()
+	name, err := normalizer(dcim.Specs(), "dcim.manufacturer", "name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := name(" Dell\t"); got != "Dell" {
+		t.Errorf("normalized %q, want %q", got, "Dell")
+	}
+	for _, tt := range []struct{ typ, field string }{
+		{"dcim.platform", "name"}, {"dcim.devicetype", "colour"}, {"dcim.devicetype", "u_height"},
+	} {
+		if _, err := normalizer(dcim.Specs(), tt.typ, tt.field); err == nil {
+			t.Errorf("normalizer of %s's %s succeeded", tt.typ, tt.field)
 		}
 	}
 }
