@@ -174,6 +174,12 @@ func (s LoadStatus) Current(reader, settings string) bool {
 	return s.SnapshotVersion != "" && s.Loaded == LoadKey{s.SnapshotVersion, reader, settings}
 }
 
+// LoadedBy reports whether the definitions recorded are those of the load
+// that read key, started at at: not loaded again since.
+func (s LoadStatus) LoadedBy(key LoadKey, at time.Time) bool {
+	return s.Loaded == key && s.LoadedAt.Equal(at)
+}
+
 // Failed reports whether the latest load read the source's recorded
 // snapshot with reader and the settings given, as a load now would, and
 // failed.

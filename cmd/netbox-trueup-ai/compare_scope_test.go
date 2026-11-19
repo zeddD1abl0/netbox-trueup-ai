@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
@@ -395,5 +396,15 @@ func TestNormalizer(t *testing.T) {
 		if _, err := normalizer(dcim.Specs(), tt.typ, tt.field); err == nil {
 			t.Errorf("normalizer of %s's %s succeeded", tt.typ, tt.field)
 		}
+	}
+}
+
+// TestStoreOutcomesAreCompares checks that the database accepts exactly
+// the outcomes compare gives.
+func TestStoreOutcomesAreCompares(t *testing.T) {
+	t.Parallel()
+	want := []string{string(compare.Candidate), string(compare.Absent), string(compare.Conflict)}
+	if diff := cmp.Diff(want, store.Outcomes); diff != "" {
+		t.Errorf("store.Outcomes (-compare's +store's):\n%s", diff)
 	}
 }

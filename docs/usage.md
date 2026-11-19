@@ -156,7 +156,7 @@ A difference names its template by its list and name, such as `interfaces["eth0"
 | --- | --- |
 | 0 | Every source was read and its comparisons recorded, and every file is valid, whatever the outcomes. |
 | 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers, device types or the component templates compared, or the database can't be opened or written. |
-| 2 | A name given isn't a configured source, or `--all` is given with `--manufacturer` or `--model`. |
+| 2 | A name given isn't a configured source, `--all` is given with `--manufacturer` or `--model`, or either of them is given white space alone. |
 | 3 | The configuration is invalid, or `netbox.url` or the token isn't set. |
 | 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid, or no source defines a manufacturer `--manufacturer` names or a model `--model` names. The rest is compared and printed as usual. |
 | 5 | Only with `--exit-code`: everything was read, and some definitions compared are absent, in conflict or differ. |

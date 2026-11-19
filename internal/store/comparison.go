@@ -136,7 +136,7 @@ func (r ComparisonRun) CheckLoad(status LoadStatus) error {
 	switch {
 	case status.SnapshotVersion != r.Loaded.Version:
 		return fmt.Errorf("%w: the snapshot is of version %q, not %q", ErrSnapshotChanged, status.SnapshotVersion, r.Loaded.Version)
-	case status.Loaded != r.Loaded || !status.LoadedAt.Equal(r.LoadedAt):
+	case !status.LoadedBy(r.Loaded, r.LoadedAt):
 		return fmt.Errorf("%w: the definitions compared were loaded again meanwhile", ErrSnapshotChanged)
 	}
 	return nil

@@ -107,8 +107,9 @@ Exit codes:
      ('netbox-trueup-ai netbox check' says which), when NetBox changes while
      it is read, such as a device type deleted, or when the database can't
      be opened or written.
-  2  A name given isn't a configured source, or --all is given with
-     --manufacturer or --model.
+  2  A name given isn't a configured source, --all is given with
+     --manufacturer or --model, or either of them is given white space
+     alone.
   3  The configuration is invalid, no sources are configured, netbox.url
      or netbox.token isn't set, or database.url names a database this
      release can't use.
@@ -759,7 +760,7 @@ func readChosen(ctx context.Context, db store.Store, specs []*model.Spec, sc *so
 	if err != nil {
 		return err
 	}
-	if read.Loaded != sc.status.Loaded || !read.LoadedAt.Equal(sc.status.LoadedAt) {
+	if !read.LoadedBy(sc.status.Loaded, sc.status.LoadedAt) {
 		return sourceProblem{errors.New("the source was fetched or loaded again while it was compared: compare again")}
 	}
 	byID := make(map[int64]store.Definition, len(read.Definitions))
