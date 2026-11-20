@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
@@ -442,5 +443,38 @@ func TestPresenceText(t *testing.T) {
 		if got := presenceText(v); got != want {
 			t.Errorf("presenceText(%v) = %q, want %q", v, got, want)
 		}
+	}
+}
+
+// TestConflictTextOncePerReason checks that a reason every definition of an
+// object gives, such as NetBox's children sharing a key, is said once,
+// after them all, and a reason one gives after that one.
+func TestConflictTextOncePerReason(t *testing.T) {
+	t.Parallel()
+	twice := []compare.Collision{
+		{Path: compare.Path{{Field: "module_bays"}, {Key: map[string]model.Value{"name": model.String("LPU 1")}}}, Rule: []string{"device_type", "name"}, ID: 200},
+		{Path: compare.Path{{Field: "module_bays"}, {Key: map[string]model.Value{"name": model.String("LPU 1")}}}, Rule: []string{"device_type", "name"}, ID: 201},
+	}
+	slug := compare.Collision{Rule: []string{"manufacturer", "slug"}, ID: 12, Identity: map[string]model.Value{
+		"manufacturer": model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"name": model.String("Huawei")}}, "model": model.String("X"),
+	}}
+	o := compare.Object{
+		Type: "dcim.devicetype",
+		Definitions: []compare.Result{
+			{NetBoxID: 11, Collisions: twice},
+			{NetBoxID: 11, Collisions: append([]compare.Collision{slug}, twice...)},
+		},
+		Columns: []compare.Column{
+			{Kind: compare.DefinitionColumn, Source: "lib", Path: "a.yaml"},
+			{Kind: compare.DefinitionColumn, Source: "ours", Path: "b.yaml"},
+			{Kind: compare.NetBoxColumn, ID: 11},
+		},
+	}
+	want := []string{
+		`lib (a.yaml) and ours (b.yaml): NetBox's #11 has module_bays["LPU 1"] twice, as #200, #201, which NetBox should keep unique, so neither is compared`,
+		`ours (b.yaml): its manufacturer and slug match NetBox's device type #12, Huawei "X"`,
+	}
+	if diff := cmp.Diff(want, conflictText(o)); diff != "" {
+		t.Errorf("conflictText (-want +got):\n%s", diff)
 	}
 }

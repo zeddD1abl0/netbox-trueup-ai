@@ -246,7 +246,9 @@ func Compare(specs []*model.Spec, defs []Definition, observed []Observed) ([]Res
 		}
 		results[i] = r
 	}
-	fillOutcomes(results)
+	if err := fillOutcomes(specs, results); err != nil {
+		return nil, err
+	}
 	return results, nil
 }
 
@@ -797,40 +799,36 @@ func differ(cells []model.Value) bool {
 
 // fillOutcomes gives each unresolved reference the outcome of the same
 // source's definition of the object it refers to, where exactly one of the
-// results is, and sorts collisions.
-func fillOutcomes(results []Result) {
+// results is, matching them as Objects does (objectKey), and sorts
+// collisions. Compare has checked each definition's identity, and each
+// reference's key, against their specs.
+func fillOutcomes(specs []*model.Spec, results []Result) error {
 	// By source, so that what a result records doesn't depend on which
 	// other sources were compared with it.
 	outcomes := map[string][]Outcome{}
 	for _, r := range results {
-		k := r.Columns[0].Source + "\x00" + identityKey(r.Type, r.Identity)
+		k, _, err := objectKey(specs, r.Type, r.Identity)
+		if err != nil {
+			return fmt.Errorf("%s's definition %s: %w", r.Columns[0].Source, describeColumn(r.Type, r.Identity, r.Columns[0]), err)
+		}
+		k = r.Columns[0].Source + "\x00" + k
 		outcomes[k] = append(outcomes[k], r.Outcome)
 	}
 	for i := range results {
 		r := &results[i]
 		for j := range r.Unresolved {
 			u := &r.Unresolved[j]
-			if o := outcomes[r.Columns[0].Source+"\x00"+identityKey(u.Ref.Type, u.Ref.Key)]; len(o) == 1 {
+			k, _, err := objectKey(specs, u.Ref.Type, u.Ref.Key)
+			if err != nil {
+				return fmt.Errorf("%s's definition %s: its %s %w", r.Columns[0].Source, describeColumn(r.Type, r.Identity, r.Columns[0]), u.Field, err)
+			}
+			if o := outcomes[r.Columns[0].Source+"\x00"+k]; len(o) == 1 {
 				u.Outcome = o[0]
 			}
 		}
 		sortCollisions(r.Collisions)
 	}
-}
-
-// identityKey writes an object's type and natural key as one string.
-func identityKey(typ string, key map[string]model.Value) string {
-	var b strings.Builder
-	b.WriteString(typ)
-	for _, name := range slices.Sorted(maps.Keys(key)) {
-		b.WriteByte(0)
-		b.WriteString(name)
-		b.WriteByte('=')
-		if v := key[name]; v != nil {
-			b.WriteString(v.String())
-		}
-	}
-	return b.String()
+	return nil
 }
 
 // describeDefinition names a definition in an error: by its file, or by its

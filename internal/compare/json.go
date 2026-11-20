@@ -23,7 +23,10 @@ type resultJSON struct {
 	Collisions  []collisionJSON  `json:"collisions"`
 	Unresolved  []unresolvedJSON `json:"unresolved"`
 	Columns     []Column         `json:"columns"`
-	Rows        []rowJSON        `json:"rows"`
+	// Rows stay the last field, here and in objectJSON: compare writes the
+	// rows' JSON of an object of one definition once, for the record and
+	// the output, and finds them by that (rowsAt in cmd/netbox-trueup-ai).
+	Rows []rowJSON `json:"rows"`
 }
 
 type collisionJSON struct {
@@ -153,7 +156,8 @@ type objectJSON struct {
 	DuplicatedIn []string    `json:"duplicated_in"`
 	Clashes      []clashJSON `json:"clashes"`
 	Columns      []any       `json:"columns"`
-	Rows         []rowJSON   `json:"rows"`
+	// Rows stay the last field, as resultJSON's do.
+	Rows []rowJSON `json:"rows"`
 }
 
 // definitionColumnJSON is a definition's column in an object: the column
@@ -335,9 +339,8 @@ func appendJSONKey(b []byte, key map[string]model.Value) ([]byte, error) {
 		return append(b, out...), err
 	}
 	for name, v := range key {
-		b = append(b, '{')
-		b, err := appendJSONName(b, name)
-		if err != nil {
+		var err error
+		if b, err = appendJSONName(append(b, '{'), name); err != nil {
 			return nil, err
 		}
 		out, err := json.Marshal(v)
@@ -345,7 +348,6 @@ func appendJSONKey(b []byte, key map[string]model.Value) ([]byte, error) {
 			return nil, err
 		}
 		b = append(append(append(b, ':'), out...), '}')
-		return b, nil
 	}
 	return b, nil
 }

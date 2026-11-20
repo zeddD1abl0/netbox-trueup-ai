@@ -532,6 +532,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	}
 
 	// The whole of each definition compared, which --all read already.
+	readFailed := false
 	for j := range compared {
 		sc := &compared[j]
 		if sc.row.Version == nil || scope == scopeAll {
@@ -548,11 +549,12 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			*sc.row = compareSourceJSON{Name: sc.row.Name, Format: sc.row.Format, Problems: []problemJSON{}}
 			a.failSource(sc.row, err.Error())
 			sc.chosen, sc.matched, sc.whole = nil, nil, nil
+			readFailed = true
 		}
 	}
 	// A source that couldn't be read whole leaves its definitions out: by
 	// default, an object compared for one of them alone isn't compared.
-	if scope == scopeNetBox {
+	if scope == scopeNetBox && readFailed {
 		dropUnmatched(compared, groups)
 	}
 	var defs []compare.Definition
@@ -1533,10 +1535,29 @@ func conflictText(o compare.Object) []string {
 		}
 		parts = append(parts, fmt.Sprintf("%s defines it %s, in %s", src, times, listText(files)))
 	}
+	// Each reason once, after the definitions that give it, such as
+	// NetBox's children sharing a key, which every definition finds.
+	var reasons []string
+	givenBy := map[string][]string{}
 	for c, d := range o.Definitions {
-		if mine := collisionText(o.Type, d); len(mine) > 0 {
-			parts = append(parts, definitionText(defs[c])+": "+strings.Join(mine, "; "))
+		for _, p := range collisionText(o.Type, d) {
+			if givenBy[p] == nil {
+				reasons = append(reasons, p)
+			}
+			givenBy[p] = append(givenBy[p], definitionText(defs[c]))
 		}
+	}
+	var by []string
+	byDefinitions := map[string][]string{}
+	for _, p := range reasons {
+		who := listText(givenBy[p])
+		if byDefinitions[who] == nil {
+			by = append(by, who)
+		}
+		byDefinitions[who] = append(byDefinitions[who], p)
+	}
+	for _, who := range by {
+		parts = append(parts, who+": "+strings.Join(byDefinitions[who], "; "))
 	}
 	for _, clash := range o.Clashes {
 		prefix := ""
