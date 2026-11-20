@@ -15,12 +15,12 @@ updates:
     groups:
       go-modules:
         patterns: ["*"]
-        exclude-patterns: ["github.com/go-git/*"]
+        exclude-patterns: ["github.com/go-git/go-git/*", "github.com/go-git/go-billy/*"]
       # go-git and go-billy are betas, which a maintainer reviews (ADR 0020).
       # Grouped apart, they don't hold back the other modules' updates, which
       # merge themselves (ADR 0031).
       go-git:
-        patterns: ["github.com/go-git/*"]
+        patterns: ["github.com/go-git/go-git/*", "github.com/go-git/go-billy/*"]
 
   - package-ecosystem: github-actions
     directory: /

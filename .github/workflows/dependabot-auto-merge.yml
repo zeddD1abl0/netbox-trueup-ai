@@ -31,8 +31,8 @@ jobs:
     steps:
       # Reads the update from Dependabot's commit message. It fails unless the
       # first commit is Dependabot's and GitHub verified its signature, which
-      # is how a pull request someone else has pushed to is handed over, so
-      # its failure only means the pull request doesn't qualify.
+      # is how a pull request someone else has pushed to is handed over, so its
+      # failure only means the pull request doesn't qualify.
       - name: Read the update
         id: metadata
         continue-on-error: true
@@ -41,22 +41,24 @@ jobs:
       # A pull request qualifies only when:
       # - Dependabot caused this event, by opening or pushing to it, and
       #   started this run, which a re-run by anyone else doesn't;
-      # - every commit in it is Dependabot's own: authored by dependabot[bot],
-      #   and committed and signed by GitHub (web-flow), which a rebase or an
-      #   amend by anyone else changes, and the last is this event's head;
+      # - every commit in it is authored by dependabot[bot], and committed and
+      #   signed by GitHub (web-flow), which a local rebase or amend by anyone
+      #   else changes (GitHub's own rebase keeps them, but then the event's
+      #   sender isn't Dependabot), and the last is this event's head;
       # - every dependency it updates is a Go module or an image in the tests'
       #   compose files (from the branch name), with a patch or minor update
       #   (fetch-metadata works an image's out from its tags, and gives ""
-      #   when it can't); a Go module's new version is a release, not a
-      #   prerelease or a pseudo-version; and it is neither go-git nor
-      #   go-billy, betas taken through reviewed updates (ADR 0020), nor the
-      #   NetBox image, whose version is the target (ADR 0003);
-      # - and go.mod's change doesn't touch go-git or go-billy, which another
-      #   module's update can move without naming them.
-      # Auto-merge is then tied to that head. Otherwise it is turned off.
+      #   when it can't), to a release, not a prerelease or a pseudo-version;
+      #   and it is neither go-git nor go-billy, betas taken through reviewed
+      #   updates (ADR 0020), nor the NetBox image, whose version is the
+      #   target (ADR 0003);
+      # - and go.mod's change, which can go beyond the modules Dependabot
+      #   names, moves neither go-git nor go-billy, nor the go or toolchain
+      #   line, which set the Go release TrueUp needs.
+      # Auto-merge is then turned on if the head is still the one checked.
+      # Otherwise it is turned off.
       - name: Turn auto-merge on or off
         id: decide
-        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -70,11 +72,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          commits=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
-            --jq '.[] | {sha, author: .author.login, committer: .committer.login, verified: .commit.verification.verified}' | jq -s .)
-          others=$(jq -r '.[] | select(.author != "dependabot[bot]" or .committer != "web-flow" or (.verified | not)) | .sha[0:12]' <<<"$commits")
-          last=$(jq -r 'last.sha // ""' <<<"$commits")
-
           qualifies=false
           if [ "$SENDER" != "dependabot[bot]" ]; then
             echo "$SENDER, not Dependabot, caused this event."
@@ -82,30 +79,37 @@ jobs:
             echo "$ACTOR, not Dependabot, started this run."
           elif [ "$READ" != success ]; then
             echo "fetch-metadata couldn't read the update."
-          elif [ "$last" != "$HEAD_SHA" ]; then
-            echo "The pull request has moved on from ${HEAD_SHA:0:12}."
-          elif [ -n "$others" ]; then
-            echo "Commits that aren't Dependabot's own: ${others//$'\n'/ }"
+          elif ! jq -e 'type == "array" and length > 0' <<<"$DEPENDENCIES" >/dev/null 2>&1; then
+            echo "fetch-metadata found no dependencies."
           else
-            jq -r '.[] | "\(.packageEcosystem) \(.dependencyName) \(.prevVersion) -> \(.newVersion): \(.updateType)"' <<<"$DEPENDENCIES"
-            count=$(jq 'length' <<<"$DEPENDENCIES")
-            reasons=$(jq -r '.[] | (
-                if .packageEcosystem != "go_modules" and .packageEcosystem != "docker_compose" then "not a Go module or a test image"
-                elif .updateType != "version-update:semver-patch" and .updateType != "version-update:semver-minor" then "not a patch or minor update (\"\(.updateType)\")"
-                elif .packageEcosystem == "go_modules" and ((.newVersion // "") | . == "" or test("-")) then "not a release (\"\(.newVersion)\")"
-                elif .dependencyName | startswith("github.com/go-git/") then "go-git, reviewed by hand"
-                elif .packageEcosystem == "docker_compose" and (.dependencyName | endswith("/netbox")) then "NetBox, reviewed by hand"
-                else empty end) as $why | "  \(.dependencyName): \($why)"' <<<"$DEPENDENCIES")
-            gomod=$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
-              --jq '.[] | select(.filename == "go.mod") | if .patch then .patch else "+(patch not shown)" end')
-            if [ "$count" -eq 0 ]; then
-              echo "fetch-metadata found no dependencies."
-            elif [ -n "$reasons" ]; then
-              printf 'Dependencies that don'"'"'t qualify:\n%s\n' "$reasons"
-            elif grep -q -e '^+.*github\.com/go-git/' -e '^+(patch not shown)$' <<<"$gomod"; then
-              echo "go.mod's change touches go-git or go-billy, or GitHub doesn't show it."
+            commits=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+              --jq '.[] | {sha, author: .author.login, committer: .committer.login, verified: .commit.verification.verified}' | jq -s .)
+            others=$(jq -r '.[] | select(.author != "dependabot[bot]" or .committer != "web-flow" or (.verified | not)) | .sha[0:12]' <<<"$commits")
+            last=$(jq -r 'last.sha // ""' <<<"$commits")
+            if [ "$last" != "$HEAD_SHA" ]; then
+              echo "The pull request has moved on from ${HEAD_SHA:0:12}."
+            elif [ -n "$others" ]; then
+              echo "Commits that aren't Dependabot's own: ${others//$'\n'/ }"
             else
-              qualifies=true
+              jq -r '.[] | "\(.packageEcosystem) \(.dependencyName) \(.prevVersion) -> \(.newVersion): \(.updateType)"' <<<"$DEPENDENCIES"
+              reasons=$(jq -r '.[] | (
+                  if .packageEcosystem != "go_modules" and .packageEcosystem != "docker_compose" then "not a Go module or a test image"
+                  elif .updateType != "version-update:semver-patch" and .updateType != "version-update:semver-minor" then "not a patch or minor update (\"\(.updateType)\")"
+                  elif (.newVersion // "") as $v | $v == ""
+                    or (.packageEcosystem == "go_modules" and ($v | test("-")))
+                    or ($v | test("alpha|beta|rc"; "i")) then "not a release (\"\(.newVersion)\")"
+                  elif .dependencyName | test("^github\\.com/go-git/go-(git|billy)/") then "go-git, reviewed by hand"
+                  elif .packageEcosystem == "docker_compose" and (.dependencyName | ascii_downcase | test("(^|/)netbox$")) then "NetBox, reviewed by hand"
+                  else empty end) as $why | "  \(.dependencyName): \($why)"' <<<"$DEPENDENCIES")
+              gomod=$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
+                --jq '.[] | select(.filename == "go.mod") | if .patch then .patch else "+(patch not shown)" end')
+              if [ -n "$reasons" ]; then
+                printf 'Dependencies that don'"'"'t qualify:\n%s\n' "$reasons"
+              elif grep -q -E -e '^\+.*github\.com/go-git/go-(git|billy)/' -e '^\+(go|toolchain) ' -e '^\+\(patch not shown\)$' <<<"$gomod"; then
+                echo "go.mod's change moves go-git, go-billy or the Go release, or GitHub doesn't show it."
+              else
+                qualifies=true
+              fi
             fi
           fi
 
@@ -114,7 +118,7 @@ jobs:
             gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
           else
             auto=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
-            if [ "$auto" = true ]; then
+            if [ "$auto" != false ]; then
               echo "Turning auto-merge off; a maintainer merges this one."
               gh pr merge --disable-auto "$PR_URL"
             else
