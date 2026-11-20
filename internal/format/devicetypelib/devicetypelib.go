@@ -541,8 +541,9 @@ func manufacturerName(def format.Definition) string {
 
 // duplicates reports device types that NetBox couldn't hold together: two
 // files that give the same values for one of the device type's uniqueness
-// rules, such as the same manufacturer and model. Both are kept; grouping
-// definitions across sources (roadmap step 13) decides what they mean.
+// rules, such as the same manufacturer and model. Both are kept: compare
+// makes the object they define, or the two objects that clash, conflicts
+// (docs/adr/0032-compare-definitions-across-sources-as-objects.md).
 func (r *reader) duplicates() {
 	for _, u := range r.deviceType.Unique {
 		if u.Gap != "" {

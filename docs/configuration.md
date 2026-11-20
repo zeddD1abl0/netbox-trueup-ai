@@ -220,7 +220,7 @@ Warnings:
 
 ## Comparing with NetBox
 
-`netbox-trueup-ai compare [source...]` compares each source's definitions, from the version last fetched, with what NetBox holds, and records each comparison in [the database](#the-database). It reads the definitions from the database, loading a version there first as `list` does. It needs the NetBox settings of [Connecting to NetBox](#connecting-to-netbox), and a token that can read manufacturers and device types. Its outcomes, output, JSON and exit codes are described in [usage.md](usage.md#compare-with-netbox).
+`netbox-trueup-ai compare [source...]` compares each source's definitions, from the version last fetched, with what NetBox holds, as objects, with every source's definitions of each side by side, and records each definition's comparison in [the database](#the-database). It reads the definitions from the database, loading a version there first as `list` does. It needs the NetBox settings of [Connecting to NetBox](#connecting-to-netbox), and a token that can read manufacturers and device types. Its outcomes, output, JSON and exit codes are described in [usage.md](usage.md#compare-with-netbox).
 
 ## The database
 

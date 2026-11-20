@@ -64,7 +64,9 @@ type cellJSON struct {
 	Value model.Value `json:"value,omitempty"`
 }
 
-// MarshalJSON writes the result as `compare --output json` gives it.
+// MarshalJSON writes the result as the database records it, and as
+// `compare --output json` gives an object with one definition, but for what
+// only objects have.
 func (r Result) MarshalJSON() ([]byte, error) {
 	out := resultJSON{
 		Type:        r.Type,
@@ -72,10 +74,10 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		Outcome:     r.Outcome,
 		InStep:      r.InStep(),
 		Differences: r.Differences,
-		Collisions:  make([]collisionJSON, 0, len(r.Collisions)),
-		Unresolved:  make([]unresolvedJSON, 0, len(r.Unresolved)),
+		Collisions:  collisionsJSON(r.Collisions),
+		Unresolved:  unresolvedsJSON(r.Unresolved),
 		Columns:     r.Columns,
-		Rows:        make([]rowJSON, 0, len(r.Rows)),
+		Rows:        rowsJSON(r.Rows),
 	}
 	if out.Identity == nil {
 		out.Identity = map[string]model.Value{}
@@ -86,7 +88,12 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	if out.Columns == nil {
 		out.Columns = []Column{}
 	}
-	for _, c := range r.Collisions {
+	return json.Marshal(out)
+}
+
+func collisionsJSON(collisions []Collision) []collisionJSON {
+	out := make([]collisionJSON, 0, len(collisions))
+	for _, c := range collisions {
 		j := collisionJSON{Rule: c.Rule, Identity: c.Identity, Path: c.Path}
 		if c.ID != 0 {
 			j.NetBoxID = &c.ID
@@ -94,9 +101,14 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		if j.Identity == nil {
 			j.Identity = map[string]model.Value{}
 		}
-		out.Collisions = append(out.Collisions, j)
+		out = append(out, j)
 	}
-	for _, u := range r.Unresolved {
+	return out
+}
+
+func unresolvedsJSON(unresolved []Unresolved) []unresolvedJSON {
+	out := make([]unresolvedJSON, 0, len(unresolved))
+	for _, u := range unresolved {
 		j := unresolvedJSON{Field: u.Field, Type: u.Ref.Type, Key: u.Ref.Key, NetBoxIDs: u.Candidates}
 		if j.NetBoxIDs == nil {
 			j.NetBoxIDs = []int64{}
@@ -104,9 +116,14 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		if u.Outcome != "" {
 			j.Outcome = &u.Outcome
 		}
-		out.Unresolved = append(out.Unresolved, j)
+		out = append(out, j)
 	}
-	for _, row := range r.Rows {
+	return out
+}
+
+func rowsJSON(rows []Row) []rowJSON {
+	out := make([]rowJSON, 0, len(rows))
+	for _, row := range rows {
 		j := rowJSON{Path: row.Path, Differs: row.Differs, Managed: row.Managed, Derived: row.Derived}
 		if row.NetBoxID != 0 {
 			j.NetBoxID = &row.NetBoxID
@@ -114,7 +131,124 @@ func (r Result) MarshalJSON() ([]byte, error) {
 		for _, v := range row.Cells {
 			j.Cells = append(j.Cells, cellJSON{Value: v})
 		}
-		out.Rows = append(out.Rows, j)
+		out = append(out, j)
+	}
+	return out
+}
+
+// objectJSON is an object as `compare --output json` gives it: a result's
+// fields, with the object's meaning, then what only objects have, and a
+// column for each definition that holds its own comparison with NetBox.
+type objectJSON struct {
+	Type     string                 `json:"type"`
+	Identity map[string]model.Value `json:"identity"`
+	Outcome  Outcome                `json:"outcome"`
+	InStep   bool                   `json:"in_step"`
+	// NetBoxID is null when the identity matches no NetBox object.
+	NetBoxID    *int64           `json:"netbox_id"`
+	Differences int              `json:"differences"`
+	Collisions  []collisionJSON  `json:"collisions"`
+	Unresolved  []unresolvedJSON `json:"unresolved"`
+	// DuplicatedIn names the sources that define the object more than once.
+	DuplicatedIn []string    `json:"duplicated_in"`
+	Clashes      []clashJSON `json:"clashes"`
+	Columns      []any       `json:"columns"`
+	Rows         []rowJSON   `json:"rows"`
+}
+
+// definitionColumnJSON is a definition's column in an object: the column
+// a result gives it, and the outcome, differences and collisions of its own
+// comparison with NetBox.
+type definitionColumnJSON struct {
+	Kind        ColumnKind      `json:"kind"`
+	Source      string          `json:"source"`
+	Path        *string         `json:"path"`
+	DerivedFrom []string        `json:"derived_from"`
+	Unmapped    map[string]int  `json:"unmapped"`
+	Outcome     Outcome         `json:"outcome"`
+	InStep      bool            `json:"in_step"`
+	Differences int             `json:"differences"`
+	Collisions  []collisionJSON `json:"collisions"`
+}
+
+type clashJSON struct {
+	Rule   []string               `json:"rule"`
+	Values map[string]model.Value `json:"values"`
+	// Columns are the object's definitions that would hold the values, by
+	// their index among its columns.
+	Columns []int           `json:"columns"`
+	With    []clashWithJSON `json:"with"`
+}
+
+// clashWithJSON is another object's definition that a clash is with: the
+// object's type and identity, and the definition's source and file, or the
+// files it is derived from.
+type clashWithJSON struct {
+	Type        string                 `json:"type"`
+	Identity    map[string]model.Value `json:"identity"`
+	Source      string                 `json:"source"`
+	Path        *string                `json:"path"`
+	DerivedFrom []string               `json:"derived_from"`
+}
+
+// MarshalJSON writes the object as `compare --output json` gives it.
+func (o Object) MarshalJSON() ([]byte, error) {
+	out := objectJSON{
+		Type:         o.Type,
+		Identity:     o.Identity,
+		Outcome:      o.Outcome,
+		InStep:       o.InStep(),
+		Differences:  o.Differences,
+		Collisions:   collisionsJSON(o.Collisions),
+		Unresolved:   unresolvedsJSON(o.Unresolved),
+		DuplicatedIn: o.DuplicatedIn,
+		Clashes:      make([]clashJSON, 0, len(o.Clashes)),
+		Columns:      make([]any, 0, len(o.Columns)),
+		Rows:         rowsJSON(o.Rows),
+	}
+	if out.Identity == nil {
+		out.Identity = map[string]model.Value{}
+	}
+	if o.NetBoxID != 0 {
+		out.NetBoxID = &o.NetBoxID
+	}
+	if out.DuplicatedIn == nil {
+		out.DuplicatedIn = []string{}
+	}
+	for _, c := range o.Clashes {
+		j := clashJSON{Rule: c.Rule, Values: c.Values, Columns: c.Columns, With: make([]clashWithJSON, 0, len(c.With))}
+		for _, w := range c.With {
+			wj := clashWithJSON{Type: w.Type, Identity: w.Identity, Source: w.Column.Source, DerivedFrom: w.Column.DerivedFrom}
+			if w.Column.Path != "" {
+				wj.Path = &w.Column.Path
+			}
+			if wj.DerivedFrom == nil {
+				wj.DerivedFrom = []string{}
+			}
+			j.With = append(j.With, wj)
+		}
+		out.Clashes = append(out.Clashes, j)
+	}
+	for i, c := range o.Columns {
+		if c.Kind != DefinitionColumn || i >= len(o.Definitions) {
+			out.Columns = append(out.Columns, c)
+			continue
+		}
+		d := o.Definitions[i]
+		j := definitionColumnJSON{
+			Kind: c.Kind, Source: c.Source, DerivedFrom: c.DerivedFrom, Unmapped: c.Unmapped,
+			Outcome: d.Outcome, InStep: d.InStep(), Differences: d.Differences, Collisions: collisionsJSON(d.Collisions),
+		}
+		if c.Path != "" {
+			j.Path = &c.Path
+		}
+		if j.DerivedFrom == nil {
+			j.DerivedFrom = []string{}
+		}
+		if j.Unmapped == nil {
+			j.Unmapped = map[string]int{}
+		}
+		out.Columns = append(out.Columns, j)
 	}
 	return json.Marshal(out)
 }
@@ -150,15 +284,68 @@ func (c Column) MarshalJSON() ([]byte, error) {
 
 // MarshalJSON writes a path as a list of its steps: a field's or a
 // collection's name as a string, and a child's key as an object, such as
-// ["interfaces", {"name": "eth0"}, "type"].
+// ["interfaces", {"name": "eth0"}, "type"]. It writes the bytes encoding/json
+// writes for the list of them, without going through it for the names and
+// keys most paths have, since a whole library's comparisons hold millions.
 func (p Path) MarshalJSON() ([]byte, error) {
-	out := make([]any, len(p))
+	b := make([]byte, 0, 16*len(p)+2)
+	b = append(b, '[')
 	for i, s := range p {
-		if s.Key != nil {
-			out[i] = s.Key
+		if i > 0 {
+			b = append(b, ',')
+		}
+		var err error
+		if s.Key == nil {
+			b, err = appendJSONName(b, s.Field)
 		} else {
-			out[i] = s.Field
+			b, err = appendJSONKey(b, s.Key)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
-	return json.Marshal(out)
+	return append(b, ']'), nil
+}
+
+// appendJSONName appends a name as a JSON string: between quotes, as it is,
+// where it is made of the ASCII letters, digits and underscores a spec's
+// names are made of, which JSON never escapes; through encoding/json
+// otherwise.
+func appendJSONName(b []byte, name string) ([]byte, error) {
+	plain := name != ""
+	for _, c := range []byte(name) {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return append(append(append(b, '"'), name...), '"'), nil
+	}
+	out, err := json.Marshal(name)
+	return append(b, out...), err
+}
+
+// appendJSONKey appends a child's key as a JSON object, as encoding/json
+// writes the map: by hand for a key of one field, and through encoding/json
+// for others, which it sorts by name.
+func appendJSONKey(b []byte, key map[string]model.Value) ([]byte, error) {
+	if len(key) != 1 {
+		out, err := json.Marshal(key)
+		return append(b, out...), err
+	}
+	for name, v := range key {
+		b = append(b, '{')
+		b, err := appendJSONName(b, name)
+		if err != nil {
+			return nil, err
+		}
+		out, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		b = append(append(append(b, ':'), out...), '}')
+		return b, nil
+	}
+	return b, nil
 }

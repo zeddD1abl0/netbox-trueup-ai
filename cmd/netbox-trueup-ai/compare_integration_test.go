@@ -3,13 +3,15 @@
 package main
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,18 +85,118 @@ func libraryTree(t *testing.T, root string, sample int, leftOut ...string) (file
 	return files, imported
 }
 
-// parityEnv configures a source at repo, the NetBox and the PostgreSQL that
-// TestMain started, and a data directory of the test's own.
-func parityEnv(t *testing.T, repo string) []string {
+// parityEnv configures the library at repo as the source lib, but for
+// device-types/Ours/, and if ours, those as the source ours; the NetBox and
+// the PostgreSQL that TestMain started, and a data directory and database
+// of the test's own.
+func parityEnv(t *testing.T, repo string, ours bool) []string {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, dir, "token", nb.Token.Reveal()+"\n")
+	sources := `[{"name":"lib","kind":"git","url":"` + repo + `","format":"devicetype-library","exclude":["device-types/Ours/**"]}`
+	if ours {
+		sources += `,{"name":"ours","kind":"git","url":"` + repo + `","format":"devicetype-library","include":["device-types/Ours/**"]}`
+	}
 	return []string{
 		"TRUEUP_DATA_DIR=" + t.TempDir(),
-		"TRUEUP_SOURCES=" + `[{"name":"lib","kind":"git","url":"` + repo + `","format":"devicetype-library"}]`,
+		"TRUEUP_SOURCES=" + sources + "]",
 		"TRUEUP_NETBOX_URL=" + nb.URL,
 		"TRUEUP_NETBOX_TOKEN_FILE=" + filepath.Join(dir, "token"),
 		"TRUEUP_DATABASE_URL=" + pg.URL(pgtest.Superuser, pgtest.SuperuserPassword, pg.NewDatabase(t)),
+	}
+}
+
+// oursSource is what the source ours holds: its files, by path, and the
+// device types of the library they copy, as the library's paths.
+type oursSource struct {
+	files                     map[string]string
+	same, reslugged, consoled string
+}
+
+// oursFiles makes ours' files from the first three device types NetBox
+// imports, in order: one as it is; one with its slug changed; and one with
+// a console port, from the first of the rest that has none.
+func oursFiles(t *testing.T, files map[string]string, imported []string) oursSource {
+	t.Helper()
+	sorted := slices.Sorted(slices.Values(imported))
+	if len(sorted) < 3 {
+		t.Fatalf("NetBox imports %d device types; the other source needs 3", len(sorted))
+	}
+	o := oursSource{files: map[string]string{}, same: sorted[0], reslugged: sorted[1]}
+	for _, p := range sorted[2:] {
+		if !strings.Contains(files[p], "console-ports:") {
+			o.consoled = p
+			break
+		}
+	}
+	if o.consoled == "" {
+		t.Fatal("every device type NetBox imports has console ports")
+	}
+	ours := func(p string) string { return "device-types/Ours/" + path.Base(p) }
+	o.files[ours(o.same)] = files[o.same]
+	slug := regexp.MustCompile(`(?m)^slug: *(['"]?)([^'"\n]+)(['"]?) *$`)
+	reslugged := slug.ReplaceAllString(files[o.reslugged], "slug: ${1}${2}-ours${3}")
+	if reslugged == files[o.reslugged] {
+		t.Fatalf("%s has no slug to change", o.reslugged)
+	}
+	o.files[ours(o.reslugged)] = reslugged
+	o.files[ours(o.consoled)] = strings.TrimRight(files[o.consoled], "\n") + "\nconsole-ports:\n  - name: Ours console\n    type: rj-45\n"
+	return o
+}
+
+// checkParityAcrossSources compares NetBox, as its import made the library,
+// with the library and ours: each object ours defines too is in step, but
+// for ours' slug and console port, which differ from the library and NetBox
+// alike, by exactly that row.
+func checkParityAcrossSources(t *testing.T, repo string, pool *x509.CertPool, configure func(*app), imported map[string]bool, ours oursSource) {
+	t.Helper()
+	env := parityEnv(t, repo, true)
+	fetched(t, pool, env)
+	got, code := compareJSONRun(t, env, configure)
+	if code != exitOK {
+		t.Fatalf("compare with the library and ours: exit code %d", code)
+	}
+	want := map[string]string{
+		ours.same: "", ours.reslugged: "slug", ours.consoled: `console_ports["Ours console"]`,
+	}
+	withOurs := 0
+	for _, o := range got.Objects {
+		k := o.key(t)
+		var sources []string
+		for _, c := range o.Columns {
+			if c.Kind == "definition" {
+				sources = append(sources, c.Source)
+			}
+		}
+		if !slices.Contains(sources, "ours") {
+			continue
+		}
+		withOurs++
+		if !imported[k] || !slices.Equal(sources, []string{"lib", "ours"}) || o.Columns[0].Outcome != "candidate" {
+			t.Errorf("%s: %s, with the definitions of %v, the library's %s", k, o.Outcome, sources, o.Columns[0].Outcome)
+			continue
+		}
+		var differ []string
+		for _, row := range o.Rows {
+			if row.Differs && row.Managed {
+				differ = append(differ, pathText(row.Path))
+			}
+		}
+		field, isDeviceType := want[k]
+		switch {
+		case !isDeviceType && len(differ) > 0:
+			t.Errorf("%s, a manufacturer both derive, differs in %v", k, differ)
+		case isDeviceType && field == "" && len(differ) > 0:
+			t.Errorf("%s, which ours has as the library has it, differs in %v", k, differ)
+		case field != "" && !slices.Equal(differ, []string{field}):
+			t.Errorf("%s differs in %v, want only %s, which ours changed", k, differ, field)
+		}
+	}
+	if withOurs < 4 {
+		t.Errorf("%d objects have ours' definitions, want its 3 device types and their manufacturers", withOurs)
+	}
+	if src := got.Sources[1]; src.Name != "ours" || src.Compared != src.Definitions || src.InStep+src.Differing != src.Compared || src.Differing != 2 {
+		t.Errorf("ours compared %d of %d definitions, %d in step, %d differing; want all, 2 differing", src.Compared, src.Definitions, src.InStep, src.Differing)
 	}
 }
 
@@ -192,31 +294,6 @@ func notInStep(r compareResult) []string {
 	return out
 }
 
-// pathText writes a row's path from compare's JSON as the text output does:
-// fields joined by dots, and a child's key, of one field, in brackets, such
-// as interfaces["eth0"].type or front_ports["F1"].rear_ports[1].
-func pathText(path []any) string {
-	var b strings.Builder
-	for i, step := range path {
-		switch step := step.(type) {
-		case string:
-			if i > 0 {
-				b.WriteByte('.')
-			}
-			b.WriteString(step)
-		case map[string]any:
-			for _, v := range step {
-				if text, ok := v.(string); ok {
-					b.WriteString("[" + strconv.Quote(text) + "]")
-				} else {
-					b.WriteString("[" + fmt.Sprint(v) + "]")
-				}
-			}
-		}
-	}
-	return b.String()
-}
-
 // netboxID returns the ID of the NetBox object that the object named name
 // matches.
 func netboxID(t *testing.T, r compareResult, typ, name string) int {
@@ -273,8 +350,13 @@ func TestCompareParity(t *testing.T) {
 	} else {
 		files, paths = libraryTree(t, testLibrary, 0, "device-types/Generic/shelf-2he.yaml", "device-types/Ubiquiti/UVC-G4-INS.yaml")
 	}
+	// Another source, ours, holds three of the device types NetBox
+	// imports: one as the library has it, one with another slug, and one
+	// with a console port the library's hasn't got.
+	ours := oursFiles(t, files, paths)
+	maps.Copy(files, ours.files)
 	repo, pool, _ := gitRepoWith(t, files)
-	env := parityEnv(t, repo)
+	env := parityEnv(t, repo, false)
 	configure := trust(pool)
 	fetched(t, pool, env)
 	imported := importLibrary(t, env, configure, files, paths)
@@ -313,6 +395,7 @@ func TestCompareParity(t *testing.T) {
 	t.Logf("%d definitions imported, %d not imported but colliding with them, %d not compared", len(imported), colliding, src.Definitions-src.Compared)
 	t.Logf("%d definitions in step with what NetBox's import made of them", len(got.Objects))
 	checkRecorded(t, env, got)
+	checkParityAcrossSources(t, repo, pool, configure, imported, ours)
 	if *parityLibrary != "" {
 		return
 	}

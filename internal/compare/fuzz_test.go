@@ -205,7 +205,9 @@ func (in *fuzzInput) build() ([]compare.Definition, []compare.Observed) {
 }
 
 // FuzzCompare checks Compare against a plain reading of NetBox's rules, and
-// that its results don't depend on the order of NetBox's objects.
+// that its results don't depend on the order of NetBox's objects; and
+// Objects, with definitions from up to three sources, against a plain
+// reading of what an object is (checkObjects).
 func FuzzCompare(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{2, 0, 0, 1, 1, 3, 0, 0, 0, 0, 0, 1, 0, 1, 0, 2, 2, 1, 0, 0, 2, 0, 0, 0})
@@ -220,9 +222,24 @@ func FuzzCompare(f *testing.F) {
 	// A manufacturer whose name NetBox lacks, but whose slug it has: a
 	// conflict, cut down too.
 	f.Add([]byte("9000011101"))
+	// Objects across sources, found by a search of random inputs: a
+	// candidate whose sources differ; a clash between sources, and one of
+	// device types; a device type a source defines twice, whose front port
+	// one definition lacks; a conflict and an absent definition of one
+	// object; and three sources' definitions of an object NetBox has.
+	f.Add([]byte("8692701271771776914591484999985519429822568571086107528053219685968398"))
+	f.Add([]byte("6991238471334637693377212890294475"))
+	f.Add([]byte("652168044821661516897756597032095585119645449961806065928453359189"))
+	f.Add([]byte("964548278862041910082387585249204"))
+	f.Add([]byte("5584525925373753841157416693900471626285655192783140607909664205"))
+	f.Add([]byte("450629956359065366697482481187012788785375370108197304"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		in := &fuzzInput{data: data}
 		defs, observed := in.build()
+		// Each definition's source, from what is left.
+		for i := range defs {
+			defs[i].Source = fuzzSources[in.next(len(fuzzSources))]
+		}
 		results := run(t, defs, observed)
 
 		// NetBox's objects, and each front port's mappings, in reverse.
@@ -294,6 +311,7 @@ func FuzzCompare(f *testing.F) {
 			checkRows(t, r)
 		}
 		checkUniqueValues(t, defs, observed, results)
+		checkObjects(t, defs, observed, results)
 	})
 }
 
