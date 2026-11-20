@@ -7,6 +7,8 @@ name: Dependabot auto-merge
 
 on:
   pull_request:
+    # edited covers a change of base branch.
+    types: [opened, synchronize, reopened, edited]
 
 permissions: {}
 
@@ -39,8 +41,9 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       # A pull request qualifies only when:
-      # - Dependabot caused this event, by opening or pushing to it, and
-      #   started this run, which a re-run by anyone else doesn't;
+      # - Dependabot caused this event, by opening, pushing to or editing it,
+      #   and started this run, which a re-run by anyone else doesn't;
+      # - it is for the default branch, which the ruleset's checks guard;
       # - every commit in it is authored by dependabot[bot], and committed and
       #   signed by GitHub (web-flow), which a local rebase or amend by anyone
       #   else changes (GitHub's own rebase keeps them, but then the event's
@@ -56,8 +59,8 @@ jobs:
       #   names, moves neither go-git nor go-billy, nor the go or toolchain
       #   line, which set the Go release TrueUp needs.
       # Auto-merge is then turned on if the head is still the one checked.
-      # Otherwise it is turned off.
-      - name: Turn auto-merge on or off
+      # Otherwise the last step turns it off.
+      - name: Turn auto-merge on if the pull request qualifies
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,6 +68,8 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           SENDER: ${{ github.event.sender.login }}
           ACTOR: ${{ github.triggering_actor }}
           READ: ${{ steps.metadata.outcome }}
@@ -77,6 +82,8 @@ jobs:
             echo "$SENDER, not Dependabot, caused this event."
           elif [ "$ACTOR" != "dependabot[bot]" ]; then
             echo "$ACTOR, not Dependabot, started this run."
+          elif [ "$BASE" != "$DEFAULT_BRANCH" ]; then
+            echo "The pull request is for $BASE, not $DEFAULT_BRANCH."
           elif [ "$READ" != success ]; then
             echo "fetch-metadata couldn't read the update."
           elif ! jq -e 'type == "array" and length > 0' <<<"$DEPENDENCIES" >/dev/null 2>&1; then
@@ -101,14 +108,16 @@ jobs:
                   elif .dependencyName | test("^github\\.com/go-git/go-(git|billy)/") then "go-git, reviewed by hand"
                   elif .packageEcosystem == "docker_compose" and (.dependencyName | ascii_downcase | test("(^|/)netbox$")) then "NetBox, reviewed by hand"
                   else empty end) as $why | "  \(.dependencyName): \($why)"' <<<"$DEPENDENCIES")
-              gomod=$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
-                --jq '.[] | select(.filename == "go.mod") | if .patch then .patch else "+(patch not shown)" end')
               if [ -n "$reasons" ]; then
                 printf 'Dependencies that don'"'"'t qualify:\n%s\n' "$reasons"
-              elif grep -q -E -e '^\+.*github\.com/go-git/go-(git|billy)/' -e '^\+(go|toolchain) ' -e '^\+\(patch not shown\)$' <<<"$gomod"; then
-                echo "go.mod's change moves go-git, go-billy or the Go release, or GitHub doesn't show it."
               else
-                qualifies=true
+                gomod=$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
+                  --jq '.[] | select(.filename == "go.mod") | if .patch then .patch else "+(patch not shown)" end')
+                if grep -q -E -e '^\+.*github\.com/go-git/go-(git|billy)/' -e '^\+(go|toolchain) ' -e '^\+\(patch not shown\)$' <<<"$gomod"; then
+                  echo "go.mod's change moves go-git, go-billy or the Go release, or GitHub doesn't show it."
+                else
+                  qualifies=true
+                fi
               fi
             fi
           fi
@@ -116,25 +125,22 @@ jobs:
           if [ "$qualifies" = true ]; then
             echo "Turning auto-merge on for ${HEAD_SHA:0:12}."
             gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
-          else
-            auto=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
-            if [ "$auto" != false ]; then
-              echo "Turning auto-merge off; a maintainer merges this one."
-              gh pr merge --disable-auto "$PR_URL"
-            else
-              echo "Leaving auto-merge off; a maintainer merges this one."
-            fi
+            echo "enabled=true" >>"$GITHUB_OUTPUT"
           fi
 
-      # If deciding failed part-way, for example on an API error, nothing may
-      # have turned off an auto-merge an earlier run turned on. If even its
-      # state can't be read, it tries anyway.
-      - name: Turn auto-merge off after a failure
-        if: ${{ failure() && steps.decide.outcome == 'failure' }}
+      # Turns off an auto-merge an earlier run turned on, whenever this run
+      # didn't turn it on: the pull request doesn't qualify, or deciding failed
+      # part-way, for example on an API error. If even the state can't be read,
+      # it tries anyway. A run cancelled for a newer one leaves it to that run.
+      - name: Turn auto-merge off otherwise
+        if: ${{ !cancelled() && steps.decide.outputs.enabled != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" != false ]; then
+            echo "Turning auto-merge off; a maintainer merges this one."
             gh pr merge --disable-auto "$PR_URL"
+          else
+            echo "Auto-merge is off; a maintainer merges this one."
           fi
