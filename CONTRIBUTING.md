@@ -88,6 +88,8 @@ git push --force-with-lease
 
 A maintainer reviews each pull request. Once CI passes and review comments are resolved, the maintainer squash-merges it.
 
+Dependabot's patch and minor updates of Go modules and of the test databases' images are the exception. A workflow turns on auto-merge for them, and GitHub squash-merges them once every required check passes. Its other updates wait for a maintainer, like any pull request ([ADR 0031](docs/adr/0031-merge-routine-dependabot-updates-automatically.md)).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE), as described in section 5 of the license.

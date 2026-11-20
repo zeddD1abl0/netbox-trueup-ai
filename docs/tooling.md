@@ -257,7 +257,8 @@ Generated code (sqlc, templ, bundled JS) is committed. CI regenerates it and fai
 | [govulncheck](https://go.dev/doc/security/vuln/) | Use | Reports only the Go vulnerabilities our code actually calls. Runs in CI and on a schedule. |
 | [CodeQL](https://codeql.github.com) | Use | GitHub code scanning for Go, JavaScript, and Actions workflows. Free for public repositories. |
 | [gitleaks](https://github.com/gitleaks/gitleaks) | Use | Secret detection in the pre-commit hook and in CI, alongside GitHub's secret-scanning push protection. |
-| [Dependabot](https://docs.github.com/en/code-security/dependabot) | Use | Update PRs for Go modules, GitHub Actions, Docker base images, the test NetBox's images in `internal/netboxtest/compose.yaml`, and npm, with a 7-day cooldown on new releases (security updates aren't delayed). Native to GitHub, with no third-party app. It doesn't cover `mise.toml`, so tool pins there are bumped by hand. |
+| [Dependabot](https://docs.github.com/en/code-security/dependabot) | Use | Update PRs for Go modules, GitHub Actions, Docker base images, the test NetBox's images in `internal/netboxtest/compose.yaml`, and npm, with a 7-day cooldown on new releases (security updates aren't delayed). Native to GitHub, with no third-party app. It doesn't cover `mise.toml`, so tool pins there are bumped by hand. Patch and minor updates of Go modules and the test databases' images merge themselves once every required check passes; the rest wait for a maintainer ([ADR 0031](adr/0031-merge-routine-dependabot-updates-automatically.md)). |
+| [dependabot/fetch-metadata](https://github.com/dependabot/fetch-metadata) | Use | Reads what a Dependabot pull request updates, so the auto-merge workflow can choose which updates merge themselves ([ADR 0031](adr/0031-merge-routine-dependabot-updates-automatically.md)). Dependabot's own action. It refuses a pull request whose first commit isn't Dependabot's with a signature GitHub verified. |
 | Signed commits | Use | Every commit must carry a signature GitHub verifies (GPG or SSH). A ruleset enforces this on `main`, and a PR check enforces it for each commit in a pull request (ADR 0004). |
 | [OpenSSF Scorecard](https://github.com/ossf/scorecard) | Use | Ongoing public score of the repository's security practices. |
 | [actionlint](https://github.com/rhysd/actionlint) + [zizmor](https://docs.zizmor.sh) | Use | Lint GitHub Actions workflows for correctness and for security problems such as template injection and over-broad permissions. |
@@ -303,7 +304,8 @@ Generated code (sqlc, templ, bundled JS) is committed. CI regenerates it and fai
 
 These settings are applied by a repository admin. They are listed here so the setup is reproducible for forks.
 
-- **Ruleset on `main`:** require a pull request (no approval count, see ADR 0004), require status checks, require signed commits, linear history (squash merge only), and block force-pushes and deletion.
+- **Ruleset on `main`:** require a pull request (no approval count, see ADR 0004), require status checks (Lint and scan, both Test jobs, Integration tests, Conventional title and Signed commits), require signed commits, linear history (squash merge only), and block force-pushes and deletion.
+- **Pull requests:** allow auto-merge, which the Dependabot auto-merge workflow turns on for routine updates (ADR 0031).
 - **Security:** private vulnerability reporting, secret scanning with push protection, Dependabot alerts and security updates, CodeQL.
 - **Actions:** default `GITHUB_TOKEN` permissions set to read-only; workflows request write access per job.
 - **Community files:** `README.md`, `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` ([Contributor Covenant](https://www.contributor-covenant.org)), `CODEOWNERS`, issue forms, and a PR template with a checklist for both human and AI-assisted contributions.

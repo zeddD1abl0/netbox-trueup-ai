@@ -1,0 +1,52 @@
+# Turns on auto-merge for Dependabot's patch and minor updates of Go modules
+# and the test databases' images, so GitHub squash-merges them once the
+# ruleset's required checks pass. Everything else waits for a maintainer, as
+# other pull requests do. See docs/adr/0031-merge-routine-dependabot-updates-automatically.md.
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    # The pull request's author, which a later push or a rerun doesn't change.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.repository == 'zeddD1abl0/netbox-trueup-ai'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # merge the pull request
+      pull-requests: write # turn on its auto-merge
+    steps:
+      # Reads the update from Dependabot's commit message. It fails, and so
+      # nothing below runs, unless the first commit is Dependabot's and GitHub
+      # verified its signature.
+      - name: Read the update
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      # package-ecosystem comes from the branch name. update-type is the largest
+      # update in the pull request, so one major update holds back its whole
+      # group; for an image, whose commit doesn't say, fetch-metadata compares
+      # the tags' numbers. go-git and go-billy are betas, which ADR 0020 takes
+      # through reviewed updates. A NetBox image update changes the target
+      # (ADR 0003), and fails TestComposeFile until netboxtest.Version moves.
+      - name: Turn on auto-merge
+        if: >-
+          (steps.metadata.outputs.package-ecosystem == 'go_modules'
+          || steps.metadata.outputs.package-ecosystem == 'docker_compose')
+          && (steps.metadata.outputs.update-type == 'version-update:semver-patch'
+          || steps.metadata.outputs.update-type == 'version-update:semver-minor')
+          && !contains(steps.metadata.outputs.dependency-names, 'github.com/go-git/')
+          && !contains(steps.metadata.outputs.dependency-names, 'netbox')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
