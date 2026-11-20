@@ -21,33 +21,20 @@ func (q *Queries) DeleteComparisons(ctx context.Context, source string) error {
 	return err
 }
 
-const deleteComparisonsExcept = `-- name: DeleteComparisonsExcept :exec
+const deleteComparisonsOf = `-- name: DeleteComparisonsOf :exec
 DELETE FROM comparisons
-WHERE source = $1
-AND (object_type, path, identity) NOT IN (
-    SELECT
-        unnest($2::text[]),
-        unnest($3::text[]),
-        unnest($4::text[])
-)
+WHERE source = $1 AND definition_id = ANY($2::bigint[])
 `
 
-type DeleteComparisonsExceptParams struct {
-	Source      string
-	ObjectTypes []string
-	Paths       []string
-	Identities  []string
+type DeleteComparisonsOfParams struct {
+	Source string
+	Ids    []int64
 }
 
-// Deletes a source's comparisons, apart from those of the definitions
+// Deletes the comparisons of those of a source's definitions with the IDs
 // given.
-func (q *Queries) DeleteComparisonsExcept(ctx context.Context, arg DeleteComparisonsExceptParams) error {
-	_, err := q.db.Exec(ctx, deleteComparisonsExcept,
-		arg.Source,
-		arg.ObjectTypes,
-		arg.Paths,
-		arg.Identities,
-	)
+func (q *Queries) DeleteComparisonsOf(ctx context.Context, arg DeleteComparisonsOfParams) error {
+	_, err := q.db.Exec(ctx, deleteComparisonsOf, arg.Source, arg.Ids)
 	return err
 }
 
@@ -65,9 +52,7 @@ func (q *Queries) GetSnapshotVersion(ctx context.Context, source string) (string
 
 type InsertComparisonsParams struct {
 	Source        string
-	ObjectType    string
-	Path          string
-	Identity      string
+	DefinitionID  int64
 	SourceVersion string
 	ComparedAt    pgtype.Timestamptz
 	NetboxUrl     string
@@ -80,14 +65,17 @@ type InsertComparisonsParams struct {
 
 const listComparisons = `-- name: ListComparisons :many
 SELECT
-    object_type, path, identity, source_version, compared_at,
-    netbox_url, netbox_version, outcome, netbox_id, differences, result
-FROM comparisons
-WHERE source = $1
-ORDER BY object_type, path, identity
+    d.id, d.object_type, d.path, d.identity,
+    c.source_version, c.compared_at, c.netbox_url, c.netbox_version,
+    c.outcome, c.netbox_id, c.differences, c.result
+FROM comparisons AS c
+INNER JOIN definitions AS d ON d.source = c.source AND d.id = c.definition_id
+WHERE c.source = $1
+ORDER BY d.object_type, d.path, d.identity
 `
 
 type ListComparisonsRow struct {
+	ID            int64
 	ObjectType    string
 	Path          string
 	Identity      string
@@ -101,6 +89,8 @@ type ListComparisonsRow struct {
 	Result        string
 }
 
+// Returns the comparisons of a source's definitions, each with its
+// definition's key.
 func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListComparisonsRow, error) {
 	rows, err := q.db.Query(ctx, listComparisons, source)
 	if err != nil {
@@ -111,6 +101,7 @@ func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListCom
 	for rows.Next() {
 		var i ListComparisonsRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.ObjectType,
 			&i.Path,
 			&i.Identity,

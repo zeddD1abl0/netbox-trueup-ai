@@ -245,12 +245,13 @@ func TestCompareText(t *testing.T) {
 	want := `NetBox:  ` + nb.srv.URL + `, release 4.7.2
 
 SOURCE  REF     VERSION                                   COMPARED  IN STEP  DIFFERING  ABSENT  CONFLICTS  INVALID  WARNINGS
-lib     master  ` + commit + `  6         3        1          1       1          0        1
+lib     master  ` + commit + `  5         3        1          0       1          0        1
+
+1 definition NetBox hasn't got wasn't compared: --all compares every definition, and --manufacturer or --model those named.
 
 SOURCE  OUTCOME    TYPE          MANUFACTURER  MODEL      NETBOX  DIFFERENCES  FROM
 lib     conflict   manufacturer  NETGEAR       -          -       -            1 file
 lib     candidate  device type   Huawei        NE8000-X8  #11     2            device-types/Huawei/NE8000-X8.yaml
-lib     absent     device type   NETGEAR       GS510TLP   -       -            device-types/Netgear/GS510TLP.yml
 
 Conflicts:
   lib: manufacturer "NETGEAR" (1 file): its slug matches NetBox's manufacturer #1, "Netgear"
@@ -304,7 +305,8 @@ Warnings:
 // compareResult decodes compare's JSON output, with values as encoding/json
 // reads them.
 type compareResult struct {
-	OK     bool `json:"ok"`
+	OK     bool   `json:"ok"`
+	Scope  string `json:"scope"`
 	NetBox struct {
 		URL     string `json:"url"`
 		Version string `json:"version"`
@@ -441,12 +443,12 @@ func TestCompareJSON(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
 	env, dataDir, commit, configure := compareEnv(t, nb)
-	r := runCLIApp(t, nil, configure, env, "compare", "-o", "json")
+	r := runCLIApp(t, nil, configure, env, "compare", "--all", "-o", "json")
 	if r.code != exitOK {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
 	got := decodeCompare(t, r.stdout)
-	if !got.OK || got.NetBox.URL != nb.srv.URL || got.NetBox.Version != "4.7.2" || got.ComparedAt == "" || len(got.Warnings) != 0 {
+	if !got.OK || got.Scope != "all" || got.NetBox.URL != nb.srv.URL || got.NetBox.Version != "4.7.2" || got.ComparedAt == "" || len(got.Warnings) != 0 {
 		t.Errorf("compare -o json = %+v", got)
 	}
 	src := got.Sources[0]
@@ -508,8 +510,10 @@ func TestCompareJSON(t *testing.T) {
 		}
 	}
 
+	// --exit-code counts only what was compared: by default, not the
+	// definition NetBox hasn't got.
 	r = runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--exit-code")
-	if r.code != exitNotInStep || !strings.Contains(r.stderr, "3 of the 6 definitions compared aren't in step with NetBox") {
+	if r.code != exitNotInStep || !strings.Contains(r.stderr, "2 of the 5 definitions compared aren't in step with NetBox") {
 		t.Errorf("compare --exit-code: exit code %d, stderr %q", r.code, r.stderr)
 	}
 	if decodeCompare(t, r.stdout).Sources == nil {
@@ -541,7 +545,7 @@ func TestCompareManufacturers(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
 	env, dataDir, _, configure := compareEnv(t, nb)
-	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
+	if r := runCLIApp(t, nil, configure, env, "compare", "--all"); r.code != exitOK {
 		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
 	before := recordedComparisons(t, dataDir)
@@ -591,7 +595,7 @@ func TestCompareFetch(t *testing.T) {
 	if r.code != exitOK {
 		t.Fatalf("compare --fetch: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
-	if got := decodeCompare(t, r.stdout); *got.Sources[0].Version != commit || len(got.Objects) != 6 {
+	if got := decodeCompare(t, r.stdout); *got.Sources[0].Version != commit || len(got.Objects) != 5 {
 		t.Errorf("compare --fetch = %+v", got)
 	}
 }
@@ -617,7 +621,7 @@ func TestCompareRecordsOnlyTheVersionCompared(t *testing.T) {
 	}
 	got := decodeCompare(t, r.stdout)
 	if src := got.Sources[0]; src.OK || src.Error == nil || !strings.Contains(*src.Error, "its comparisons were not recorded") ||
-		!strings.Contains(*src.Error, `the snapshot is of version "abc"`) || len(got.Objects) != 6 {
+		!strings.Contains(*src.Error, `the snapshot is of version "abc"`) || len(got.Objects) != 5 {
 		t.Errorf("the source = %+v, with %d objects", src, len(got.Objects))
 	}
 	if recorded := recordedResults(t, dataDir); len(recorded) != 0 {
@@ -641,7 +645,7 @@ func TestCompareRecordsByTheKeysTheDatabaseHolds(t *testing.T) {
 		l.Definitions[i].Identity = strings.Replace(l.Definitions[i].Identity, `":`, `": `, 1)
 	}
 	recordLoadIn(t, dataDir, l)
-	if r := runCLIApp(t, nil, configure, env, "compare", "-o", "json"); r.code != exitOK {
+	if r := runCLIApp(t, nil, configure, env, "compare", "--all", "-o", "json"); r.code != exitOK {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
 	recorded := recordedComparisons(t, dataDir)
@@ -788,7 +792,7 @@ func TestCompareNothingChosen(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
 	env, dataDir, _, configure := compareEnv(t, nb)
-	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
+	if r := runCLIApp(t, nil, configure, env, "compare", "--all"); r.code != exitOK {
 		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
 	before := recordedComparisons(t, dataDir)
@@ -851,7 +855,7 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
 	env, dataDir, _, configure := compareEnv(t, nb)
-	if r := runCLIApp(t, nil, configure, env, "compare"); r.code != exitOK {
+	if r := runCLIApp(t, nil, configure, env, "compare", "--all"); r.code != exitOK {
 		t.Fatalf("compare: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
 	before := recordedComparisons(t, dataDir)
@@ -863,7 +867,7 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	broken, pool, _ := gitRepoWith(t, files)
 	env = slices.DeleteFunc(slices.Clone(env), func(e string) bool { return strings.HasPrefix(e, "TRUEUP_SOURCES=") })
 	env = append(env, `TRUEUP_SOURCES=[{"name":"lib","kind":"git","url":"`+broken+`","format":"devicetype-library"}]`)
-	r := runCLIApp(t, nil, trust(pool), env, "compare", "--fetch")
+	r := runCLIApp(t, nil, trust(pool), env, "compare", "--fetch", "--all")
 	if r.code != exitCompareProblems || !strings.Contains(r.stdout, "Invalid files:\n  lib: device-types/Netgear/GS105.yaml") {
 		t.Fatalf("compare --fetch: exit code %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}
@@ -884,6 +888,12 @@ func TestCompareRecordsWhatTheSourceHoldsNow(t *testing.T) {
 	r = runCLIApp(t, nil, trust(pool), env, "compare", "--manufacturer", "Nobody")
 	if !strings.Contains(r.stdout, `no source read defines the manufacturer "Nobody"; some files are invalid, and one of them may`) {
 		t.Errorf("compare --manufacturer with invalid files:\n%s", r.stdout)
+	}
+	// The error after the result says so once: the warning's last clause
+	// repeats what it says of the invalid files.
+	if !strings.Contains(r.stderr, `manufacturer=Nobody`) || strings.Contains(r.stderr, "one of them may") ||
+		!strings.HasSuffix(r.stderr, `1 file is invalid; no source read defines the manufacturer "Nobody"`+"\n") {
+		t.Errorf("compare --manufacturer with invalid files: stderr %q", r.stderr)
 	}
 }
 
@@ -974,9 +984,10 @@ func TestCheckResults(t *testing.T) {
 	version := "v1"
 	source := func(name string, paths ...string) sourceCompared {
 		sc := sourceCompared{row: &compareSourceJSON{Name: name, Version: &version}}
-		for _, p := range paths {
-			sc.chosen = append(sc.chosen, def(name, p))
-			sc.chosenKeys = append(sc.chosenKeys, store.DefinitionKey{ObjectType: dt, Path: p})
+		for i, p := range paths {
+			sc.rows = append(sc.rows, store.Definition{DefinitionKey: store.DefinitionKey{ObjectType: dt, Path: p}, ID: int64(i + 1)})
+			sc.chosen = append(sc.chosen, i)
+			sc.whole = append(sc.whole, def(name, p))
 		}
 		return sc
 	}
@@ -1019,13 +1030,24 @@ func TestCheckResults(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := ""
-			if err := checkResults(two, tt.results); err != nil {
+			if err := checkResults(two, tt.results, scopeSelection); err != nil {
 				got = err.Error()
 			}
 			if got != tt.want {
 				t.Errorf("checkResults = %q, want %q", got, tt.want)
 			}
 		})
+	}
+
+	// By default, every definition compared matched NetBox by its unique
+	// values, so none can be absent.
+	results := []compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b1.yaml", compare.Absent), res("b", "b2.yaml", compare.Conflict)}
+	want := `compare with NetBox: dcim.devicetype "b1.yaml" is absent, though its unique values matched NetBox; please report it`
+	if err := checkResults(two, results, scopeNetBox); err == nil || err.Error() != want {
+		t.Errorf("checkResults by default = %v, want %q", err, want)
+	}
+	if err := checkResults(two, results, scopeAll); err != nil {
+		t.Errorf("checkResults of every definition = %v, want nil", err)
 	}
 }
 

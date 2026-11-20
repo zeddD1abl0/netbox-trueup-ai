@@ -107,8 +107,15 @@ type Definition struct {
 	// files give it, or "" for a definition the format derives.
 	Digest string
 	// JSON is the definition as `list --output json` gives it
-	// (format.MarshalDefinition).
+	// (format.MarshalDefinition). A read of unique values leaves it nil.
 	JSON []byte
+	// UniqueValues is the definition cut down to what matching it with
+	// NetBox reads (compare.UniqueValues), as JSON of the same form, so
+	// that compare can tell which definitions NetBox has without reading
+	// them whole (docs/adr/0030-compare-what-netbox-has-by-default.md). A
+	// database that a release before them migrated holds "" until the
+	// source is loaded again.
+	UniqueValues []byte
 }
 
 // Problem is something wrong with a file a load read, or with what its
@@ -165,6 +172,12 @@ func (s LoadStatus) State() string {
 // read from the source's recorded snapshot, with the settings given.
 func (s LoadStatus) Current(reader, settings string) bool {
 	return s.SnapshotVersion != "" && s.Loaded == LoadKey{s.SnapshotVersion, reader, settings}
+}
+
+// LoadedBy reports whether the definitions recorded are those of the load
+// that read key, started at at: not loaded again since.
+func (s LoadStatus) LoadedBy(key LoadKey, at time.Time) bool {
+	return s.Loaded == key && s.LoadedAt.Equal(at)
 }
 
 // Failed reports whether the latest load read the source's recorded
@@ -267,6 +280,8 @@ func (d Definition) check() error {
 		return fmt.Errorf("%s: its file has no SHA-256 digest", d.DefinitionKey)
 	case !json.Valid(d.JSON) || !isText(string(d.JSON)):
 		return fmt.Errorf("%s: the definition isn't JSON text", d.DefinitionKey)
+	case !json.Valid(d.UniqueValues) || !isText(string(d.UniqueValues)):
+		return fmt.Errorf("%s: its unique values aren't JSON text", d.DefinitionKey)
 	}
 	return nil
 }

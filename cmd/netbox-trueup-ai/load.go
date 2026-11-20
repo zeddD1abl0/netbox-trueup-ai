@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/glob"
@@ -49,11 +50,18 @@ func (p cacheProblem) Unwrap() error { return p.error }
 type sourceRead struct {
 	ref, version string
 	result       *format.Result
-	// keys are the keys the database holds the definitions by, and json
-	// the definitions as it holds them, which list --output json prints.
-	keys []store.DefinitionKey
-	json []json.RawMessage
+	// status is that of the source's loads when the definitions were read,
+	// and rows the definitions as the database holds them: by their keys
+	// and IDs, with what they are found by, and, read whole, their JSON,
+	// which list --output json prints.
+	status store.LoadStatus
+	rows   []store.Definition
 }
+
+// errNoUniqueValues means the database holds no unique values of a
+// definition, as one that a release before them migrated doesn't, until
+// the source is loaded again.
+var errNoUniqueValues = errors.New("the database holds no unique values of it, as a release before them left it")
 
 // loadKey is what decides what a load of a source's version reads: the
 // format and its version, read by this release of TrueUp, and the source's
@@ -109,6 +117,26 @@ var notFetched = sourceProblem{fmt.Errorf("%w: %s", source.ErrNotFetched, fetchH
 // wasn't raised would leave, it is loaded again. A problem with the source
 // is returned as a sourceProblem.
 func (a *app) readLoaded(ctx context.Context, db store.Store, cfg *config.Config, s config.Source, search string) (sourceRead, error) {
+	return a.readLoadedWith(ctx, db, cfg, s, func(ctx context.Context) (store.SourceDefinitions, error) {
+		return db.Definitions(ctx, s.Name, search)
+	}, decodeLoaded)
+}
+
+// readUniqueValues returns, as readLoaded does without a search, the
+// definitions that the database holds of a source's last fetched version,
+// each cut down to its unique values, which compare matches with NetBox
+// first: so that it reads only the definitions it compares whole.
+func (a *app) readUniqueValues(ctx context.Context, db store.Store, cfg *config.Config, s config.Source) (sourceRead, error) {
+	return a.readLoadedWith(ctx, db, cfg, s, func(ctx context.Context) (store.SourceDefinitions, error) {
+		return db.UniqueValues(ctx, s.Name)
+	}, decodeUniqueValues)
+}
+
+// readLoadedWith is readLoaded, reading the definitions with read, and
+// reading them back with decode.
+func (a *app) readLoadedWith(ctx context.Context, db store.Store, cfg *config.Config, s config.Source,
+	read func(context.Context) (store.SourceDefinitions, error), decode func(store.SourceDefinitions) (sourceRead, error),
+) (sourceRead, error) {
 	key, err := loadKeyOf(s)
 	if err != nil {
 		return sourceRead{}, sourceProblem{err}
@@ -142,7 +170,7 @@ func (a *app) readLoaded(ctx context.Context, db store.Store, cfg *config.Config
 				return sourceRead{}, err
 			}
 		}
-		loaded, err := db.Definitions(ctx, s.Name, search)
+		loaded, err := read(ctx)
 		if errors.Is(err, store.ErrNotFound) {
 			// Removed meanwhile, by a fetch whose configuration lacks it.
 			return sourceRead{}, notFetched
@@ -154,15 +182,20 @@ func (a *app) readLoaded(ctx context.Context, db store.Store, cfg *config.Config
 			reload = false
 			continue
 		}
-		read, err := decodeLoaded(loaded)
+		decoded, err := decode(loaded)
 		if err == nil {
-			return read, nil
+			return decoded, nil
 		}
 		if reload {
 			return sourceRead{}, sourceProblem{fmt.Errorf("TrueUp can't read back the definitions it just loaded; please report it: %w", err)}
 		}
-		a.logger.Warn("the database holds definitions of the source that this release can't read back, so it loads the source again",
-			"source", s.Name, "error", err)
+		if errors.Is(err, errNoUniqueValues) {
+			a.logger.Info("the database holds no unique values of the source's definitions, as a release before them left it, so it loads the source again",
+				"source", s.Name)
+		} else {
+			a.logger.Warn("the database holds definitions of the source that this release can't read back, so it loads the source again",
+				"source", s.Name, "error", err)
+		}
 		reload = true
 	}
 	return sourceRead{}, sourceProblem{errors.New("another process fetched the source, or loaded it with another release of TrueUp or other settings of the source, each time it was read: try again")}
@@ -177,6 +210,24 @@ func failedAlready(status store.LoadStatus) sourceProblem {
 
 // decodeLoaded reads back what the database holds of a source.
 func decodeLoaded(defs store.SourceDefinitions) (sourceRead, error) {
+	return decodeWith(defs, func(d store.Definition) ([]byte, error) { return d.JSON, nil })
+}
+
+// decodeUniqueValues reads back what the database holds of a source, each
+// definition cut down to its unique values. A database that a release
+// before them migrated holds none, until the source is loaded again.
+func decodeUniqueValues(defs store.SourceDefinitions) (sourceRead, error) {
+	return decodeWith(defs, func(d store.Definition) ([]byte, error) {
+		if len(d.UniqueValues) == 0 {
+			return nil, errNoUniqueValues
+		}
+		return d.UniqueValues, nil
+	})
+}
+
+// decodeWith reads back what the database holds of a source, each
+// definition from the JSON that of gives.
+func decodeWith(defs store.SourceDefinitions, of func(store.Definition) ([]byte, error)) (sourceRead, error) {
 	specs := dcim.Specs()
 	res := &format.Result{
 		Definitions: make([]format.Definition, len(defs.Definitions)),
@@ -186,15 +237,18 @@ func decodeLoaded(defs store.SourceDefinitions) (sourceRead, error) {
 	}
 	read := sourceRead{
 		ref: defs.SnapshotRef, version: defs.Loaded.Version, result: res,
-		keys: make([]store.DefinitionKey, len(defs.Definitions)),
-		json: make([]json.RawMessage, len(defs.Definitions)),
+		status: defs.LoadStatus, rows: defs.Definitions,
 	}
 	for i, d := range defs.Definitions {
-		def, err := format.UnmarshalDefinition(specs, d.JSON)
+		data, err := of(d)
 		if err != nil {
 			return sourceRead{}, fmt.Errorf("%s: %w", d.DefinitionKey, err)
 		}
-		res.Definitions[i], read.keys[i], read.json[i] = def, d.DefinitionKey, d.JSON
+		def, err := format.UnmarshalDefinition(specs, data)
+		if err != nil {
+			return sourceRead{}, fmt.Errorf("%s: %w", d.DefinitionKey, err)
+		}
+		res.Definitions[i] = def
 	}
 	for i, p := range defs.Problems {
 		res.Problems[i] = format.Problem{
@@ -429,7 +483,8 @@ func fillLoad(load *store.Load, res *format.Result, digests map[string]string) {
 
 // storedDefinition returns a definition as the database keeps it: by its
 // key, as it reads back from its JSON, with what it is searched and shown
-// by and its file's digest.
+// by, its file's digest, and its unique values, which compare matches it
+// with NetBox by first.
 func storedDefinition(specs []*model.Spec, d format.Definition, digests map[string]string) (store.Definition, error) {
 	key, err := definitionKey(d)
 	if err != nil {
@@ -438,6 +493,14 @@ func storedDefinition(specs []*model.Spec, d format.Definition, digests map[stri
 	data, err := format.EncodeDefinition(specs, d)
 	if err != nil {
 		return store.Definition{}, err
+	}
+	cut, err := compare.UniqueValues(specs, d)
+	if err != nil {
+		return store.Definition{}, err
+	}
+	unique, err := format.EncodeDefinition(specs, cut)
+	if err != nil {
+		return store.Definition{}, fmt.Errorf("its unique values: %w", err)
 	}
 	digest := digests[d.Path]
 	if d.Path != "" && digest == "" {
@@ -452,6 +515,7 @@ func storedDefinition(specs []*model.Spec, d format.Definition, digests map[stri
 		PartNumber:    stringField(d.Object.Fields["part_number"]),
 		Digest:        digest,
 		JSON:          data,
+		UniqueValues:  unique,
 	}, nil
 }
 
@@ -462,6 +526,24 @@ func definitionKey(d format.Definition) (store.DefinitionKey, error) {
 		return store.DefinitionKey{}, fmt.Errorf("write the identity of a %s: %w", d.Object.Type, err)
 	}
 	return store.DefinitionKey{ObjectType: d.Object.Type, Path: d.Path, Identity: string(identity)}, nil
+}
+
+// manufacturerName returns the name of the manufacturer a definition is, or
+// that a device type's refers to.
+func manufacturerName(d format.Definition) (string, bool) {
+	var name model.Value
+	switch d.Object.Type {
+	case "dcim.manufacturer":
+		name = d.Identity["name"]
+	case "dcim.devicetype":
+		ref, ok := d.Identity["manufacturer"].(model.Reference)
+		if !ok {
+			return "", false
+		}
+		name = ref.Key["name"]
+	}
+	s, ok := name.(model.String)
+	return string(s), ok
 }
 
 // stringField returns a string field's value, or "" for any other.

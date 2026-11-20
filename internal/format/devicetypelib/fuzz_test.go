@@ -9,6 +9,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/compare"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model/dcim"
@@ -136,6 +137,20 @@ func checkRoundTrip(t *testing.T, def format.Definition) {
 	}
 	if diff := cmp.Diff(def, back, cmp.AllowUnexported(model.Decimal{}, model.Date{}), cmpopts.EquateEmpty()); diff != "" {
 		t.Fatalf("a valid file's definition reads back from its JSON otherwise (-read +back):\n%s", diff)
+	}
+	// So do its unique values, which the database keeps beside it.
+	cut, err := compare.UniqueValues(specs, def)
+	if err != nil {
+		t.Fatalf("a valid file's definition's unique values: %v", err)
+	}
+	if data, err = format.EncodeDefinition(specs, cut); err != nil {
+		t.Fatalf("a valid file's definition's unique values: %v", err)
+	}
+	if back, err = format.UnmarshalDefinition(specs, data); err != nil {
+		t.Fatalf("a valid file's definition's unique values: %v", err)
+	}
+	if diff := cmp.Diff(cut, back, cmp.AllowUnexported(model.Decimal{}, model.Date{}), cmpopts.EquateEmpty()); diff != "" {
+		t.Fatalf("a valid file's unique values read back from their JSON otherwise (-cut +back):\n%s", diff)
 	}
 }
 

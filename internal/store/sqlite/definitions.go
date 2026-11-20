@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -65,6 +66,7 @@ func (s *Store) RecordLoad(ctx context.Context, load store.Load) error {
 				Search:       d.SearchText(),
 				Digest:       d.Digest,
 				Definition:   string(d.JSON),
+				UniqueValues: string(d.UniqueValues),
 			}); err != nil {
 				return fmt.Errorf("the definition of %s: %w", d.DefinitionKey, err)
 			}
@@ -89,9 +91,12 @@ func (s *Store) RecordLoad(ctx context.Context, load store.Load) error {
 }
 
 // deleteGoneDefinitions deletes the source's definitions that a load
-// doesn't hold.
+// doesn't hold, with their comparisons.
 func deleteGoneDefinitions(ctx context.Context, q *sqlitedb.Queries, load store.Load) error {
 	if len(load.Definitions) == 0 {
+		if err := q.DeleteComparisons(ctx, load.Source); err != nil {
+			return err
+		}
 		return q.DeleteDefinitions(ctx, load.Source)
 	}
 	keep := load.Keys()
@@ -102,6 +107,9 @@ func deleteGoneDefinitions(ctx context.Context, q *sqlitedb.Queries, load store.
 	for _, k := range keys {
 		if keep[store.DefinitionKey{ObjectType: k.ObjectType, Path: k.Path, Identity: k.Identity}] {
 			continue
+		}
+		if err := q.DeleteComparison(ctx, sqlitedb.DeleteComparisonParams{Source: load.Source, DefinitionID: k.ID}); err != nil {
+			return err
 		}
 		if err := q.DeleteDefinition(ctx, k.ID); err != nil {
 			return err
@@ -154,11 +162,7 @@ func (s *Store) Definitions(ctx context.Context, source, search string) (store.S
 	if err != nil {
 		return store.SourceDefinitions{}, fmt.Errorf("read the definitions of source %s: %w", source, err)
 	}
-	var loaded store.SourceDefinitions
-	err = s.inTx(ctx, &sql.TxOptions{ReadOnly: true}, func(q *sqlitedb.Queries) error {
-		if loaded.LoadStatus, err = loadStatus(ctx, q, source); err != nil {
-			return err
-		}
+	return s.readDefinitions(ctx, source, true, func(q *sqlitedb.Queries) ([]store.Definition, error) {
 		var rows []sqlitedb.ListDefinitionsRow
 		if search == "" {
 			rows, err = q.ListDefinitions(ctx, source)
@@ -169,18 +173,83 @@ func (s *Store) Definitions(ctx context.Context, source, search string) (store.S
 				rows = append(rows, sqlitedb.ListDefinitionsRow(r))
 			}
 		}
-		if err != nil {
-			return fmt.Errorf("list its definitions: %w", err)
-		}
-		loaded.Definitions = make([]store.Definition, len(rows))
+		return wholeDefinitions(rows), err
+	})
+}
+
+// UniqueValues returns a source's recorded definitions, each with its
+// unique values but not the whole of it, and its problems, with the status
+// of its loads, in one read-only transaction.
+func (s *Store) UniqueValues(ctx context.Context, source string) (store.SourceDefinitions, error) {
+	return s.readDefinitions(ctx, source, true, func(q *sqlitedb.Queries) ([]store.Definition, error) {
+		rows, err := q.ListUniqueValues(ctx, source)
+		defs := make([]store.Definition, len(rows))
 		for i, r := range rows {
-			loaded.Definitions[i] = store.Definition{
+			defs[i] = store.Definition{
 				DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
 				ID:            r.ID,
 				Manufacturer:  r.Manufacturer, Model: r.Model, Slug: r.Slug, PartNumber: r.PartNumber,
-				Digest: r.Digest,
-				JSON:   []byte(r.Definition),
+				Digest:       r.Digest,
+				UniqueValues: []byte(r.UniqueValues),
 			}
+		}
+		return defs, err
+	})
+}
+
+// DefinitionsByID returns those of a source's recorded definitions with the
+// IDs given, with the status of its loads, in one read-only transaction.
+func (s *Store) DefinitionsByID(ctx context.Context, source string, ids []int64) (store.SourceDefinitions, error) {
+	if ids == nil {
+		ids = []int64{}
+	}
+	list, err := json.Marshal(ids)
+	if err != nil {
+		return store.SourceDefinitions{}, fmt.Errorf("read the definitions of source %s: %w", source, err)
+	}
+	return s.readDefinitions(ctx, source, false, func(q *sqlitedb.Queries) ([]store.Definition, error) {
+		rows, err := q.ListDefinitionsByID(ctx, sqlitedb.ListDefinitionsByIDParams{Source: source, Ids: string(list)})
+		whole := make([]sqlitedb.ListDefinitionsRow, len(rows))
+		for i, r := range rows {
+			whole[i] = sqlitedb.ListDefinitionsRow(r)
+		}
+		return wholeDefinitions(whole), err
+	})
+}
+
+// wholeDefinitions returns the definitions of rows.
+func wholeDefinitions(rows []sqlitedb.ListDefinitionsRow) []store.Definition {
+	defs := make([]store.Definition, len(rows))
+	for i, r := range rows {
+		defs[i] = store.Definition{
+			DefinitionKey: store.DefinitionKey{ObjectType: r.ObjectType, Path: r.Path, Identity: r.Identity},
+			ID:            r.ID,
+			Manufacturer:  r.Manufacturer, Model: r.Model, Slug: r.Slug, PartNumber: r.PartNumber,
+			Digest:       r.Digest,
+			JSON:         []byte(r.Definition),
+			UniqueValues: []byte(r.UniqueValues),
+		}
+	}
+	return defs
+}
+
+// readDefinitions reads the status of a source's loads, the definitions
+// list returns, and its problems if withProblems, in one read-only
+// transaction.
+func (s *Store) readDefinitions(ctx context.Context, source string, withProblems bool,
+	list func(*sqlitedb.Queries) ([]store.Definition, error),
+) (store.SourceDefinitions, error) {
+	var loaded store.SourceDefinitions
+	err := s.inTx(ctx, &sql.TxOptions{ReadOnly: true}, func(q *sqlitedb.Queries) error {
+		var err error
+		if loaded.LoadStatus, err = loadStatus(ctx, q, source); err != nil {
+			return err
+		}
+		if loaded.Definitions, err = list(q); err != nil {
+			return fmt.Errorf("list its definitions: %w", err)
+		}
+		if !withProblems {
+			return nil
 		}
 		problems, err := q.ListDefinitionProblems(ctx, source)
 		if err != nil {

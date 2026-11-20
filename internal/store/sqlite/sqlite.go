@@ -282,8 +282,8 @@ func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, err
 				continue
 			}
 			for _, del := range []func(context.Context, string) error{
-				q.DeleteDefinitionProblems, q.DeleteDefinitions, q.DeleteDefinitionLoad,
-				q.DeleteComparisons, q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,
+				q.DeleteComparisons, q.DeleteDefinitionProblems, q.DeleteDefinitions, q.DeleteDefinitionLoad,
+				q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,
 			} {
 				if err := del(ctx, name); err != nil {
 					return fmt.Errorf("source %s: %w", name, err)

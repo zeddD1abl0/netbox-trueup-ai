@@ -48,7 +48,8 @@ DELETE FROM definitions WHERE source = $1;
 -- changed.
 INSERT INTO definitions (
     source, object_type, path, identity, seq,
-    manufacturer, model, slug, part_number, search, digest, definition
+    manufacturer, model, slug, part_number, search, digest, definition,
+    unique_values
 )
 SELECT
     sqlc.arg(source)::text,
@@ -62,7 +63,8 @@ SELECT
     unnest(sqlc.arg(part_numbers)::text[]),
     unnest(sqlc.arg(searches)::text[]),
     unnest(sqlc.arg(digests)::text[]),
-    unnest(sqlc.arg(definitions)::text[])
+    unnest(sqlc.arg(definitions)::text[]),
+    unnest(sqlc.arg(unique_values)::text[])
 ON CONFLICT (source, object_type, path, identity) DO UPDATE SET
     seq = excluded.seq,
     manufacturer = excluded.manufacturer,
@@ -71,13 +73,16 @@ ON CONFLICT (source, object_type, path, identity) DO UPDATE SET
     part_number = excluded.part_number,
     search = excluded.search,
     digest = excluded.digest,
-    definition = excluded.definition
+    definition = excluded.definition,
+    unique_values = excluded.unique_values
 WHERE (
     definitions.seq, definitions.manufacturer, definitions.model, definitions.slug,
-    definitions.part_number, definitions.search, definitions.digest, definitions.definition
+    definitions.part_number, definitions.search, definitions.digest, definitions.definition,
+    definitions.unique_values
 ) IS DISTINCT FROM (
     excluded.seq, excluded.manufacturer, excluded.model, excluded.slug,
-    excluded.part_number, excluded.search, excluded.digest, excluded.definition
+    excluded.part_number, excluded.search, excluded.digest, excluded.definition,
+    excluded.unique_values
 );
 
 -- name: DeleteDefinitionProblems :exec
@@ -119,7 +124,7 @@ WHERE snapshots.source = $1;
 -- name: ListDefinitions :many
 SELECT
     id, object_type, path, identity,
-    manufacturer, model, slug, part_number, digest, definition
+    manufacturer, model, slug, part_number, digest, definition, unique_values
 FROM definitions
 WHERE source = $1
 ORDER BY seq;
@@ -129,9 +134,28 @@ ORDER BY seq;
 -- is in lower case, exactly: strpos, unlike LIKE, gives % and _ no meaning.
 SELECT
     id, object_type, path, identity,
-    manufacturer, model, slug, part_number, digest, definition
+    manufacturer, model, slug, part_number, digest, definition, unique_values
 FROM definitions
 WHERE source = sqlc.arg(source) AND strpos(search, sqlc.arg(search)) > 0
+ORDER BY seq;
+
+-- name: ListUniqueValues :many
+-- Returns a source's definitions, each with its unique values, but not the
+-- whole of it.
+SELECT
+    id, object_type, path, identity,
+    manufacturer, model, slug, part_number, digest, unique_values
+FROM definitions
+WHERE source = $1
+ORDER BY seq;
+
+-- name: ListDefinitionsByID :many
+-- Returns those of a source's definitions with the IDs given.
+SELECT
+    id, object_type, path, identity,
+    manufacturer, model, slug, part_number, digest, definition, unique_values
+FROM definitions
+WHERE source = sqlc.arg(source) AND id = ANY(sqlc.arg(ids)::bigint[])
 ORDER BY seq;
 
 -- name: ListDefinitionProblems :many

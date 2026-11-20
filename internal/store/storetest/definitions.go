@@ -30,7 +30,11 @@ const (
 // the manufacturer name, derived, if path is "", whose JSON says which load
 // gave it.
 func definition(path, name, load string) store.Definition {
-	d := store.Definition{DefinitionKey: key(path, name), JSON: fmt.Appendf(nil, `{"name":%q,"load":%q}`, name, load)}
+	d := store.Definition{
+		DefinitionKey: key(path, name),
+		JSON:          fmt.Appendf(nil, `{"name":%q,"load":%q}`, name, load),
+		UniqueValues:  fmt.Appendf(nil, `{"name":%q}`, name),
+	}
 	if path == "" {
 		d.Manufacturer, d.Slug = name, strings.ToLower(name)
 		return d
@@ -283,6 +287,58 @@ func testLoadsNeedTheSnapshot(t *testing.T, s store.Store) {
 	}
 }
 
+func testDefinitionReads(t *testing.T, s store.Store) {
+	for _, read := range []func() error{
+		func() error { _, err := s.UniqueValues(t.Context(), "lib"); return err },
+		func() error { _, err := s.DefinitionsByID(t.Context(), "lib", []int64{1}); return err },
+	} {
+		if err := read(); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("reading the definitions of a source never fetched = %v, want ErrNotFound", err)
+		}
+	}
+	dell, a, b := definition("", "Dell", "v1"), definition("Dell/a.yaml", "A", "v1"), definition("Dell/b.yaml", "B", "v1")
+	record(t, s, success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml"))
+	load := loadOf("lib", "v1", t0, dell, a, b)
+	load.Problems = []store.Problem{{Severity: "warning", Path: "Dell/a.yaml", Reason: "odd"}}
+	recordLoad(t, s, load)
+	other := loadDefinitions(t, s, "other", "x1", t0, definition("Dell/a.yaml", "A", "x1"))
+	whole := definitions(t, s, "lib", "")
+	ids := idsOf(t, whole.Definitions)
+
+	// Unique values: every definition, without its JSON, with the
+	// problems, as they were at one moment.
+	unique, err := s.UniqueValues(t.Context(), "lib")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := whole
+	want.Definitions = slices.Clone(whole.Definitions)
+	for i := range want.Definitions {
+		want.Definitions[i].JSON = nil
+	}
+	if diff := cmp.Diff(want, unique, equateEmpty); diff != "" {
+		t.Errorf("UniqueValues (-want +got):\n%s", diff)
+	}
+
+	// By ID: those of the source's definitions named, whole, in the
+	// format's order; not another source's, nor IDs of nothing; and no
+	// problems.
+	byID, err := s.DefinitionsByID(t.Context(), "lib", []int64{ids[b.DefinitionKey], 0, other.ids[a.DefinitionKey], ids[dell.DefinitionKey], 1 << 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = store.SourceDefinitions{LoadStatus: whole.LoadStatus, Definitions: []store.Definition{whole.Definitions[0], whole.Definitions[2]}}
+	if diff := cmp.Diff(want, byID, equateEmpty); diff != "" {
+		t.Errorf("DefinitionsByID (-want +got):\n%s", diff)
+	}
+	for _, none := range [][]int64{nil, {}} {
+		byID, err := s.DefinitionsByID(t.Context(), "lib", none)
+		if err != nil || len(byID.Definitions) != 0 || byID.LoadStatus != whole.LoadStatus {
+			t.Errorf("DefinitionsByID(%v) = %+v, %v; want the status alone", none, byID, err)
+		}
+	}
+}
+
 func testLoadsRemoved(t *testing.T, s store.Store) {
 	for _, name := range []string{"a", "b"} {
 		record(t, s, success(name, "v1", t0, "x.yaml"))
@@ -338,6 +394,8 @@ func testInvalidLoads(t *testing.T, s store.Store) {
 		{"no object type", func(l *store.Load) { l.Definitions[0].ObjectType = "" }},
 		{"identity not JSON", func(l *store.Load) { l.Definitions[0].Identity = "{" }},
 		{"definition not JSON", func(l *store.Load) { l.Definitions[0].JSON = []byte("{") }},
+		{"unique values not JSON", func(l *store.Load) { l.Definitions[0].UniqueValues = []byte("{") }},
+		{"no unique values", func(l *store.Load) { l.Definitions[0].UniqueValues = nil }},
 		{"a file without a digest", func(l *store.Load) { l.Definitions[0].Digest = "" }},
 		{"a bad digest", func(l *store.Load) { l.Definitions[0].Digest = "sha256:x" }},
 		{"a derived definition with a digest", func(l *store.Load) { l.Definitions[1].Digest = l.Definitions[0].Digest }},
@@ -577,20 +635,26 @@ func testLoadsWhileFetching(t *testing.T, s store.Store) {
 	}
 }
 
-// FillForMigration records, in a store at an older schema, what migrations
-// since must keep: sources with and without a snapshot, the snapshot's
-// lists, and comparisons. It returns a function that checks that a store,
-// migrated since, holds all of it as it was, and that a source starts with
-// nothing loaded.
-func FillForMigration(t *testing.T, s store.Store) (check func(*testing.T, store.Store)) {
+// FillForMigration records, in a store at schema version 2, what
+// migrations since must keep: sources with and without a snapshot, and the
+// snapshot's lists. It returns a function that checks that a store,
+// migrated since, holds all of it as it was, that a source starts with
+// nothing loaded, and that no comparison is left, since comparisons
+// recorded then are of no definition: each engine's test records one, in
+// SQL, since RecordComparisons records them otherwise now.
+func FillForMigration(t *testing.T, s store.Store, exec func(t *testing.T, statement string)) (check func(*testing.T, store.Store)) {
 	t.Helper()
 	ok := success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml")
 	ok.Skipped = []store.Skipped{{Path: "big.png", Reason: "too_large"}}
 	record(t, s, ok)
 	record(t, s, failure("down", t0, "unreachable"))
-	a, b := key("Dell/a.yaml", "A"), key("Dell/b.yaml", "B")
-	r := run("lib", "v1", t0.Add(time.Second), []store.DefinitionKey{a, b}, comparison(a, "candidate", 4), comparison(b, "absent", 0))
-	recordComparisons(t, s, r)
+	exec(t, `INSERT INTO comparisons (
+		source, object_type, path, identity, source_version, compared_at,
+		netbox_url, netbox_version, outcome, netbox_id, differences, result
+	) VALUES (
+		'lib', 'dcim.devicetype', 'Dell/a.yaml', '{"manufacturer":{"name":"Dell"},"model":"A"}', 'v1', '2026-10-26T01:02:04.456789Z',
+		'https://netbox.example.com/', '4.7.2', 'candidate', 4, 1, '{}'
+	)`)
 	sources, err := s.Sources(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -605,11 +669,93 @@ func FillForMigration(t *testing.T, s store.Store) (check func(*testing.T, store
 			t.Errorf("Sources after migrating (-before +after):\n%s", diff)
 		}
 		checkSnapshot(t, s, snapshotOf(ok))
-		checkComparisons(t, s, "lib", recorded(r, r.Comparisons...))
+		// Comparisons recorded before definitions were are of no
+		// definition, and go: the next compare makes them again.
+		checkComparisons(t, s, "lib", nil)
 		if diff := cmp.Diff(store.LoadStatus{Source: "lib", SnapshotVersion: "v1", SnapshotRef: "main"}, loadStatus(t, s, "lib")); diff != "" {
 			t.Errorf("LoadStatus after migrating (-want +got):\n%s", diff)
 		}
 		recordLoad(t, s, loadOf("lib", "v1", t0.Add(time.Minute), definition("Dell/a.yaml", "A", "v1")))
+	}
+}
+
+// FillForComparisonsMigration records, in a store at schema version 3, in
+// SQL that exec runs, since the store records them otherwise now: a load of
+// a source's definitions, and comparisons of some of them, of a definition
+// it hasn't got, and with an outcome compare doesn't give. It returns a
+// function that checks that a store, migrated since, keeps the comparisons
+// of the definitions it has, with their outcomes, by their IDs, and
+// removes the others; that the definitions' unique values read as empty;
+// and that a load of them keeps their IDs, and their comparisons.
+func FillForComparisonsMigration(t *testing.T, s store.Store, exec func(t *testing.T, statement string)) (check func(*testing.T, store.Store)) {
+	t.Helper()
+	record(t, s, success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml"))
+	const at = "2026-10-26T01:02:03.456789Z"
+	exec(t, fmt.Sprintf(`INSERT INTO definition_loads (
+		source, started_at, version, reader, settings, error,
+		loaded_at, loaded_version, loaded_reader, loaded_settings, files, invalid_files
+	) VALUES ('lib', '%[1]s', 'v1', '%[2]s', '%[3]s', NULL, '%[1]s', 'v1', '%[2]s', '%[3]s', 2, 0)`, at, reader, settings))
+	defs := []store.Definition{definition("", "Dell", "v1"), definition("Dell/a.yaml", "A", "v1"), definition("Dell/b.yaml", "B", "v1")}
+	for i, d := range defs {
+		// As a load records it, but for its unique values, so that a load
+		// rewrites the row for them alone.
+		exec(t, fmt.Sprintf(`INSERT INTO definitions (
+			source, object_type, path, identity, seq, manufacturer, model, slug, part_number, search, digest, definition
+		) VALUES ('lib', '%s', '%s', '%s', %d, '%s', '%s', '%s', '%s', '%s', '%s', '%s')`,
+			d.ObjectType, d.Path, d.Identity, i, d.Manufacturer, d.Model, d.Slug, d.PartNumber, d.SearchText(), d.Digest, d.JSON))
+	}
+	for _, c := range []struct{ path, identity, outcome, netboxID, result string }{
+		{"", `{"name":"Dell"}`, "candidate", "3", `{"n":1}`},
+		{"Dell/a.yaml", `{"manufacturer":{"name":"Dell"},"model":"A"}`, "unknown", "NULL", `{"n":2}`},
+		{"Dell/b.yaml", `{"manufacturer":{"name":"Dell"},"model":"B"}`, "absent", "NULL", `{"n":3}`},
+		{"Dell/gone.yaml", `{"manufacturer":{"name":"Dell"},"model":"Gone"}`, "absent", "NULL", `{"n":4}`},
+	} {
+		typ := "dcim.devicetype"
+		if c.path == "" {
+			typ = "dcim.manufacturer"
+		}
+		exec(t, fmt.Sprintf(`INSERT INTO comparisons (
+			source, object_type, path, identity, source_version, compared_at,
+			netbox_url, netbox_version, outcome, netbox_id, differences, result
+		) VALUES ('lib', '%s', '%s', '%s', 'v1', '2026-10-26T01:02:04.456789Z', 'https://netbox.example.com/', '4.7.2', '%s', %s, 0, '%s')`,
+			typ, c.path, c.identity, c.outcome, c.netboxID, c.result))
+	}
+	return func(t *testing.T, s store.Store) {
+		t.Helper()
+		unique, err := s.UniqueValues(t.Context(), "lib")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := idsOf(t, unique.Definitions)
+		for _, d := range unique.Definitions {
+			if len(d.UniqueValues) != 0 {
+				t.Errorf("%s has the unique values %s after migrating, want none", d.DefinitionKey, d.UniqueValues)
+			}
+		}
+		l := loaded{status: unique.LoadStatus, ids: ids}
+		r := l.run(time.Date(2026, 10, 26, 1, 2, 4, 456789000, time.UTC), false,
+			l.comparison(defs[2].DefinitionKey, "absent", 0), l.comparison(defs[0].DefinitionKey, "candidate", 3))
+		want := recorded(r, l.comparison(defs[2].DefinitionKey, "absent", 0), l.comparison(defs[0].DefinitionKey, "candidate", 3))
+		want[0].Result, want[0].Differences = []byte(`{"n":3}`), 0
+		want[1].Result, want[1].Differences = []byte(`{"n":1}`), 0
+		checkComparisons(t, s, "lib", want)
+
+		// A load writes the unique values, keeping the IDs, and so the
+		// comparisons.
+		again := reload(t, s, "lib", "v1", t0.Add(time.Minute), defs...)
+		if diff := cmp.Diff(ids, again.ids); diff != "" {
+			t.Errorf("the IDs after a load (-before +after):\n%s", diff)
+		}
+		unique, err = s.UniqueValues(t.Context(), "lib")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, d := range unique.Definitions {
+			if string(d.UniqueValues) != string(defs[i].UniqueValues) {
+				t.Errorf("%s has the unique values %s after a load, want %s", d.DefinitionKey, d.UniqueValues, defs[i].UniqueValues)
+			}
+		}
+		checkComparisons(t, s, "lib", want)
 	}
 }
 

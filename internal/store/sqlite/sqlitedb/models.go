@@ -10,9 +10,7 @@ import (
 
 type Comparison struct {
 	Source        string
-	ObjectType    string
-	Path          string
-	Identity      string
+	DefinitionID  int64
 	SourceVersion string
 	ComparedAt    string
 	NetboxUrl     string
@@ -37,6 +35,7 @@ type Definition struct {
 	Search       string
 	Digest       string
 	Definition   string
+	UniqueValues string
 }
 
 type DefinitionLoad struct {

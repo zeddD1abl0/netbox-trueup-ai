@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -30,10 +31,10 @@ import (
 
 func newCompareCommand(a *app) *cobra.Command {
 	var (
-		out           output
-		fetch         bool
-		signal        bool
-		manufacturers []string
+		out    output
+		fetch  bool
+		signal bool
+		sel    compareSelection
 	)
 	cmd := &cobra.Command{
 		Use:   "compare [source...]",
@@ -63,6 +64,19 @@ type's manufacturer and model, and manufacturer and slug. Its outcome is:
              a device type whose model matches one device type and whose
              slug another, so NetBox couldn't hold both. A person decides.
 
+What is compared:
+
+  By default, what NetBox has: the candidates and conflicts. The
+  definitions NetBox hasn't got are only counted.
+  --manufacturer and --model compare what they name, absent included: a
+  manufacturer and its device types, and the device types with a model,
+  with their manufacturers. Together, a manufacturer's device types with
+  that model.
+  --all compares every definition.
+
+A name is matched as NetBox would store it, without white space at either
+end, and otherwise exactly, case included.
+
 A candidate is compared field by field, as NetBox stores each value. Only
 the fields a definition sets count: NetBox's other fields are shown, but
 aren't differences. A value the format derived rather than read, such as a
@@ -74,10 +88,12 @@ the device type, exactly, and compared field by field in the same way. A
 template the definition has and NetBox hasn't is one difference. A template
 only NetBox has is listed, but isn't a difference: TrueUp never removes one.
 
-The comparison of each definition is recorded in TrueUp's database, as the
-latest, against the version of the source compared. NetBox is only read.
-The token sees what its permissions let it see: where they have
-constraints, the objects they hide show as absent.
+The comparison of each definition compared is recorded in TrueUp's database,
+as the latest, against the version of the source compared. By default, and
+with --all, the source's other comparisons are removed; with --manufacturer
+or --model, they are kept. NetBox is only read. The token sees what its
+permissions let it see: where they have constraints, the objects they hide
+show as absent.
 
 The source isn't fetched unless --fetch is given: then each source is
 fetched first, as "source fetch" fetches it.
@@ -91,18 +107,27 @@ Exit codes:
      ('netbox-trueup-ai netbox check' says which), when NetBox changes while
      it is read, such as a device type deleted, or when the database can't
      be opened or written.
-  2  A name given isn't a configured source.
+  2  A name given isn't a configured source, --all is given with
+     --manufacturer or --model, or either of them is given white space
+     alone.
   3  The configuration is invalid, no sources are configured, netbox.url
      or netbox.token isn't set, or database.url names a database this
      release can't use.
   4  Some sources couldn't be read, such as one never fetched, or their
-     comparisons couldn't be recorded, because the source was fetched again
-     while it was compared, or some files are invalid, or no source read
-     defines a manufacturer --manufacturer names. The rest is compared, and
-     the result printed as usual.
+     comparisons couldn't be recorded, because the source was fetched or
+     loaded again while it was compared, or some files are invalid, or no
+     source read defines a manufacturer --manufacturer names, or a model
+     --model names. The rest is compared, and the result printed as usual.
   5  Only with --exit-code: everything was read, and some definitions
-     aren't in step with NetBox: they are absent, in conflict, or differ.`,
+     compared aren't in step with NetBox: they are absent, in conflict, or
+     differ.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if sel.all && (len(sel.manufacturers) > 0 || len(sel.models) > 0) {
+				return usageError{errors.New("--all compares every definition, so it can't be given with --manufacturer or --model")}
+			}
+			if err := sel.check(dcim.Specs()); err != nil {
+				return usageError{err}
+			}
 			cfg, err := a.loadConfig(cmd)
 			if err != nil {
 				return err
@@ -114,7 +139,7 @@ Exit codes:
 			if err := requireNetBox(cfg.Settings.NetBox); err != nil {
 				return err
 			}
-			result, err := a.runCompare(cmd.Context(), cfg, sources, fetch, manufacturers, out != outputJSON)
+			result, err := a.runCompare(cmd.Context(), cfg, sources, fetch, sel, out != outputJSON)
 			if err != nil {
 				return err
 			}
@@ -137,10 +162,68 @@ Exit codes:
 	}
 	addOutputFlag(cmd, &out)
 	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does")
-	cmd.Flags().BoolVar(&signal, "exit-code", false, "exit with 5 when some definitions aren't in step with NetBox")
-	cmd.Flags().StringArrayVar(&manufacturers, "manufacturer", nil,
-		"compare only this manufacturer, by its exact name, and its device types; repeat it for more")
+	cmd.Flags().BoolVar(&signal, "exit-code", false, "exit with 5 when some definitions compared aren't in step with NetBox")
+	cmd.Flags().StringArrayVar(&sel.manufacturers, "manufacturer", nil,
+		"compare only this manufacturer, by its name as NetBox would store it, and its device types; repeat it for more")
+	cmd.Flags().StringArrayVar(&sel.models, "model", nil,
+		"compare only the device types with this model, as NetBox would store it, and their manufacturers; repeat it for more")
+	cmd.Flags().BoolVar(&sel.all, "all", false, "compare every definition, not only those NetBox has")
 	return cmd
+}
+
+// compareScope is what a run of compare compares
+// (docs/adr/0030-compare-what-netbox-has-by-default.md). Its values are
+// part of the CLI's JSON output.
+type compareScope string
+
+const (
+	// scopeNetBox compares the definitions that match a NetBox object, or
+	// collide with one: candidates and conflicts.
+	scopeNetBox compareScope = "netbox"
+	// scopeSelection compares what --manufacturer and --model name, absent
+	// included.
+	scopeSelection compareScope = "selection"
+	// scopeAll compares every definition.
+	scopeAll compareScope = "all"
+)
+
+// compareSelection is what the command line chose to compare.
+type compareSelection struct {
+	manufacturers, models []string
+	all                   bool
+}
+
+// check refuses a name that NetBox would store as nothing, such as white
+// space alone, which no definition has.
+func (sel compareSelection) check(specs []*model.Spec) error {
+	for _, flag := range []struct {
+		name, typ, field string
+		values           []string
+	}{
+		{"--manufacturer", "dcim.manufacturer", "name", sel.manufacturers},
+		{"--model", "dcim.devicetype", "model", sel.models},
+	} {
+		normalize, err := normalizer(specs, flag.typ, flag.field)
+		if err != nil {
+			return err
+		}
+		for _, v := range flag.values {
+			if normalize(v) == "" {
+				return fmt.Errorf("%s needs a name, not %s", flag.name, strconv.Quote(v))
+			}
+		}
+	}
+	return nil
+}
+
+func (sel compareSelection) scope() compareScope {
+	switch {
+	case sel.all:
+		return scopeAll
+	case len(sel.manufacturers) > 0 || len(sel.models) > 0:
+		return scopeSelection
+	}
+	return scopeNetBox
 }
 
 // compareJSON is the result of `compare`, printed as text or JSON. Its JSON
@@ -149,7 +232,9 @@ Exit codes:
 type compareJSON struct {
 	// OK says every source was read and its comparisons recorded, and
 	// every file is valid.
-	OK         bool                `json:"ok"`
+	OK bool `json:"ok"`
+	// Scope says what was compared.
+	Scope      compareScope        `json:"scope"`
 	NetBox     compareNetBoxJSON   `json:"netbox"`
 	ComparedAt time.Time           `json:"compared_at"`
 	Sources    []compareSourceJSON `json:"sources"`
@@ -161,8 +246,8 @@ type compareJSON struct {
 
 	// results are the Objects, kept for text output only, with only the
 	// rows that differ, since they take more memory than their JSON;
-	// Objects are kept for JSON output only. unknown are the names given to
-	// --manufacturer that no source read defines.
+	// Objects are kept for JSON output only. unknown says which names given
+	// to --manufacturer and --model no source read defines.
 	results []compare.Result
 	unknown []string
 }
@@ -198,8 +283,9 @@ type compareSourceJSON struct {
 	Files        int     `json:"files"`
 	InvalidFiles int     `json:"invalid_files"`
 	// Definitions is how many definitions the source holds, and Compared
-	// how many of them were compared, which --manufacturer chooses. The
-	// rest count the outcomes of those compared.
+	// how many of them were compared, which the scope chooses: by default,
+	// the rest are those NetBox hasn't got. The others count the outcomes
+	// of those compared.
 	Definitions int           `json:"definitions"`
 	Compared    int           `json:"compared"`
 	InStep      int           `json:"in_step"`
@@ -225,24 +311,24 @@ func (r compareJSON) summary() string {
 		parts = append(parts, fmt.Sprintf("%d of the %d sources couldn't be read or recorded: %s", len(failed), len(r.Sources), strings.Join(failed, ", ")))
 	}
 	parts = append(parts, problemSummary(invalid, fileless)...)
-	if len(r.unknown) > 0 {
-		quoted := make([]string, len(r.unknown))
-		for i, name := range r.unknown {
-			quoted[i] = strconv.Quote(name)
-		}
-		parts = append(parts, "no source read defines the manufacturer "+strings.Join(quoted, ", "))
-	}
+	parts = append(parts, r.unknown...)
 	return strings.Join(parts, "; ")
 }
 
 // sourceCompared is one source read for a comparison.
 type sourceCompared struct {
 	row *compareSourceJSON
-	// defined are the keys of all the source's definitions, chosen the
-	// definitions compared, and chosenKeys their keys.
-	defined    []store.DefinitionKey
-	chosen     []compare.Definition
-	chosenKeys []store.DefinitionKey
+	// status is that of the source's loads when its definitions were
+	// read, rows the definitions as the database holds them, and unique
+	// each of them as it is first matched with NetBox, in the same order:
+	// cut down to its unique values, or for --all, whole.
+	status store.LoadStatus
+	rows   []store.Definition
+	unique []compare.Definition
+	// chosen are the definitions compared, by their index in rows, and
+	// whole each of them, read whole.
+	chosen []int
+	whole  []compare.Definition
 }
 
 // runCompare opens the database, connects to NetBox, fetches the sources if
@@ -250,7 +336,7 @@ type sourceCompared struct {
 // the results for text output if forText, and their JSON otherwise. It
 // closes the database before it returns, so that nothing is printed if
 // closing it fails.
-func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, manufacturers []string, forText bool) (_ compareJSON, err error) {
+func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, sel compareSelection, forText bool) (_ compareJSON, err error) {
 	db, _, err := a.openStore(ctx, cfg)
 	if err != nil {
 		return compareJSON{}, err
@@ -278,29 +364,29 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 		}
 		fetchErrors = fetchProblems(fetched)
 	}
-	return a.compareSources(ctx, cfg, db, c, sources, fetchErrors, manufacturers, forText)
+	return a.compareSources(ctx, cfg, db, c, sources, fetchErrors, sel, forText)
 }
 
-// compareSources reads each source's last fetched version, compares the
-// definitions chosen with NetBox, and records the comparisons. A source that
-// can't be read, or whose comparisons can't be recorded, is reported in the
+// compareSources reads each source's last fetched version, chooses the
+// definitions to compare, compares them with NetBox, and records the
+// comparisons. It reads each definition cut down to its unique values
+// first, and whole only once it is chosen: by default, once its unique
+// values match a NetBox object, or collide with one. A source that can't
+// be read, or whose comparisons can't be recorded, is reported in the
 // result; NetBox and the database failing are errors.
 func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.Store, c *netbox.Client, sources []config.Source,
-	fetchErrors map[string]string, manufacturers []string, forText bool,
+	fetchErrors map[string]string, sel compareSelection, forText bool,
 ) (compareJSON, error) {
-	chosen := map[string]bool{}
-	for _, name := range manufacturers {
-		chosen[name] = true
-	}
-	result := compareJSON{OK: true, Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}}
+	specs := dcim.Specs()
+	scope := sel.scope()
+	result := compareJSON{OK: true, Scope: scope, Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}}
 	var compared []sourceCompared
-	named := map[string]bool{}
 	for _, s := range sources {
 		row := &compareSourceJSON{Name: s.Name, Format: s.Format, Problems: []problemJSON{}}
 		sc := sourceCompared{row: row}
 		if msg, ok := fetchErrors[s.Name]; ok {
 			a.failSource(row, msg)
-		} else if read, err := a.readLoaded(ctx, db, cfg, s, ""); err != nil {
+		} else if read, err := a.readSource(ctx, db, cfg, s, scope); err != nil {
 			if ctx.Err() != nil {
 				return compareJSON{}, fmt.Errorf("interrupted while reading source %s: %w", s.Name, ctx.Err())
 			}
@@ -314,52 +400,125 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			row.Files, row.InvalidFiles, row.Definitions = res.Files, res.Invalid, len(res.Definitions)
 			row.OK = readCleanly(res)
 			row.Problems = problemsOf(res.Problems)
-			for i, d := range res.Definitions {
-				// The key the database holds the definition by, so that
-				// its comparison is recorded by the same key.
-				k := read.keys[i]
-				sc.defined = append(sc.defined, k)
-				name, ok := manufacturerName(d)
-				if ok {
-					named[name] = true
-				}
-				if len(chosen) == 0 || ok && chosen[name] {
-					sc.chosen = append(sc.chosen, compare.Definition{Source: s.Name, Definition: d})
-					sc.chosenKeys = append(sc.chosenKeys, k)
-				}
+			sc.status, sc.rows = read.status, read.rows
+			// What the rows are kept for is their IDs and keys, and
+			// what a selection finds them by.
+			for i := range sc.rows {
+				sc.rows[i].JSON, sc.rows[i].UniqueValues = nil, nil
 			}
-			row.Compared = len(sc.chosen)
+			sc.unique = make([]compare.Definition, len(res.Definitions))
+			for i, d := range res.Definitions {
+				sc.unique[i] = compare.Definition{Source: s.Name, Definition: d}
+			}
+			if scope == scopeAll {
+				sc.whole = sc.unique
+			}
 		}
 		compared = append(compared, sc)
 	}
+
 	// A name nothing defines, such as a typing mistake, leaves the
 	// comparison short of what was asked for, so the run isn't OK.
 	invalid := slices.ContainsFunc(compared, func(sc sourceCompared) bool { return sc.row.InvalidFiles > 0 })
-	for _, name := range slices.Compact(slices.Sorted(slices.Values(manufacturers))) {
-		if !named[name] {
-			a.logger.Warn("no source read defines the manufacturer", "manufacturer", name)
-			msg := "no source read defines the manufacturer " + strconv.Quote(name)
-			if invalid {
-				msg += "; some files are invalid, and one of them may"
-			}
-			result.Warnings = append(result.Warnings, warningJSON{Message: msg})
-			result.OK = false
-			result.unknown = append(result.unknown, name)
+	unknown, err := sel.choose(specs, compared)
+	if err != nil {
+		return compareJSON{}, err
+	}
+	for _, u := range unknown {
+		if u.flag == "manufacturer" {
+			a.logger.Warn("no source read defines the manufacturer", "manufacturer", u.name)
+		} else {
+			a.logger.Warn("no source read defines a device type with the model", "model", u.name, "manufacturers", u.of)
 		}
+		msg := u.message()
+		result.unknown = append(result.unknown, msg)
+		if invalid {
+			msg += "; some files are invalid, and one of them may"
+		}
+		result.Warnings = append(result.Warnings, warningJSON{Message: msg})
+		result.OK = false
 	}
 
+	// NetBox's objects that stand on their own, which the definitions
+	// chosen could match or collide with, read for their unique values.
+	var first []compare.Definition
+	for _, sc := range compared {
+		for _, i := range sc.chosen {
+			first = append(first, sc.unique[i])
+		}
+	}
+	var observed []compare.Observed
+	if len(first) > 0 {
+		var err error
+		if observed, err = readStandalone(ctx, c, specs, first); err != nil {
+			return compareJSON{}, err
+		}
+	}
+	// By default, only what NetBox has is compared: what the definitions'
+	// unique values match or collide with, which the whole definitions do
+	// too (compare.UniqueValues).
+	if scope == scopeNetBox && len(first) > 0 {
+		outcomes, err := compare.Compare(specs, first, observed)
+		if err != nil {
+			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
+		}
+		// Used by position below, so checked as checkResults checks the
+		// whole definitions' results.
+		if len(outcomes) != len(first) {
+			return compareJSON{}, fmt.Errorf("compare with NetBox: %d results for the %d definitions matched", len(outcomes), len(first))
+		}
+		for i, r := range outcomes {
+			if !resultOf(r, first[i]) {
+				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of those matched is of another definition", i)
+			}
+		}
+		for j := range compared {
+			sc := &compared[j]
+			kept := sc.chosen[:0]
+			for _, i := range sc.chosen {
+				if outcomes[0].Outcome != compare.Absent {
+					kept = append(kept, i)
+				}
+				outcomes = outcomes[1:]
+			}
+			sc.chosen = kept
+		}
+	}
+	// The unique values have chosen what to read whole: let them go first.
+	for j := range compared {
+		compared[j].unique = nil
+	}
+
+	// The whole of each definition compared, which --all read already.
+	for j := range compared {
+		sc := &compared[j]
+		if sc.row.Version == nil || scope == scopeAll {
+			continue
+		}
+		if err := readChosen(ctx, db, specs, sc); err != nil {
+			if ctx.Err() != nil {
+				return compareJSON{}, fmt.Errorf("interrupted while reading source %s: %w", sc.row.Name, ctx.Err())
+			}
+			if _, ok := errors.AsType[sourceProblem](err); !ok {
+				return compareJSON{}, err
+			}
+			// As a source that couldn't be read at all shows.
+			*sc.row = compareSourceJSON{Name: sc.row.Name, Format: sc.row.Format, Problems: []problemJSON{}}
+			a.failSource(sc.row, err.Error())
+			sc.chosen, sc.whole = nil, nil
+		}
+	}
 	var defs []compare.Definition
 	for _, sc := range compared {
-		defs = append(defs, sc.chosen...)
+		defs = append(defs, sc.whole...)
 	}
 	var results []compare.Result
 	if len(defs) > 0 {
-		observed, childrenRead, err := readNetBox(ctx, c, defs)
+		children, childrenRead, err := readChildrenOf(ctx, c, specs, defs, observed)
 		if err != nil {
 			return compareJSON{}, err
 		}
-		specs := dcim.Specs()
-		if results, err = compare.Compare(specs, defs, observed); err != nil {
+		if results, err = compare.Compare(specs, defs, append(observed, children...)); err != nil {
 			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
 		}
 		// An object whose children weren't read would show every one of
@@ -375,12 +534,20 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	// To the microsecond, as the database records it.
 	result.ComparedAt = time.Now().UTC().Truncate(time.Microsecond)
 
-	if err := checkResults(compared, results); err != nil {
+	if err := checkResults(compared, results, scope); err != nil {
 		return compareJSON{}, err
 	}
 	for _, sc := range compared {
 		if sc.row.Version == nil {
 			result.OK = false
+			result.Sources = append(result.Sources, *sc.row)
+			continue
+		}
+		sc.row.Compared = len(sc.chosen)
+		if scope == scopeSelection && len(sc.chosen) == 0 {
+			// Nothing of it was compared, so it has nothing to record:
+			// its comparisons are kept, whatever it holds now.
+			result.OK = result.OK && sc.row.OK
 			result.Sources = append(result.Sources, *sc.row)
 			continue
 		}
@@ -395,7 +562,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		for i := range mine {
 			out, err := json.Marshal(mine[i])
 			if err != nil {
-				return compareJSON{}, fmt.Errorf("source %s: write the comparison of %s: %w", sc.row.Name, sc.chosenKeys[i], err)
+				return compareJSON{}, fmt.Errorf("source %s: write the comparison of %s: %w", sc.row.Name, sc.rows[sc.chosen[i]].DefinitionKey, err)
 			}
 			written[i] = out
 			outcomes[i] = outcomeOf{outcome: mine[i].Outcome, netboxID: mine[i].NetBoxID, differences: mine[i].Differences, inStep: mine[i].InStep()}
@@ -405,14 +572,14 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 				mine[i] = compare.Result{}
 			}
 		}
-		if err := recordComparisons(ctx, db, sc, outcomes, written, result); err != nil {
+		if err := recordComparisons(ctx, db, sc, scope, outcomes, written, result); err != nil {
 			if !errors.Is(err, store.ErrSnapshotChanged) {
 				return compareJSON{}, err
 			}
 			// No quote before the error, which can hold JSON, so that the
 			// message can't read as the error quoted (CodeQL's
 			// go/unsafe-quoting).
-			a.failSource(sc.row, fmt.Sprintf("its comparisons were not recorded: %v; run 'netbox-trueup-ai source fetch', or use --fetch, and compare again", err))
+			a.failSource(sc.row, fmt.Sprintf("its comparisons were not recorded: %v; compare again, or if the source was fetched meanwhile, run 'netbox-trueup-ai source fetch', or use --fetch, first", err))
 		}
 		for _, o := range outcomes {
 			switch {
@@ -437,34 +604,224 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	return result, nil
 }
 
-// checkResults checks that Compare gave a result for each definition of
-// the sources compared, in their order, with an outcome it knows, before
-// any source's comparisons are recorded.
-func checkResults(compared []sourceCompared, results []compare.Result) error {
+// readSource reads what the database holds of a source's last fetched
+// version: every definition whole for --all, which compares them all, or
+// else cut down to their unique values, which choose what to read whole.
+func (a *app) readSource(ctx context.Context, db store.Store, cfg *config.Config, s config.Source, scope compareScope) (sourceRead, error) {
+	if scope == scopeAll {
+		return a.readLoaded(ctx, db, cfg, s, "")
+	}
+	return a.readUniqueValues(ctx, db, cfg, s)
+}
+
+// choose chooses the definitions of each source to compare, by their index
+// in its rows: every one, by default, for matching with NetBox first, and
+// with --all; or what --manufacturer and --model name. It returns
+// each name given that no source read defines.
+//
+// A selection compares the manufacturers that --manufacturer names, the
+// device types of those manufacturers, or of any, with the models --model
+// names, or with any, and the manufacturers of those device types, from
+// every source that defines them, as an import of them needs, and as their
+// comparisons say what their manufacturers' are. Names count as NetBox would store them: without
+// white space at either end, as the specs normalize them.
+func (sel compareSelection) choose(specs []*model.Spec, sources []sourceCompared) ([]unknownName, error) {
+	if sel.scope() != scopeSelection {
+		for j := range sources {
+			sc := &sources[j]
+			sc.chosen = make([]int, len(sc.rows))
+			for i := range sc.rows {
+				sc.chosen[i] = i
+			}
+		}
+		return nil, nil
+	}
+	name, err := normalizer(specs, "dcim.manufacturer", "name")
+	if err != nil {
+		return nil, err
+	}
+	modelName, err := normalizer(specs, "dcim.devicetype", "model")
+	if err != nil {
+		return nil, err
+	}
+	manufacturers, models := map[string]bool{}, map[string]bool{}
+	for _, m := range sel.manufacturers {
+		manufacturers[name(m)] = true
+	}
+	for _, m := range sel.models {
+		models[modelName(m)] = true
+	}
+	// The device types first, in every source, so that their
+	// manufacturers are taken from every source that defines them.
+	named, found, makers := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	take := make([][]bool, len(sources))
+	for j, sc := range sources {
+		take[j] = make([]bool, len(sc.rows))
+		for i, d := range sc.rows {
+			maker := name(d.Manufacturer)
+			if d.Manufacturer != "" {
+				named[maker] = true
+			}
+			if d.ObjectType != "dcim.devicetype" || len(manufacturers) > 0 && !manufacturers[maker] {
+				continue
+			}
+			m := modelName(d.Model)
+			if len(models) > 0 && !models[m] {
+				continue
+			}
+			take[j][i], makers[maker], found[m] = true, true, true
+		}
+	}
+	for j := range sources {
+		sc := &sources[j]
+		for i, d := range sc.rows {
+			if take[j][i] || d.ObjectType == "dcim.manufacturer" && (manufacturers[name(d.Manufacturer)] || makers[name(d.Manufacturer)]) {
+				sc.chosen = append(sc.chosen, i)
+			}
+		}
+	}
+	var unknown []unknownName
+	of := slices.Sorted(maps.Keys(manufacturers))
+	for _, m := range of {
+		if !named[m] {
+			unknown = append(unknown, unknownName{flag: "manufacturer", name: m})
+		}
+	}
+	for _, m := range slices.Sorted(maps.Keys(models)) {
+		if !found[m] {
+			unknown = append(unknown, unknownName{flag: "model", name: m, of: of})
+		}
+	}
+	return unknown, nil
+}
+
+// unknownName is a name given to --manufacturer or --model, as NetBox would
+// store it, that no source read defines.
+type unknownName struct {
+	// flag is manufacturer or model, and of, for a model, the
+	// manufacturers --manufacturer names, sorted.
+	flag, name string
+	of         []string
+}
+
+func (u unknownName) message() string {
+	if u.flag == "manufacturer" {
+		return "no source read defines the manufacturer " + strconv.Quote(u.name)
+	}
+	msg := "no source read defines a device type with the model " + strconv.Quote(u.name)
+	// Whole, unlike format.Quote, since they may be what was mistyped.
+	quoted := make([]string, len(u.of))
+	for i, m := range u.of {
+		quoted[i] = strconv.Quote(m)
+	}
+	switch len(quoted) {
+	case 0:
+	case 1:
+		msg += " of the manufacturer " + quoted[0]
+	default:
+		msg += " of the manufacturer " + strings.Join(quoted[:len(quoted)-1], ", ") + " or " + quoted[len(quoted)-1]
+	}
+	return msg
+}
+
+// normalizer returns a function that gives text as NetBox would store it in
+// a field of a type, as its spec normalizes it. It fails if the spec has
+// no such text field, rather than match names otherwise than NetBox would.
+func normalizer(specs []*model.Spec, typ, field string) (func(string) string, error) {
+	s := model.SpecOf(specs, typ)
+	if s == nil || s.Field(field) == nil || s.Field(field).Kind != model.KindString {
+		return nil, fmt.Errorf("TrueUp has no spec of a %s's %s as text", typeName(typ), field)
+	}
+	f := s.Field(field)
+	return func(text string) string {
+		if v, ok := f.Normalize(model.String(text)).(model.String); ok {
+			return string(v)
+		}
+		return text
+	}, nil
+}
+
+// readChosen reads the definitions chosen of a source whole. They must be
+// those of the load whose unique values were read: if the source was
+// loaded again meanwhile, such as by a fetch from another process, it
+// returns a sourceProblem.
+func readChosen(ctx context.Context, db store.Store, specs []*model.Spec, sc *sourceCompared) error {
+	if len(sc.chosen) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(sc.chosen))
+	for k, i := range sc.chosen {
+		ids[k] = sc.rows[i].ID
+	}
+	read, err := db.DefinitionsByID(ctx, sc.row.Name, ids)
+	if errors.Is(err, store.ErrNotFound) {
+		return sourceProblem{errors.New("the source was removed while it was compared, by a fetch whose configuration lacks it")}
+	}
+	if err != nil {
+		return err
+	}
+	if !read.LoadedBy(sc.status.Loaded, sc.status.LoadedAt) {
+		return sourceProblem{errors.New("the source was fetched or loaded again while it was compared: compare again")}
+	}
+	byID := make(map[int64]store.Definition, len(read.Definitions))
+	for _, d := range read.Definitions {
+		byID[d.ID] = d
+	}
+	sc.whole = make([]compare.Definition, len(sc.chosen))
+	for k, i := range sc.chosen {
+		d, ok := byID[sc.rows[i].ID]
+		if !ok || d.DefinitionKey != sc.rows[i].DefinitionKey {
+			return fmt.Errorf("source %s: the database doesn't give definition #%d, %s, of the load it holds", sc.row.Name, sc.rows[i].ID, sc.rows[i].DefinitionKey)
+		}
+		def, err := format.UnmarshalDefinition(specs, d.JSON)
+		if err != nil {
+			return sourceProblem{fmt.Errorf("TrueUp can't read back %s, though it read its unique values; please report it: %w", d.DefinitionKey, err)}
+		}
+		sc.whole[k] = compare.Definition{Source: sc.row.Name, Definition: def}
+	}
+	return nil
+}
+
+// checkResults checks that Compare gave a result for each definition
+// compared of the sources read, in their order, with an outcome it knows,
+// and by default, none that NetBox hasn't got, since its unique values
+// matched NetBox; before any source's comparisons are recorded.
+func checkResults(compared []sourceCompared, results []compare.Result, scope compareScope) error {
 	for _, sc := range compared {
 		if sc.row.Version == nil {
 			continue
 		}
-		if len(results) < len(sc.chosen) {
-			return fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.chosen), sc.row.Name)
+		if len(results) < len(sc.whole) {
+			return fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.whole), sc.row.Name)
 		}
-		for i, d := range sc.chosen {
+		for i, d := range sc.whole {
 			r := results[i]
-			if r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path {
+			if !resultOf(r, d) {
 				return fmt.Errorf("compare with NetBox: result %d of source %s is of another definition", i, sc.row.Name)
 			}
+			key := sc.rows[sc.chosen[i]].DefinitionKey
 			switch r.Outcome {
-			case compare.Candidate, compare.Absent, compare.Conflict:
+			case compare.Candidate, compare.Conflict:
+			case compare.Absent:
+				if scope == scopeNetBox {
+					return fmt.Errorf("compare with NetBox: %s is absent, though its unique values matched NetBox; please report it", key)
+				}
 			default:
-				return fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", sc.chosenKeys[i], r.Outcome)
+				return fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", key, r.Outcome)
 			}
 		}
-		results = results[len(sc.chosen):]
+		results = results[len(sc.whole):]
 	}
 	if len(results) > 0 {
 		return fmt.Errorf("compare with NetBox: %d results of no definition", len(results))
 	}
 	return nil
+}
+
+// resultOf reports whether r is the result of comparing d: of its type,
+// source and file.
+func resultOf(r compare.Result, d compare.Definition) bool {
+	return r.Type == d.Object.Type && len(r.Columns) > 0 && r.Columns[0].Source == d.Source && r.Columns[0].Path == d.Path
 }
 
 func (a *app) failSource(row *compareSourceJSON, msg string) {
@@ -493,57 +850,42 @@ type outcomeOf struct {
 }
 
 // recordComparisons records one source's comparisons, results written as
-// JSON, as the latest of its definitions, and removes those of definitions
-// it no longer holds.
-func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, outcomes []outcomeOf, written []json.RawMessage, run compareJSON) error {
+// JSON, as the latest of their definitions, against the load whose
+// definitions were read. Every scope but a selection looked at every
+// definition, so its run is whole: the source's other comparisons are
+// removed.
+func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, scope compareScope, outcomes []outcomeOf, written []json.RawMessage, run compareJSON) error {
 	rec := store.ComparisonRun{
 		Source:        sc.row.Name,
-		SourceVersion: *sc.row.Version,
+		Loaded:        sc.status.Loaded,
+		LoadedAt:      sc.status.LoadedAt,
 		ComparedAt:    run.ComparedAt,
 		NetBoxURL:     run.NetBox.URL,
 		NetBoxVersion: run.NetBox.Version,
-		Defined:       sc.defined,
+		Whole:         scope != scopeSelection,
 	}
 	for i, o := range outcomes {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{
-			DefinitionKey: sc.chosenKeys[i], Outcome: string(o.outcome), NetBoxID: o.netboxID, Differences: o.differences, Result: written[i],
+			DefinitionID: sc.rows[sc.chosen[i]].ID, Outcome: string(o.outcome), NetBoxID: o.netboxID, Differences: o.differences, Result: written[i],
 		})
 	}
 	return db.RecordComparisons(ctx, rec)
 }
 
-// manufacturerName returns the name of the manufacturer a definition is, or
-// that a device type's refers to.
-func manufacturerName(d format.Definition) (string, bool) {
-	var name model.Value
-	switch d.Object.Type {
-	case "dcim.manufacturer":
-		name = d.Identity["name"]
-	case "dcim.devicetype":
-		ref, ok := d.Identity["manufacturer"].(model.Reference)
-		if !ok {
-			return "", false
-		}
-		name = ref.Key["name"]
-	}
-	s, ok := name.(model.String)
-	return string(s), ok
-}
-
-// readNetBox reads the NetBox objects the definitions could match or collide
-// with: every manufacturer, since a manufacturer's name and slug are each
-// unique among all of them, and the device types of the manufacturers that
-// the definitions name and NetBox has, since both of a device type's
-// uniqueness rules include its manufacturer; and then the component
-// templates of each device type a definition matches, collection by
-// collection. Each object is read through its spec, and one that can't be
-// is an error, since leaving it out would make what it is show as absent.
-func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition) (observed []compare.Observed, childrenRead map[string]map[int64]bool, err error) {
-	specs := dcim.Specs()
+// readStandalone reads the NetBox objects that stand on their own, which the
+// definitions could match or collide with: every manufacturer, since a
+// manufacturer's name and slug are each unique among all of them, and the
+// device types of the manufacturers that the definitions name and NetBox
+// has, since both of a device type's uniqueness rules include its
+// manufacturer. The definitions may be cut down to their unique values.
+// Each object is read through its spec, and one that can't be is an error,
+// since leaving it out would make what it is show as absent.
+func readStandalone(ctx context.Context, c *netbox.Client, specs []*model.Spec, defs []compare.Definition) ([]compare.Observed, error) {
 	manufacturer, deviceType := model.SpecOf(specs, "dcim.manufacturer"), model.SpecOf(specs, "dcim.devicetype")
 	if manufacturer == nil || deviceType == nil {
-		return nil, nil, errors.New("TrueUp has no spec of manufacturers or device types")
+		return nil, errors.New("TrueUp has no spec of manufacturers or device types")
 	}
+	var observed []compare.Observed
 	decode := func(s *model.Spec) func(json.RawMessage) error {
 		return func(raw json.RawMessage) error {
 			id, obj, err := s.DecodeAPI(specs, raw)
@@ -555,39 +897,48 @@ func readNetBox(ctx context.Context, c *netbox.Client, defs []compare.Definition
 		}
 	}
 	if err := c.List(ctx, manufacturer.Endpoint, fieldsQuery(manufacturer), decode(manufacturer)); err != nil {
-		return nil, nil, readError(manufacturer, err)
+		return nil, readError(manufacturer, err)
 	}
 
 	// The manufacturers the definitions refer to, as the comparison will
 	// resolve them.
 	ids, err := compare.Referenced(specs, defs, observed, manufacturer.Type)
 	if err != nil {
-		return nil, nil, fmt.Errorf("compare with NetBox: %w", err)
+		return nil, fmt.Errorf("compare with NetBox: %w", err)
 	}
 	if len(ids) > 0 {
 		if err := c.ListByParent(ctx, deviceType.Endpoint, "manufacturer", ids, fieldsQuery(deviceType), decode(deviceType)); err != nil {
-			return nil, nil, readListingError(deviceType, manufacturer, err)
+			return nil, readListingError(deviceType, manufacturer, err)
 		}
 	}
+	return observed, nil
+}
 
-	// The children of the device types the definitions match, as the
-	// comparison will match them; of no others, which nothing compares.
+// readChildrenOf reads the component templates of each device type, among
+// the objects observed, that the definitions match, as the comparison will
+// match them; of no others, which nothing compares. It returns them, and
+// which device types' templates were read.
+func readChildrenOf(ctx context.Context, c *netbox.Client, specs []*model.Spec, defs []compare.Definition, observed []compare.Observed) ([]compare.Observed, map[string]map[int64]bool, error) {
+	deviceType := model.SpecOf(specs, "dcim.devicetype")
+	if deviceType == nil {
+		return nil, nil, errors.New("TrueUp has no spec of device types")
+	}
 	matched, err := compare.Matched(specs, defs, observed, deviceType.Type)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compare with NetBox: %w", err)
 	}
-	childrenRead = map[string]map[int64]bool{deviceType.Type: {}}
+	childrenRead := map[string]map[int64]bool{deviceType.Type: {}}
 	for _, id := range matched {
 		childrenRead[deviceType.Type][id] = true
 	}
 	if len(matched) == 0 {
-		return observed, childrenRead, nil
+		return nil, childrenRead, nil
 	}
 	children, err := readChildren(ctx, c, specs, deviceType, matched)
 	if err != nil {
 		return nil, nil, err
 	}
-	return append(observed, children...), childrenRead, nil
+	return children, childrenRead, nil
 }
 
 // readChildren reads the children of the objects of type parent with IDs
@@ -706,6 +1057,9 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("write output: %w", err)
+	}
+	if line := notComparedText(r); line != "" {
+		b.WriteString("\n" + line + "\n")
 	}
 
 	var notInStep []compare.Result
@@ -876,6 +1230,27 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	return nil
 }
 
+// notComparedText says how many definitions NetBox hasn't got weren't
+// compared, by default, or is "".
+func notComparedText(r compareJSON) string {
+	if r.Scope != scopeNetBox {
+		return ""
+	}
+	n := 0
+	for _, s := range r.Sources {
+		if s.Version != nil {
+			n += s.Definitions - s.Compared
+		}
+	}
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "1 definition NetBox hasn't got wasn't compared: --all compares every definition, and --manufacturer or --model those named."
+	}
+	return fmt.Sprintf("%d definitions NetBox hasn't got weren't compared: --all compares every definition, and --manufacturer or --model those named.", n)
+}
+
 func typeName(typ string) string {
 	if name := typeNames[typ]; name != "" {
 		return name
@@ -999,7 +1374,7 @@ func writeCompareJSON(w io.Writer, r compareJSON) error {
 		for _, f := range []struct {
 			name  string
 			value any
-		}{{"ok", r.OK}, {"netbox", r.NetBox}, {"compared_at", r.ComparedAt}, {"sources", r.Sources}} {
+		}{{"ok", r.OK}, {"scope", r.Scope}, {"netbox", r.NetBox}, {"compared_at", r.ComparedAt}, {"sources", r.Sources}} {
 			if err := text("  " + strconv.Quote(f.name) + ": "); err != nil {
 				return err
 			}

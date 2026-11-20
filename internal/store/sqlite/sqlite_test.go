@@ -216,7 +216,7 @@ func TestDefinitionsMigrationKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := storetest.FillForMigration(t, before)
+	check := storetest.FillForMigration(t, before, execOn(before))
 	closeStore(t, before)
 	s, migrated, err := Open(t.Context(), Options{Path: dbPath})
 	if err != nil {
@@ -227,6 +227,37 @@ func TestDefinitionsMigrationKeepsData(t *testing.T) {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	check(t, s)
+}
+
+func TestComparisonsMigrationKeepsData(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "trueup.db")
+	files, after := storetest.MigrationsUpTo(t, migrationFiles, 3)
+	before, _, err := open(t.Context(), Options{Path: dbPath}, files, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := storetest.FillForComparisonsMigration(t, before, execOn(before))
+	closeStore(t, before)
+	s, migrated, err := Open(t.Context(), Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	if diff := cmp.Diff(after, migrated.Applied); diff != "" {
+		t.Errorf("applied (-want +got):\n%s", diff)
+	}
+	check(t, s)
+}
+
+// execOn returns a function that runs a statement on a store's database.
+func execOn(s *Store) func(*testing.T, string) {
+	return func(t *testing.T, statement string) {
+		t.Helper()
+		if _, err := s.db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
 }
 
 func TestNewerSchemaRefused(t *testing.T) {

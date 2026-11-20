@@ -11,23 +11,17 @@ import (
 )
 
 const deleteComparison = `-- name: DeleteComparison :exec
-DELETE FROM comparisons WHERE source = ? AND object_type = ? AND path = ? AND identity = ?
+DELETE FROM comparisons WHERE source = ? AND definition_id = ?
 `
 
 type DeleteComparisonParams struct {
-	Source     string
-	ObjectType string
-	Path       string
-	Identity   string
+	Source       string
+	DefinitionID int64
 }
 
+// Deletes the comparison of one of a source's definitions.
 func (q *Queries) DeleteComparison(ctx context.Context, arg DeleteComparisonParams) error {
-	_, err := q.db.ExecContext(ctx, deleteComparison,
-		arg.Source,
-		arg.ObjectType,
-		arg.Path,
-		arg.Identity,
-	)
+	_, err := q.db.ExecContext(ctx, deleteComparison, arg.Source, arg.DefinitionID)
 	return err
 }
 
@@ -56,16 +50,14 @@ func (q *Queries) GetSnapshotVersion(ctx context.Context, source string) (string
 
 const insertComparison = `-- name: InsertComparison :exec
 INSERT INTO comparisons (
-    source, object_type, path, identity, source_version, compared_at,
+    source, definition_id, source_version, compared_at,
     netbox_url, netbox_version, outcome, netbox_id, differences, result
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertComparisonParams struct {
 	Source        string
-	ObjectType    string
-	Path          string
-	Identity      string
+	DefinitionID  int64
 	SourceVersion string
 	ComparedAt    string
 	NetboxUrl     string
@@ -79,9 +71,7 @@ type InsertComparisonParams struct {
 func (q *Queries) InsertComparison(ctx context.Context, arg InsertComparisonParams) error {
 	_, err := q.db.ExecContext(ctx, insertComparison,
 		arg.Source,
-		arg.ObjectType,
-		arg.Path,
-		arg.Identity,
+		arg.DefinitionID,
 		arg.SourceVersion,
 		arg.ComparedAt,
 		arg.NetboxUrl,
@@ -94,49 +84,19 @@ func (q *Queries) InsertComparison(ctx context.Context, arg InsertComparisonPara
 	return err
 }
 
-const listComparisonKeys = `-- name: ListComparisonKeys :many
-SELECT object_type, path, identity FROM comparisons WHERE source = ?
-`
-
-type ListComparisonKeysRow struct {
-	ObjectType string
-	Path       string
-	Identity   string
-}
-
-func (q *Queries) ListComparisonKeys(ctx context.Context, source string) ([]ListComparisonKeysRow, error) {
-	rows, err := q.db.QueryContext(ctx, listComparisonKeys, source)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListComparisonKeysRow
-	for rows.Next() {
-		var i ListComparisonKeysRow
-		if err := rows.Scan(&i.ObjectType, &i.Path, &i.Identity); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listComparisons = `-- name: ListComparisons :many
 SELECT
-    object_type, path, identity, source_version, compared_at,
-    netbox_url, netbox_version, outcome, netbox_id, differences, result
-FROM comparisons
-WHERE source = ?
-ORDER BY object_type, path, identity
+    d.id, d.object_type, d.path, d.identity,
+    c.source_version, c.compared_at, c.netbox_url, c.netbox_version,
+    c.outcome, c.netbox_id, c.differences, c.result
+FROM comparisons AS c
+INNER JOIN definitions AS d ON d.source = c.source AND d.id = c.definition_id
+WHERE c.source = ?
+ORDER BY d.object_type, d.path, d.identity
 `
 
 type ListComparisonsRow struct {
+	ID            int64
 	ObjectType    string
 	Path          string
 	Identity      string
@@ -150,6 +110,8 @@ type ListComparisonsRow struct {
 	Result        string
 }
 
+// Returns the comparisons of a source's definitions, each with its
+// definition's key.
 func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListComparisonsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listComparisons, source)
 	if err != nil {
@@ -160,6 +122,7 @@ func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListCom
 	for rows.Next() {
 		var i ListComparisonsRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.ObjectType,
 			&i.Path,
 			&i.Identity,

@@ -45,8 +45,9 @@ DELETE FROM definitions WHERE source = ?;
 -- and leaving its row as it is if nothing in it changed.
 INSERT INTO definitions (
     source, object_type, path, identity, seq,
-    manufacturer, model, slug, part_number, search, digest, definition
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    manufacturer, model, slug, part_number, search, digest, definition,
+    unique_values
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (source, object_type, path, identity) DO UPDATE SET
     seq = excluded.seq,
     manufacturer = excluded.manufacturer,
@@ -55,8 +56,10 @@ ON CONFLICT (source, object_type, path, identity) DO UPDATE SET
     part_number = excluded.part_number,
     search = excluded.search,
     digest = excluded.digest,
-    definition = excluded.definition
+    definition = excluded.definition,
+    unique_values = excluded.unique_values
 WHERE seq IS NOT excluded.seq
+OR unique_values IS NOT excluded.unique_values
 OR digest IS NOT excluded.digest
 OR definition IS NOT excluded.definition
 OR manufacturer IS NOT excluded.manufacturer
@@ -103,7 +106,7 @@ WHERE snapshots.source = ?;
 -- name: ListDefinitions :many
 SELECT
     id, object_type, path, identity,
-    manufacturer, model, slug, part_number, digest, definition
+    manufacturer, model, slug, part_number, digest, definition, unique_values
 FROM definitions
 WHERE source = ?
 ORDER BY seq;
@@ -113,9 +116,29 @@ ORDER BY seq;
 -- is in lower case, exactly: instr, unlike LIKE, gives % and _ no meaning.
 SELECT
     id, object_type, path, identity,
-    manufacturer, model, slug, part_number, digest, definition
+    manufacturer, model, slug, part_number, digest, definition, unique_values
 FROM definitions
 WHERE source = sqlc.arg(source) AND instr(search, sqlc.arg(search)) > 0
+ORDER BY seq;
+
+-- name: ListUniqueValues :many
+-- Returns a source's definitions, each with its unique values, but not the
+-- whole of it.
+SELECT
+    id, object_type, path, identity,
+    manufacturer, model, slug, part_number, digest, unique_values
+FROM definitions
+WHERE source = ?
+ORDER BY seq;
+
+-- name: ListDefinitionsByID :many
+-- Returns those of a source's definitions whose IDs the JSON array ids
+-- holds.
+SELECT
+    id, object_type, path, identity,
+    manufacturer, model, slug, part_number, digest, definition, unique_values
+FROM definitions
+WHERE source = sqlc.arg(source) AND id IN (SELECT value FROM json_each(CAST(sqlc.arg(ids) AS TEXT)))
 ORDER BY seq;
 
 -- name: ListDefinitionProblems :many

@@ -413,7 +413,7 @@ func TestListLoadsWhatTheDatabaseLacks(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return store.Definition{DefinitionKey: key, Manufacturer: "Acme", JSON: []byte(`{"type":"dcim.manufacturer"}`)}
+		return store.Definition{DefinitionKey: key, Manufacturer: "Acme", JSON: []byte(`{"type":"dcim.manufacturer"}`), UniqueValues: []byte(`{}`)}
 	}
 	for _, tt := range []struct {
 		name, reader, settings, log string
