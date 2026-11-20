@@ -492,12 +492,14 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	// The objects the definitions define, across the sources read: each is
 	// compared with all of its definitions, or not at all
 	// (docs/adr/0032-compare-definitions-across-sources-as-objects.md).
-	// --all compares every definition anyway.
+	// --all and the default scope have chosen every definition.
 	var groups [][]definitionAt
 	if scope != scopeAll {
 		if groups, err = groupDefinitions(specs, compared); err != nil {
 			return compareJSON{}, err
 		}
+	}
+	if scope == scopeSelection {
 		chooseWhole(compared, groups)
 	}
 
@@ -745,18 +747,7 @@ func chooseWhatNetBoxHas(specs []*model.Spec, compared []sourceCompared, groups 
 			outcomes = outcomes[1:]
 		}
 	}
-	keep := make([]map[int]bool, len(compared))
-	for j := range compared {
-		keep[j] = map[int]bool{}
-	}
-	for _, g := range groups {
-		if !slices.ContainsFunc(g, func(d definitionAt) bool { return matched[d.source][d.index] }) {
-			continue
-		}
-		for _, d := range g {
-			keep[d.source][d.index] = true
-		}
-	}
+	keep := keepMatched(len(compared), groups, matched)
 	for j := range compared {
 		sc := &compared[j]
 		kept := sc.chosen[:0]
@@ -772,6 +763,24 @@ func chooseWhatNetBoxHas(specs []*model.Spec, compared []sourceCompared, groups 
 	return nil
 }
 
+// keepMatched returns, of n sources, the definitions of the objects some
+// of whose definitions are matched, by source and by index: the objects
+// compared by default.
+func keepMatched(n int, groups [][]definitionAt, matched []map[int]bool) []map[int]bool {
+	keep := make([]map[int]bool, n)
+	for j := range keep {
+		keep[j] = map[int]bool{}
+	}
+	for _, g := range groups {
+		if slices.ContainsFunc(g, func(d definitionAt) bool { return matched[d.source][d.index] }) {
+			for _, d := range g {
+				keep[d.source][d.index] = true
+			}
+		}
+	}
+	return keep
+}
+
 // dropUnmatched leaves out, by default, the definitions of the objects none
 // of whose definitions still to compare matches or collides with a NetBox
 // object, as when the source of the one that did couldn't be read whole.
@@ -783,17 +792,7 @@ func dropUnmatched(compared []sourceCompared, groups [][]definitionAt) {
 			matched[j][i] = sc.matched[k]
 		}
 	}
-	keep := make([]map[int]bool, len(compared))
-	for j := range compared {
-		keep[j] = map[int]bool{}
-	}
-	for _, g := range groups {
-		if slices.ContainsFunc(g, func(d definitionAt) bool { return matched[d.source][d.index] }) {
-			for _, d := range g {
-				keep[d.source][d.index] = true
-			}
-		}
-	}
+	keep := keepMatched(len(compared), groups, matched)
 	for j := range compared {
 		sc := &compared[j]
 		var chosen []int
@@ -866,22 +865,21 @@ func writeObject(o compare.Object, recorded []recordedComparison) (objectOut, er
 	if err != nil {
 		return objectOut{}, fmt.Errorf("write the comparison of %s: %w", objectName(o.Type, o.Identity), err)
 	}
-	if !bytes.HasSuffix(h, []byte(`"rows":[]}`)) {
-		return objectOut{}, fmt.Errorf("write the comparison of %s: its rows aren't its JSON's last field", objectName(o.Type, o.Identity))
-	}
-	h = h[:len(h)-len("[]}")]
+	whole, rows := h, []byte(nil)
 	if len(o.Results) == 1 {
 		rec := recorded[o.Results[0]]
-		return objectOut{head: h, rows: rec.json[rec.rows : len(rec.json)-1]}, nil
-	}
-	whole, err := json.Marshal(o)
-	if err != nil {
+		rows = rec.json[rec.rows : len(rec.json)-1]
+	} else if whole, err = json.Marshal(o); err != nil {
 		return objectOut{}, fmt.Errorf("write the comparison of %s: %w", objectName(o.Type, o.Identity), err)
 	}
-	if !bytes.HasPrefix(whole, h) {
+	at, ok := rowsAt(h, whole)
+	if !ok {
 		return objectOut{}, fmt.Errorf("write the comparison of %s: its rows aren't its JSON's last field", objectName(o.Type, o.Identity))
 	}
-	return objectOut{head: h, rows: whole[len(h) : len(whole)-1]}, nil
+	if rows == nil {
+		rows = whole[at : len(whole)-1]
+	}
+	return objectOut{head: h[:at], rows: rows}, nil
 }
 
 // readSource reads what the database holds of a source's last fetched

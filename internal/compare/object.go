@@ -282,9 +282,10 @@ func Objects(specs []*model.Spec, results []Result) ([]Object, error) {
 		objects[g] = Object{Type: results[of[0]].Type, Identity: keys[g].identity}
 	}
 	holds := make([][]map[string]model.Value, len(objects))
+	fields := map[string]map[string]bool{}
 	for g := range objects {
 		var err error
-		if holds[g], err = buildObject(specs, &objects[g], results, members[g]); err != nil {
+		if holds[g], err = buildObject(specs, fields, &objects[g], results, members[g]); err != nil {
 			return nil, err
 		}
 	}
@@ -343,7 +344,7 @@ func checkResult(r *Result) error {
 // their index in results, and returns what each definition would hold of
 // the fields of its type's uniqueness rules (see Clash), in the order of
 // its columns.
-func buildObject(specs []*model.Spec, o *Object, results []Result, of []int) ([]map[string]model.Value, error) {
+func buildObject(specs []*model.Spec, fields map[string]map[string]bool, o *Object, results []Result, of []int) ([]map[string]model.Value, error) {
 	first := &results[of[0]]
 	o.NetBoxID = first.NetBoxID
 	// With one NetBox object, or none, a definition that isn't a conflict
@@ -380,9 +381,12 @@ func buildObject(specs []*model.Spec, o *Object, results []Result, of []int) ([]
 	o.Collisions, o.Unresolved = unionOf(results, of)
 
 	s := model.SpecOf(specs, o.Type)
+	if fields[o.Type] == nil {
+		fields[o.Type] = ruleFields(s)
+	}
 	holds := make([]map[string]model.Value, len(of))
 	for c, i := range of {
-		holds[c] = wouldHold(s, &results[i])
+		holds[c] = wouldHold(fields[o.Type], &results[i])
 	}
 	if len(of) == 1 {
 		// Merging one comparison gives its own rows (TestMergeOfOne).
@@ -458,17 +462,22 @@ func sortCollisions(collisions []Collision) {
 	})
 }
 
-// wouldHold returns what an import of a definition would leave NetBox
-// holding in each field of its type's uniqueness rules, from its
-// comparison's rows: the definition's value where it manages the field,
-// NetBox's where it doesn't, or nothing where neither sets it.
-func wouldHold(s *model.Spec, r *Result) map[string]model.Value {
+// ruleFields returns the fields that a type's uniqueness rules name.
+func ruleFields(s *model.Spec) map[string]bool {
 	fields := map[string]bool{}
 	for _, u := range s.Unique {
 		for _, name := range u.Fields {
 			fields[name] = true
 		}
 	}
+	return fields
+}
+
+// wouldHold returns what an import of a definition would leave NetBox
+// holding in fields, those of its type's uniqueness rules, from its
+// comparison's rows: the definition's value where it manages the field,
+// NetBox's where it doesn't, or nothing where neither sets it.
+func wouldHold(fields map[string]bool, r *Result) map[string]model.Value {
 	held := map[string]model.Value{}
 	for _, row := range r.Rows {
 		if len(row.Path) != 1 || row.Path[0].Key != nil || !fields[row.Path[0].Field] {
@@ -512,8 +521,8 @@ func findClashes(specs []*model.Spec, objects []Object, holds [][]map[string]mod
 			}
 			byKey := map[string]*entry{}
 			var order []string
-			// The values the NetBox objects compared hold now.
-			heldNow := map[string]bool{}
+			// The values each object's NetBox object holds now.
+			heldNow := map[int]string{}
 			for g := range objects {
 				o := &objects[g]
 				if o.Type != typ {
@@ -521,7 +530,7 @@ func findClashes(specs []*model.Spec, objects []Object, holds [][]map[string]mod
 				}
 				if nb[g] != nil {
 					if k, _, ok := holdKey(u, nb[g]); ok {
-						heldNow[k] = true
+						heldNow[g] = k
 					}
 				}
 				for c := range o.Definitions {
@@ -540,7 +549,10 @@ func findClashes(specs []*model.Spec, objects []Object, holds [][]map[string]mod
 			}
 			for _, k := range order {
 				e := byKey[k]
-				if heldNow[k] || !slices.ContainsFunc(e.holders, func(h holder) bool { return h.object != e.holders[0].object }) {
+				// Values that the NetBox object one of them matches holds
+				// already are a collision NetBox's comparison reports.
+				held := slices.ContainsFunc(e.holders, func(h holder) bool { now, ok := heldNow[h.object]; return ok && now == k })
+				if held || !slices.ContainsFunc(e.holders, func(h holder) bool { return h.object != e.holders[0].object }) {
 					continue
 				}
 				for _, h := range e.holders {

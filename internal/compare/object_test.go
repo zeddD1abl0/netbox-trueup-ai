@@ -367,6 +367,19 @@ func TestObjectsClash(t *testing.T) {
 			observed: append(nbR670(), r680),
 		},
 		{
+			name: "two device types NetBox hasn't got clash, though another NetBox has holds their slug",
+			defs: []compare.Definition{
+				deviceType("Dell", "R670", "renamed", nil),
+				deviceType("Dell", "R680", "r670", nil),
+				deviceType("Dell", "R690", "r670", nil),
+			},
+			observed: nbR670(),
+			want: map[int][]string{
+				1: {`manufacturer+slug {"manufacturer":{"id":1,"name":"Dell"},"slug":"r670"} [0] with library:{"manufacturer":{"name":"Dell"},"model":"R690"}`},
+				2: {`manufacturer+slug {"manufacturer":{"id":1,"name":"Dell"},"slug":"r670"} [0] with library:{"manufacturer":{"name":"Dell"},"model":"R680"}`},
+			},
+		},
+		{
 			name: "within one source, NetBox having neither",
 			defs: []compare.Definition{
 				deviceType("Dell", "R670", "same", nil),
