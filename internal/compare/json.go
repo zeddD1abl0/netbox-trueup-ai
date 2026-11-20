@@ -2,6 +2,7 @@ package compare
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 )
@@ -234,9 +235,12 @@ func (o Object) MarshalJSON() ([]byte, error) {
 		out.Clashes = append(out.Clashes, j)
 	}
 	for i, c := range o.Columns {
-		if c.Kind != DefinitionColumn || i >= len(o.Definitions) {
+		if c.Kind != DefinitionColumn {
 			out.Columns = append(out.Columns, c)
 			continue
+		}
+		if i >= len(o.Definitions) {
+			return nil, fmt.Errorf("the object's column %d is a definition's, but it has %d definitions' comparisons", i, len(o.Definitions))
 		}
 		d := o.Definitions[i]
 		j := definitionColumnJSON{

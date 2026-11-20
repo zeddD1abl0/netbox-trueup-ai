@@ -500,13 +500,14 @@ func TestObjectsRefused(t *testing.T) {
 			r[1].NetBoxID, r[1].Columns[1].ID = 99, 99
 		}, "different NetBox objects"},
 		{"a candidate and an absent definition", func(r []compare.Result) {
-			r[1].Outcome, r[1].NetBoxID, r[1].Columns = compare.Absent, 0, r[1].Columns[:1]
+			r[1].Outcome, r[1].NetBoxID, r[1].Columns, r[1].Differences = compare.Absent, 0, r[1].Columns[:1], 0
 			for j := range r[1].Rows {
-				r[1].Rows[j].Cells = r[1].Rows[j].Cells[:1]
+				r[1].Rows[j].Cells, r[1].Rows[j].Differs = r[1].Rows[j].Cells[:1], false
 			}
 		}, "different NetBox objects"},
 		{"NetBox's cells differ", func(r []compare.Result) {
-			r[1].Rows[4].Cells[1] = model.NewDecimal(3, 0)
+			r[1].Rows[4].Cells[1], r[1].Rows[4].Differs = model.NewDecimal(3, 0), true
+			r[1].Differences++
 		}, "give NetBox's u_height differently"},
 		{"a row short of a cell", func(r []compare.Result) {
 			r[1].Rows[0].Cells = r[1].Rows[0].Cells[:1]
@@ -526,6 +527,37 @@ func TestObjectsRefused(t *testing.T) {
 		{"a reference by its ID alone", func(r []compare.Result) {
 			r[1].Unresolved = []compare.Unresolved{{Field: "manufacturer", Ref: model.Reference{Type: "dcim.manufacturer", ID: 3}}}
 		}, "manufacturer has an identity of 0 fields, but a dcim.manufacturer's has 1"},
+		{"flags that don't fit the cells", func(r []compare.Result) {
+			r[1].Rows[4].Differs = true
+		}, "has a row u_height whose flags don't fit its cells"},
+		{"a count that doesn't fit the rows", func(r []compare.Result) {
+			r[1].Differences++
+		}, "counts 3 differences, but 2 rows differ and are managed"},
+		{"a conflict without a reason", func(r []compare.Result) {
+			r[1].Outcome = compare.Conflict
+		}, "is conflict, with 0 collisions"},
+		{"a candidate with a collision", func(r []compare.Result) {
+			r[1].Collisions = []compare.Collision{{Rule: []string{"manufacturer", "slug"}, ID: 11}}
+		}, "is candidate, with 1 collisions"},
+		{"a child's cell that isn't whether it has the child", func(r []compare.Result) {
+			n := len(r[1].Rows)
+			r[1].Rows[n-2].Cells[0] = model.String("yes")
+		}, `has a child's row interfaces["eth1"] whose cell 0 is "yes"`},
+		{"a path past a field", func(r []compare.Result) {
+			r[1].Rows[4].Path = compare.Path{{Field: "u_height"}, {Field: "x"}}
+		}, "goes on past the field u_height"},
+		{"a key after a field", func(r []compare.Result) {
+			r[1].Rows[4].Path = compare.Path{{Field: "model"}, {Key: map[string]model.Value{"name": model.String("x")}}}
+		}, "goes on past the field model"},
+		{"a field it hasn't got", func(r []compare.Result) {
+			r[1].Rows[4].Path = compare.Path{{Field: "bogus"}}
+		}, "names bogus, which a dcim.devicetype hasn't got"},
+		{"a manufacturer referred to by its slug", func(r []compare.Result) {
+			r[1].Identity = map[string]model.Value{"manufacturer": model.Reference{Type: "dcim.manufacturer", Key: map[string]model.Value{"slug": model.String("dell")}}, "model": model.String("R670")}
+		}, "refers to a dcim.manufacturer whose key has no name in its identity"},
+		{"a reference to a type the field can't refer to", func(r []compare.Result) {
+			r[1].Identity = map[string]model.Value{"manufacturer": model.Reference{Type: "dcim.devicetype", Key: map[string]model.Value{"name": model.String("Dell")}}, "model": model.String("R670")}
+		}, `refers to a "dcim.devicetype", which manufacturer can't`},
 		{"a child's field before the child", func(r []compare.Result) {
 			field := r[1].Rows[len(r[1].Rows)-1]
 			r[1].Rows = append([]compare.Row{field}, r[1].Rows[:len(r[1].Rows)-1]...)
@@ -674,5 +706,61 @@ func TestPathJSONIsEncodingJSONs(t *testing.T) {
 		if string(got) != string(want) || string(direct) != string(want) {
 			t.Errorf("path %#v:\n got %s\n and %s\nwant %s", p, got, direct, want)
 		}
+	}
+}
+
+// TestObjectsRefuseDifferentStatesOfNetBox checks that merging comparisons
+// made against different states of NetBox fails, as records of different
+// runs could be: NetBox losing a template between them, holding one twice
+// in one, or holding a manufacturer more often.
+func TestObjectsRefuseDifferentStatesOfNetBox(t *testing.T) {
+	t.Parallel()
+	def := withChildren(map[string]model.Children{"interfaces": {child("interface", "eth0", t1g)}})
+	eth0 := nbChild(20, 10, "interface", "eth0", t1g)
+	tests := []struct {
+		name         string
+		defs         []compare.Definition
+		mine, theirs []compare.Observed
+		want         string
+	}{
+		{
+			"a template NetBox no longer has",
+			[]compare.Definition{def, other(def)},
+			append(nbR670(), eth0, nbChild(21, 10, "interface", "eth9", t1g)), append(nbR670(), eth0),
+			`disagree on what NetBox holds at interfaces["eth9"]`,
+		},
+		{
+			"a template NetBox held twice",
+			[]compare.Definition{def, other(def)},
+			append(nbR670(), eth0, nbChild(21, 10, "interface", "eth0", t1g)), append(nbR670(), eth0),
+			`disagree on what NetBox holds at interfaces["eth0"]`,
+		},
+		{
+			"a manufacturer NetBox holds more often",
+			[]compare.Definition{deviceType("Dell", "R670", "r670", nil), other(deviceType("Dell", "R670", "r670", nil))},
+			[]compare.Observed{nbManufacturer(1, "Dell", "dell"), nbManufacturer(2, "Dell", "dell-2")},
+			[]compare.Observed{nbManufacturer(1, "Dell", "dell"), nbManufacturer(2, "Dell", "dell-2"), nbManufacturer(3, "Dell", "dell-3")},
+			"disagree on which NetBox objects its manufacturer could be",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			results := []compare.Result{run(t, tt.defs[:1], tt.mine)[0], run(t, tt.defs[1:], tt.theirs)[0]}
+			_, err := compare.Objects(dcim.Specs(), results)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Objects: %v, want an error saying %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestObjectJSONNeedsEachDefinitionsComparison checks that an object whose
+// definition column has no comparison isn't written as if it had.
+func TestObjectJSONNeedsEachDefinitionsComparison(t *testing.T) {
+	t.Parallel()
+	o := compare.Object{Type: "dcim.manufacturer", Columns: []compare.Column{{Kind: compare.DefinitionColumn, Source: "lib"}}}
+	if _, err := json.Marshal(o); err == nil || !strings.Contains(err.Error(), "has 0 definitions' comparisons") {
+		t.Errorf("json.Marshal: %v", err)
 	}
 }

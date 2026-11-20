@@ -461,8 +461,8 @@ func TestConflictTextOncePerReason(t *testing.T) {
 	o := compare.Object{
 		Type: "dcim.devicetype",
 		Definitions: []compare.Result{
-			{NetBoxID: 11, Collisions: twice},
-			{NetBoxID: 11, Collisions: append([]compare.Collision{slug}, twice...)},
+			{NetBoxID: 11, Collisions: twice, Columns: []compare.Column{{Kind: compare.DefinitionColumn, Source: "lib", Path: "a.yaml"}}},
+			{NetBoxID: 11, Collisions: append([]compare.Collision{slug}, twice...), Columns: []compare.Column{{Kind: compare.DefinitionColumn, Source: "ours", Path: "b.yaml"}}},
 		},
 		Columns: []compare.Column{
 			{Kind: compare.DefinitionColumn, Source: "lib", Path: "a.yaml"},
@@ -476,5 +476,25 @@ func TestConflictTextOncePerReason(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, conflictText(o)); diff != "" {
 		t.Errorf("conflictText (-want +got):\n%s", diff)
+	}
+}
+
+// TestResultOf checks that a result is matched with its definition by
+// identity too, which tells a source's derived definitions, which have no
+// file, apart.
+func TestResultOf(t *testing.T) {
+	t.Parallel()
+	def := func(name string) compare.Definition {
+		d := compare.Definition{Source: "lib"}
+		d.Object.Type = "dcim.manufacturer"
+		d.Identity = map[string]model.Value{"name": model.String(name)}
+		return d
+	}
+	res := compare.Result{
+		Type: "dcim.manufacturer", Identity: map[string]model.Value{"name": model.String("Dell")},
+		Columns: []compare.Column{{Kind: compare.DefinitionColumn, Source: "lib"}},
+	}
+	if !resultOf(res, def("Dell")) || resultOf(res, def("HPE")) {
+		t.Errorf("resultOf Dell's result: of Dell %t, of HPE %t; want true, false", resultOf(res, def("Dell")), resultOf(res, def("HPE")))
 	}
 }

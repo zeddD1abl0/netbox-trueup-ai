@@ -1091,7 +1091,8 @@ func TestCheckResults(t *testing.T) {
 		{[][]bool{{true}, nil, {false, true}}, ""},
 		{[][]bool{{true}, nil, {true, true}}, `compare with NetBox: dcim.devicetype "b1.yaml" is absent, though its unique values matched NetBox; please report it`},
 		{[][]bool{{false}, nil, {false, true}}, `compare with NetBox: dcim.devicetype "a.yaml" is candidate, though its unique values matched nothing in NetBox; please report it`},
-		{[][]bool{{true}, nil, {false}}, `compare with NetBox: dcim.devicetype "b2.yaml" is conflict, though its unique values matched nothing in NetBox; please report it`},
+		{[][]bool{{true}, nil, {false, false}}, `compare with NetBox: dcim.devicetype "b2.yaml" is conflict, though its unique values matched nothing in NetBox; please report it`},
+		{[][]bool{{true}, nil, {false}}, `compare with NetBox: source b has 2 definitions chosen, 2 read and 1 matched; please report it`},
 	} {
 		sources := slices.Clone(two)
 		for j := range sources {

@@ -586,9 +586,11 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	if err := checkResults(compared, results, scope); err != nil {
 		return compareJSON{}, err
 	}
+	// Every result comes from one reading of NetBox, so Objects failing is
+	// TrueUp's own failure.
 	objects, err := compare.Objects(specs, results)
 	if err != nil {
-		return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
+		return compareJSON{}, fmt.Errorf("compare with NetBox: %w; please report it", err)
 	}
 
 	// Each definition's comparison, and each object, is written as JSON,
@@ -637,8 +639,8 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			result.Sources = append(result.Sources, *sc.row)
 			continue
 		}
-		mine := recorded[:len(sc.chosen)]
-		recorded = recorded[len(sc.chosen):]
+		mine := recorded[:len(sc.whole)]
+		recorded = recorded[len(sc.whole):]
 		if err := recordComparisons(ctx, db, *sc, scope, mine, result); err != nil {
 			if !errors.Is(err, store.ErrSnapshotChanged) {
 				return compareJSON{}, err
@@ -655,6 +657,9 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		sc.row.InStep, sc.row.Differing, sc.row.Absent, sc.row.Conflicts = counts.InStep, counts.Differing, counts.Absent, counts.Conflicts
 		result.OK = result.OK && sc.row.OK
 		result.Sources = append(result.Sources, *sc.row)
+	}
+	if len(recorded) > 0 {
+		return compareJSON{}, fmt.Errorf("compare with NetBox: %d comparisons of no source's definition; please report it", len(recorded))
 	}
 	if forText {
 		result.objects = objects
@@ -1072,6 +1077,9 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 		if sc.row.Version == nil {
 			continue
 		}
+		if len(sc.chosen) != len(sc.whole) || scope == scopeNetBox && len(sc.matched) != len(sc.chosen) {
+			return fmt.Errorf("compare with NetBox: source %s has %d definitions chosen, %d read and %d matched; please report it", sc.row.Name, len(sc.chosen), len(sc.whole), len(sc.matched))
+		}
 		if len(results) < len(sc.whole) {
 			return fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.whole), sc.row.Name)
 		}
@@ -1087,9 +1095,9 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 			default:
 				return fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", key, r.Outcome)
 			}
-			if scope == scopeNetBox && (i >= len(sc.matched) || sc.matched[i] == (r.Outcome == compare.Absent)) {
+			if scope == scopeNetBox && sc.matched[i] == (r.Outcome == compare.Absent) {
 				return fmt.Errorf("compare with NetBox: %s is %s, though its unique values matched %s; please report it",
-					key, r.Outcome, map[bool]string{true: "NetBox", false: "nothing in NetBox"}[i < len(sc.matched) && sc.matched[i]])
+					key, r.Outcome, map[bool]string{true: "NetBox", false: "nothing in NetBox"}[sc.matched[i]])
 			}
 		}
 		results = results[len(sc.whole):]
@@ -1101,9 +1109,18 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 }
 
 // resultOf reports whether r is the result of comparing d: of its type,
-// source and file.
+// source, file and identity, which tells a source's derived definitions,
+// which have no file, apart.
 func resultOf(r compare.Result, d compare.Definition) bool {
-	return r.Type == d.Object.Type && len(r.Columns) > 0 && r.Columns[0].Source == d.Source && r.Columns[0].Path == d.Path
+	if r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path || len(r.Identity) != len(d.Identity) {
+		return false
+	}
+	for name, v := range d.Identity {
+		if w, ok := r.Identity[name]; !ok || v == nil || w == nil || !model.Equal(v, w) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *app) failSource(row *compareSourceJSON, msg string) {
@@ -1539,12 +1556,12 @@ func conflictText(o compare.Object) []string {
 	// NetBox's children sharing a key, which every definition finds.
 	var reasons []string
 	givenBy := map[string][]string{}
-	for c, d := range o.Definitions {
+	for _, d := range o.Definitions {
 		for _, p := range collisionText(o.Type, d) {
 			if givenBy[p] == nil {
 				reasons = append(reasons, p)
 			}
-			givenBy[p] = append(givenBy[p], definitionText(defs[c]))
+			givenBy[p] = append(givenBy[p], definitionText(d.Columns[0]))
 		}
 	}
 	var by []string

@@ -2,6 +2,7 @@ package compare
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -170,12 +171,15 @@ func objectKey(specs []*model.Spec, typ string, identity map[string]model.Value)
 	normalized := make(map[string]model.Value, len(identity))
 	for _, name := range s.Identity {
 		v, f := identity[name], s.Field(name)
-		if v == nil || f == nil || v.Kind() == model.KindNull {
+		if v == nil || f == nil {
 			return "", nil, fmt.Errorf("has no %s in its identity", name)
 		}
 		v, err := normalizeKeyValue(specs, f, v)
 		if err != nil {
 			return "", nil, fmt.Errorf("its identity's %s %w", name, err)
+		}
+		if v.Kind() == model.KindNull {
+			return "", nil, fmt.Errorf("has no %s in its identity", name)
 		}
 		normalized[name] = v
 		b.WriteByte(0)
@@ -187,32 +191,23 @@ func objectKey(specs []*model.Spec, typ string, identity map[string]model.Value)
 }
 
 // normalizeKeyValue returns v as NetBox would store it in field f, and a
-// reference without its ID, by its key, each of whose fields is normalized
-// as the spec of the type it refers to says.
+// reference, to a type f can refer to, without its ID, by its target's
+// identity, normalized as objectKey normalizes it.
 func normalizeKeyValue(specs []*model.Spec, f *model.Field, v model.Value) (model.Value, error) {
 	v = f.Normalize(v)
 	ref, ok := v.(model.Reference)
 	if !ok {
 		return v, nil
 	}
+	if f.Ref == nil || !slices.Contains(f.Ref.Types, ref.Type) {
+		return nil, fmt.Errorf("refers to a %s, which %s can't", strconv.Quote(ref.Type), f.Name)
+	}
 	if len(ref.Key) == 0 {
 		return nil, fmt.Errorf("refers to a %s by its ID alone, not by its key", ref.Type)
 	}
-	target := model.SpecOf(specs, ref.Type)
-	if target == nil {
-		return nil, fmt.Errorf("refers to a %s, which has no spec", strconv.Quote(ref.Type))
-	}
-	key := make(map[string]model.Value, len(ref.Key))
-	for name, kv := range ref.Key {
-		tf := target.Field(name)
-		if tf == nil {
-			return nil, fmt.Errorf("refers to a %s by a %s, which it hasn't got", ref.Type, name)
-		}
-		nv, err := normalizeKeyValue(specs, tf, kv)
-		if err != nil {
-			return nil, err
-		}
-		key[name] = nv
+	_, key, err := objectKey(specs, ref.Type, ref.Key)
+	if err != nil {
+		return nil, fmt.Errorf("refers to a %s whose key %w", ref.Type, err)
 	}
 	return model.Reference{Type: ref.Type, Key: key}, nil
 }
@@ -261,11 +256,17 @@ func valueKey(v model.Value) string {
 //
 // It fails, rather than guess, on a result that isn't one Compare could
 // make, and on an object whose results don't agree on NetBox's side, such as
-// results made against different states of NetBox.
+// results made against different states of NetBox: on its NetBox object,
+// the fields NetBox sets, the children NetBox has, the values of either, the
+// children NetBox holds twice, and the objects a reference could be. A
+// field of a child that NetBox holds at its default, which a comparison
+// leaves out unless its definition sets it, can't be told apart that way:
+// a caller merging comparisons recorded at different times checks when they
+// were made too.
 func Objects(specs []*model.Spec, results []Result) ([]Object, error) {
 	members, keys, err := group(len(results), func(i int) (string, map[string]model.Value, error) {
 		r := &results[i]
-		if err := checkResult(r); err != nil {
+		if err := checkResult(specs, r); err != nil {
 			return "", nil, fmt.Errorf("result %d: %w", i, err)
 		}
 		k, identity, err := objectKey(specs, r.Type, r.Identity)
@@ -319,8 +320,15 @@ func Objects(specs []*model.Spec, results []Result) ([]Object, error) {
 
 // checkResult checks that a result has the shape Compare gives one: a
 // definition's column, then NetBox's object's where its identity matches
-// one, a cell in each row for each column, and an outcome.
-func checkResult(r *Result) error {
+// one; an outcome that its NetBox match, collisions and references bear
+// out; rows whose paths go through its type's spec, with a cell for each
+// column, a child's row's cells true, false or, where that version hasn't
+// the child's parent, unset; each row differing where two of its cells do,
+// managed only where the definition sets it, and as many differences as
+// rows that differ and are managed. It doesn't look for a row given twice,
+// which merging two results refuses.
+func checkResult(specs []*model.Spec, r *Result) error {
+	ambiguous := slices.ContainsFunc(r.Unresolved, func(u Unresolved) bool { return len(u.Candidates) > 0 })
 	switch {
 	case len(r.Columns) == 0 || r.Columns[0].Kind != DefinitionColumn:
 		return fmt.Errorf("the comparison of a %s doesn't start with its definition's column", r.Type)
@@ -331,11 +339,75 @@ func checkResult(r *Result) error {
 		return fmt.Errorf("the comparison of a %s has the outcome %q", r.Type, r.Outcome)
 	case r.Outcome == Candidate && r.NetBoxID == 0, r.Outcome == Absent && r.NetBoxID != 0:
 		return fmt.Errorf("the comparison of a %s is %s, though its NetBox object is #%d", r.Type, r.Outcome, r.NetBoxID)
+	case (r.Outcome == Conflict) != (len(r.Collisions) > 0 || ambiguous):
+		return fmt.Errorf("the comparison of a %s is %s, with %d collisions and %d references NetBox has several of", r.Type, r.Outcome, len(r.Collisions), len(r.Unresolved))
 	}
+	s := model.SpecOf(specs, r.Type)
+	if s == nil {
+		return fmt.Errorf("the comparison is of a %s, which has no spec", strconv.Quote(r.Type))
+	}
+	differences := 0
 	for _, row := range r.Rows {
-		if len(row.Path) == 0 || len(row.Cells) != len(r.Columns) {
+		if len(row.Cells) != len(r.Columns) {
 			return fmt.Errorf("the comparison of a %s has a row %s with %d cells for %d columns", r.Type, row.Path, len(row.Cells), len(r.Columns))
 		}
+		if err := checkPath(specs, s, row.Path); err != nil {
+			return fmt.Errorf("the comparison of a %s has a row %s that %w", r.Type, row.Path, err)
+		}
+		if isChildRow(row.Path) {
+			for c, v := range row.Cells {
+				if _, ok := v.(model.Boolean); !ok && (v != nil || c == 0) {
+					return fmt.Errorf("the comparison of a %s has a child's row %s whose cell %d is %s, not whether it has the child", r.Type, row.Path, c, describe(v))
+				}
+			}
+		}
+		if row.Differs != differ(row.Cells) || row.Managed && row.Cells[0] == nil {
+			return fmt.Errorf("the comparison of a %s has a row %s whose flags don't fit its cells", r.Type, row.Path)
+		}
+		if row.Differs && row.Managed {
+			differences++
+		}
+	}
+	if differences != r.Differences {
+		return fmt.Errorf("the comparison of a %s counts %d differences, but %d rows differ and are managed", r.Type, r.Differences, differences)
+	}
+	return nil
+}
+
+// checkPath checks that a row's path goes through spec s: fields and
+// collections it has, each collection followed by a child's key, of its key's
+// fields, and the path ending at a field or a child's key.
+func checkPath(specs []*model.Spec, s *model.Spec, p Path) error {
+	if len(p) == 0 {
+		return errors.New("has no path")
+	}
+	cur := s
+	var col *model.Collection
+	for i, step := range p {
+		switch {
+		case step.Key != nil:
+			if col == nil || len(step.Key) != len(col.Key) || slices.ContainsFunc(col.Key, func(name string) bool { _, ok := step.Key[name]; return !ok }) {
+				return fmt.Errorf("has a key at step %d that isn't a child's of a collection", i+1)
+			}
+			cur, col = model.SpecOf(specs, col.Type), nil
+			if cur == nil {
+				return fmt.Errorf("goes into children without a spec at step %d", i+1)
+			}
+		case col != nil || cur == nil:
+			return fmt.Errorf("names %s where a child's key or nothing should be", step.Field)
+		case cur.Field(step.Field) != nil:
+			if i != len(p)-1 {
+				return fmt.Errorf("goes on past the field %s", step.Field)
+			}
+			cur = nil
+		case cur.Collection(step.Field) != nil:
+			col = cur.Collection(step.Field)
+		default:
+			return fmt.Errorf("names %s, which a %s hasn't got", step.Field, cur.Type)
+		}
+	}
+	if col != nil {
+		return errors.New("ends at a collection")
 	}
 	return nil
 }
@@ -378,7 +450,10 @@ func buildObject(specs []*model.Spec, fields map[string]map[string]bool, o *Obje
 	if o.NetBoxID != 0 {
 		o.Columns = append(o.Columns, Column{Kind: NetBoxColumn, ID: o.NetBoxID})
 	}
-	o.Collisions, o.Unresolved = unionOf(results, of)
+	var err error
+	if o.Collisions, o.Unresolved, err = unionOf(results, of); err != nil {
+		return nil, fmt.Errorf("%s: %w", describeObject(o), err)
+	}
 
 	s := model.SpecOf(specs, o.Type)
 	if fields[o.Type] == nil {
@@ -411,13 +486,20 @@ func buildObject(specs []*model.Spec, fields map[string]map[string]bool, o *Obje
 // NetBox's children sharing a key, are taken from the first definition that
 // has any at that child's path, so that nested children, which have no
 // IDs, are each counted once.
-func unionOf(results []Result, of []int) ([]Collision, []Unresolved) {
+func unionOf(results []Result, of []int) ([]Collision, []Unresolved, error) {
 	var collisions []Collision
 	type own struct {
 		rule string
 		id   int64
 	}
-	seen, paths := map[own]bool{}, map[string]int{}
+	seen := map[own]bool{}
+	// A child's collisions, NetBox's children sharing its key, by path and
+	// then by result, as a list: each result that finds them finds the same,
+	// and every result finds those of the object's own children.
+	var paths []string
+	byPath := map[string]map[int]string{}
+	firstFrom := map[string]int{}
+	first := map[string][]Collision{}
 	for _, i := range of {
 		r := &results[i]
 		for _, c := range r.Collisions {
@@ -430,27 +512,47 @@ func unionOf(results []Result, of []int) ([]Collision, []Unresolved) {
 				continue
 			}
 			p := pathKey(c.Path)
-			if from, ok := paths[p]; ok && from != i {
-				continue
+			if byPath[p] == nil {
+				byPath[p] = map[int]string{}
+				paths = append(paths, p)
+				firstFrom[p] = i
 			}
-			paths[p] = i
-			collisions = append(collisions, c)
+			byPath[p][i] += strings.Join(c.Rule, "\x00") + "#" + strconv.FormatInt(c.ID, 10) + ";"
+			if firstFrom[p] == i {
+				first[p] = append(first[p], c)
+			}
 		}
+	}
+	for _, p := range paths {
+		found := byPath[p]
+		want := found[firstFrom[p]]
+		for _, i := range of {
+			got, ok := found[i]
+			if ok && got != want || !ok && keysIn(first[p][0].Path) == 1 {
+				return nil, nil, fmt.Errorf("its definitions' comparisons disagree on what NetBox holds at %s", first[p][0].Path)
+			}
+		}
+		collisions = append(collisions, first[p]...)
 	}
 	sortCollisions(collisions)
 
 	var unresolved []Unresolved
-	refs := map[string]bool{}
+	refs := map[string]string{}
 	for _, i := range of {
 		for _, u := range results[i].Unresolved {
 			k := u.Field + "\x00" + valueKey(model.Reference{Type: u.Ref.Type, Key: u.Ref.Key})
-			if !refs[k] {
-				refs[k] = true
-				unresolved = append(unresolved, u)
+			candidates := fmt.Sprint(u.Candidates)
+			if was, ok := refs[k]; ok {
+				if was != candidates {
+					return nil, nil, fmt.Errorf("its definitions' comparisons disagree on which NetBox objects its %s could be", u.Field)
+				}
+				continue
 			}
+			refs[k] = candidates
+			unresolved = append(unresolved, u)
 		}
 	}
-	return collisions, unresolved
+	return collisions, unresolved, nil
 }
 
 // sortCollisions sorts collisions as a result's: the object's own first,
@@ -761,6 +863,29 @@ func mergeRows(specs []*model.Spec, s *model.Spec, results []Result, of []int) (
 			}
 			if !sameValue(m.row.Cells[n], row.Cells[1]) || m.row.NetBoxID != row.NetBoxID {
 				return nil, fmt.Errorf("its definitions' comparisons give NetBox's %s differently", row.Path)
+			}
+		}
+	}
+	// Each definition's comparison with one NetBox has every field NetBox's
+	// object sets, and every child NetBox has, of the object or of a child
+	// the definition has that NetBox has once: comparisons that don't were
+	// made against different states of NetBox.
+	if netbox {
+		for _, m := range all {
+			nb := m.row.Cells[n]
+			child := isChildRow(m.row.Path)
+			var parent *merged
+			if child && len(m.above) > 1 {
+				parent = m.above[len(m.above)-2]
+			}
+			for c := range n {
+				switch {
+				case m.has[c]:
+				case len(m.row.Path) == 1 && nb != nil,
+					child && model.Equal(nb, model.Boolean(true)) &&
+						(parent == nil || parent.has[c] && model.Equal(parent.row.Cells[c], model.Boolean(true)) && parent.row.NetBoxID != 0):
+					return nil, fmt.Errorf("its definitions' comparisons disagree on what NetBox holds at %s", m.row.Path)
+				}
 			}
 		}
 	}
