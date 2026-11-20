@@ -548,6 +548,11 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			sc.chosen, sc.matched, sc.whole = nil, nil, nil
 		}
 	}
+	// A source that couldn't be read whole leaves its definitions out: by
+	// default, an object compared for one of them alone isn't compared.
+	if scope == scopeNetBox {
+		dropUnmatched(compared, groups)
+	}
 	var defs []compare.Definition
 	for _, sc := range compared {
 		defs = append(defs, sc.whole...)
@@ -765,6 +770,42 @@ func chooseWhatNetBoxHas(specs []*model.Spec, compared []sourceCompared, groups 
 		sc.chosen = kept
 	}
 	return nil
+}
+
+// dropUnmatched leaves out, by default, the definitions of the objects none
+// of whose definitions still to compare matches or collides with a NetBox
+// object, as when the source of the one that did couldn't be read whole.
+func dropUnmatched(compared []sourceCompared, groups [][]definitionAt) {
+	matched := make([]map[int]bool, len(compared))
+	for j, sc := range compared {
+		matched[j] = make(map[int]bool, len(sc.chosen))
+		for k, i := range sc.chosen {
+			matched[j][i] = sc.matched[k]
+		}
+	}
+	keep := make([]map[int]bool, len(compared))
+	for j := range compared {
+		keep[j] = map[int]bool{}
+	}
+	for _, g := range groups {
+		if slices.ContainsFunc(g, func(d definitionAt) bool { return matched[d.source][d.index] }) {
+			for _, d := range g {
+				keep[d.source][d.index] = true
+			}
+		}
+	}
+	for j := range compared {
+		sc := &compared[j]
+		var chosen []int
+		var still []bool
+		var whole []compare.Definition
+		for k, i := range sc.chosen {
+			if keep[j][i] {
+				chosen, still, whole = append(chosen, i), append(still, sc.matched[k]), append(whole, sc.whole[k])
+			}
+		}
+		sc.chosen, sc.matched, sc.whole = chosen, still, whole
+	}
 }
 
 // recordedComparison is a definition's comparison, as the database records
@@ -1701,8 +1742,11 @@ func isChildRow(row compare.Row) bool {
 }
 
 // presenceText writes a child row's cell: whether that version has the
-// child.
+// child, or "-" where it hasn't the child's parent either.
 func presenceText(v model.Value) string {
+	if v == nil {
+		return "-"
+	}
 	if b, ok := v.(model.Boolean); ok && bool(b) {
 		return "present"
 	}

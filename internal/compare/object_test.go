@@ -510,6 +510,9 @@ func TestObjectsRefused(t *testing.T) {
 		{"a row twice", func(r []compare.Result) {
 			r[1].Rows = append(r[1].Rows, r[1].Rows[0])
 		}, "has the row manufacturer twice"},
+		{"a reference by its ID alone", func(r []compare.Result) {
+			r[1].Unresolved = []compare.Unresolved{{Field: "manufacturer", Ref: model.Reference{Type: "dcim.manufacturer", ID: 3}}}
+		}, "manufacturer has an identity of 0 fields, but a dcim.manufacturer's has 1"},
 		{"a child's field before the child", func(r []compare.Result) {
 			field := r[1].Rows[len(r[1].Rows)-1]
 			r[1].Rows = append([]compare.Row{field}, r[1].Rows[:len(r[1].Rows)-1]...)

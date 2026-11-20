@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/model"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
@@ -333,7 +334,11 @@ func TestCompareClashAcrossSources(t *testing.T) {
 func TestCompareASourceLoadedAgainLeavesTheOthers(t *testing.T) {
 	t.Parallel()
 	nb := libraryNetBox(t)
-	env, dataDir, configure := twoSourcesEnv(t, nb, nil, map[string]string{"GS105.yaml": oursGS105(t)})
+	// GS108 is compared only for ours' definition, which collides with
+	// GS105 in NetBox: with ours gone, the library's isn't compared.
+	env, dataDir, configure := twoSourcesEnv(t, nb,
+		map[string]string{"device-types/Netgear/GS108.yaml": gs105As(t, "GS108", "netgear-gs108")},
+		map[string]string{"GS105.yaml": oursGS105(t), "GS108.yaml": gs105As(t, "GS108", "netgear-gs105")})
 	loaded := sourceDefinitions(t, dataDir, "ours")
 	var once sync.Once
 	nb.onManufacturers = func() {
@@ -353,8 +358,8 @@ func TestCompareASourceLoadedAgainLeavesTheOthers(t *testing.T) {
 		t.Errorf("the other source = %+v", src)
 	}
 	for _, o := range got.Objects {
-		if c := columnsText(o); strings.Contains(c, "ours") {
-			t.Errorf("%s has the columns %s", o.name(), c)
+		if c := columnsText(o); strings.Contains(c, "ours") || o.name() == "GS108" {
+			t.Errorf("%s is compared, with the columns %s", o.name(), c)
 		}
 	}
 	if gs105 := got.Objects[4]; gs105.name() != "GS105" || !gs105.InStep {
@@ -426,5 +431,16 @@ func TestChooseWhole(t *testing.T) {
 	chooseWhole(compared, groups)
 	if got := [][]int{compared[0].chosen, compared[1].chosen}; !cmp.Equal(got, [][]int{{2, 3}, {1}}) {
 		t.Errorf("chosen %v, want [[2 3] [1]]", got)
+	}
+}
+
+// TestPresenceText checks how a child's row's cell is written: present,
+// missing, or "-" where that version hasn't the child's parent.
+func TestPresenceText(t *testing.T) {
+	t.Parallel()
+	for v, want := range map[model.Value]string{model.Boolean(true): "present", model.Boolean(false): "missing", nil: "-"} {
+		if got := presenceText(v); got != want {
+			t.Errorf("presenceText(%v) = %q, want %q", v, got, want)
+		}
 	}
 }

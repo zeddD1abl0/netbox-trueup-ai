@@ -10,7 +10,6 @@
 package compare
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -815,11 +814,7 @@ func fillOutcomes(results []Result) {
 				u.Outcome = o[0]
 			}
 		}
-		// The object's own first, then its children's, by where they are.
-		slices.SortStableFunc(r.Collisions, func(a, b Collision) int {
-			return cmp.Or(cmp.Compare(len(a.Path), len(b.Path)), cmp.Compare(a.Path.String(), b.Path.String()),
-				slices.Compare(a.Rule, b.Rule), cmp.Compare(a.ID, b.ID))
-		})
+		sortCollisions(r.Collisions)
 	}
 }
 

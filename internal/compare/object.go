@@ -111,23 +111,45 @@ type ClashWith struct {
 // cut down to their unique values (UniqueValues). It fails for a
 // definition of a type without a spec, or whose identity isn't the spec's.
 func Group(specs []*model.Spec, defs []Definition) ([][]int, error) {
+	groups, _, err := group(len(defs), func(i int) (string, map[string]model.Value, error) {
+		d := &defs[i]
+		k, identity, err := objectKey(specs, d.Object.Type, d.Identity)
+		if err != nil {
+			return "", nil, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
+		}
+		return k, identity, nil
+	})
+	return groups, err
+}
+
+// keyed is an object's key, and its identity as NetBox would store it.
+type keyed struct {
+	key      string
+	identity map[string]model.Value
+}
+
+// group groups n things by the key keyOf gives each, and returns each
+// group's things, by index, groups in the order of their first thing, and
+// each group's key.
+func group(n int, keyOf func(i int) (string, map[string]model.Value, error)) ([][]int, []keyed, error) {
 	byKey := map[string]int{}
 	var groups [][]int
-	for i := range defs {
-		d := &defs[i]
-		k, _, err := objectKey(specs, d.Object.Type, d.Identity)
+	var keys []keyed
+	for i := range n {
+		k, identity, err := keyOf(i)
 		if err != nil {
-			return nil, fmt.Errorf("%s's definition %s: %w", d.Source, describeDefinition(d), err)
+			return nil, nil, err
 		}
 		g, ok := byKey[k]
 		if !ok {
 			g = len(groups)
 			byKey[k] = g
 			groups = append(groups, nil)
+			keys = append(keys, keyed{k, identity})
 		}
 		groups[g] = append(groups[g], i)
 	}
-	return groups, nil
+	return groups, keys, nil
 }
 
 // objectKey returns the key that tells an object of type typ from the
@@ -241,26 +263,23 @@ func valueKey(v model.Value) string {
 // make, and on an object whose results don't agree on NetBox's side, such as
 // results made against different states of NetBox.
 func Objects(specs []*model.Spec, results []Result) ([]Object, error) {
-	byKey := map[string]int{}
-	var objects []Object
-	var members [][]int
-	for i := range results {
+	members, keys, err := group(len(results), func(i int) (string, map[string]model.Value, error) {
 		r := &results[i]
 		if err := checkResult(r); err != nil {
-			return nil, fmt.Errorf("result %d: %w", i, err)
+			return "", nil, fmt.Errorf("result %d: %w", i, err)
 		}
 		k, identity, err := objectKey(specs, r.Type, r.Identity)
 		if err != nil {
-			return nil, fmt.Errorf("%s's definition %s: %w", r.Columns[0].Source, describeColumn(r.Type, r.Identity, r.Columns[0]), err)
+			return "", nil, fmt.Errorf("%s's definition %s: %w", r.Columns[0].Source, describeColumn(r.Type, r.Identity, r.Columns[0]), err)
 		}
-		g, ok := byKey[k]
-		if !ok {
-			g = len(objects)
-			byKey[k] = g
-			objects = append(objects, Object{Type: r.Type, Identity: identity})
-			members = append(members, nil)
-		}
-		members[g] = append(members[g], i)
+		return k, identity, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	objects := make([]Object, len(members))
+	for g, of := range members {
+		objects[g] = Object{Type: results[of[0]].Type, Identity: keys[g].identity}
 	}
 	holds := make([][]map[string]model.Value, len(objects))
 	for g := range objects {
@@ -280,19 +299,18 @@ func Objects(specs []*model.Spec, results []Result) ([]Object, error) {
 		if len(o.DuplicatedIn) > 0 || len(o.Clashes) > 0 {
 			o.Outcome = Conflict
 		}
-		k, _, err := objectKey(specs, o.Type, o.Identity)
-		if err != nil {
-			return nil, err
-		}
-		outcomes[k] = o.Outcome
+		outcomes[keys[g].key] = o.Outcome
 	}
 	for g := range objects {
 		for j := range objects[g].Unresolved {
 			u := &objects[g].Unresolved[j]
-			u.Outcome = ""
-			if k, _, err := objectKey(specs, u.Ref.Type, u.Ref.Key); err == nil {
-				u.Outcome = outcomes[k]
+			// Compare made sure that a reference's key is its target's
+			// identity, so that it names one object.
+			k, _, err := objectKey(specs, u.Ref.Type, u.Ref.Key)
+			if err != nil {
+				return nil, fmt.Errorf("%s's %s %w", describeObject(&objects[g]), u.Field, err)
 			}
+			u.Outcome = outcomes[k]
 		}
 	}
 	return objects, nil
@@ -475,6 +493,13 @@ func findClashes(specs []*model.Spec, objects []Object, holds [][]map[string]mod
 		values  map[string]model.Value
 		holders []holder
 	}
+	// What NetBox's object of each holds now, read once.
+	nb := make([]map[string]model.Value, len(objects))
+	for g := range objects {
+		if objects[g].NetBoxID != 0 {
+			nb[g] = netboxHolds(&objects[g])
+		}
+	}
 	for _, typ := range typesOf(objects) {
 		s := model.SpecOf(specs, typ)
 		if s == nil {
@@ -494,8 +519,8 @@ func findClashes(specs []*model.Spec, objects []Object, holds [][]map[string]mod
 				if o.Type != typ {
 					continue
 				}
-				if o.NetBoxID != 0 {
-					if k, _, ok := holdKey(u, netboxHolds(o)); ok {
+				if nb[g] != nil {
+					if k, _, ok := holdKey(u, nb[g]); ok {
 						heldNow[k] = true
 					}
 				}
