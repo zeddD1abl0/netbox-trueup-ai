@@ -114,7 +114,7 @@ It differs from netbox-docker's own Compose file in a few ways:
 - **Nothing leaves this machine.** Census reporting, the release check and Copilot are off.
 - **No passwords on PostgreSQL's and Valkey's ports,** which are reachable only from the stack's own network. Tests also publish them on random ports of 127.0.0.1.
 
-Each image is pinned by tag and digest. Dependabot proposes updates after a 7-day cooldown. A NetBox update is a change of target ([ADR 0003](../../docs/adr/0003-initial-netbox-target.md)), so it fails `TestComposeFile` until `netboxtest.Version` and `NETBOX_VERSION` in the Makefile move with it.
+Each image is pinned by tag and digest. Dependabot proposes updates after a 7-day cooldown. PostgreSQL's and Valkey's patch and minor updates merge themselves once every required check passes, the integration tests included ([ADR 0031](../../docs/adr/0031-merge-routine-dependabot-updates-automatically.md)). A NetBox update is a change of target ([ADR 0003](../../docs/adr/0003-initial-netbox-target.md)), so it fails `TestComposeFile` until `netboxtest.Version` and `NETBOX_VERSION` in the Makefile move with it.
 
 ## Changing the stack
 

@@ -65,7 +65,7 @@ Run `make check` before proposing a pull request, and `make test-integration` if
 
 - Never commit secrets, tokens, or real hostnames, addresses or data from anyone's network. Use documentation values: `example.com`, `192.0.2.0/24`, `2001:db8::/32`.
 - Never write to a NetBox instance other than a disposable local one (`internal/netboxtest`), and never run a sync against shared or production NetBox.
-- Never push to `main`, approve a pull request, or merge one. A human maintainer does those.
+- Never push to `main`, approve a pull request, or merge one. A human maintainer does those, apart from Dependabot's routine updates, which merge themselves once every required check passes ([ADR 0031](docs/adr/0031-merge-routine-dependabot-updates-automatically.md)). A commit pushed to a Dependabot pull request turns its auto-merge off, so the maintainer merges it.
 - Never bypass checks: no `--no-verify`, no `--no-gpg-sign`, no `-c commit.gpgsign=false`.
 - Never weaken a CI check, linter rule or security setting to make a change pass. Explain the problem to a human instead.
 - Never add a dependency without a reason in the PR description. Prefer the standard library.

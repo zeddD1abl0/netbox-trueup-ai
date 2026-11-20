@@ -1,6 +1,11 @@
 # Weekly update PRs. The cooldown waits 7 days after a release before
 # proposing it, so a compromised release is more likely to be caught first.
 # Security updates are not delayed.
+#
+# Patch and minor updates of gomod and docker-compose entries merge
+# themselves once the required checks pass, apart from those the workflow
+# dependabot-auto-merge.yml holds back (ADR 0031). A new entry for either
+# ecosystem comes under that rule too.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -15,6 +20,12 @@ updates:
     groups:
       go-modules:
         patterns: ["*"]
+        exclude-patterns: ["github.com/go-git/go-git/*", "github.com/go-git/go-billy/*"]
+      # go-git and go-billy are betas, which a maintainer reviews (ADR 0020).
+      # Grouped apart, they don't hold back the other modules' updates, which
+      # merge themselves (ADR 0031).
+      go-git:
+        patterns: ["github.com/go-git/go-git/*", "github.com/go-git/go-billy/*"]
 
   - package-ecosystem: github-actions
     directory: /
