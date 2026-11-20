@@ -9,8 +9,8 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-license.md) | License under Apache 2.0 | Accepted |
 | [0003](0003-initial-netbox-target.md) | Target NetBox 4.7 first | Accepted |
-| [0004](0004-contribution-workflow.md) | Contribution workflow | Accepted |
-| [0005](0005-ai-first-development.md) | AI-first development | Accepted |
+| [0004](0004-contribution-workflow.md) | Contribution workflow | Accepted, with an exception for Dependabot's routine updates in [0031](0031-merge-routine-dependabot-updates-automatically.md) |
+| [0005](0005-ai-first-development.md) | AI-first development | Accepted, with an exception for Dependabot's routine updates in [0031](0031-merge-routine-dependabot-updates-automatically.md) |
 | [0006](0006-manage-only-linked-objects.md) | Manage only objects a person has imported | Accepted |
 | [0007](0007-provenance-and-changelog-messages.md) | Keep provenance in TrueUp, and mark NetBox writes with changelog messages only | Accepted |
 | [0008](0008-describe-object-types-with-specs.md) | Describe NetBox object types with declarative specs | Accepted |
@@ -36,6 +36,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0028](0028-no-inventory-item-templates.md) | Don't support inventory item templates | Accepted |
 | [0029](0029-keep-a-lookup-table-of-definitions.md) | Keep each source's definitions in the database, and read them from there | Accepted |
 | [0030](0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first | Accepted |
+| [0031](0031-merge-routine-dependabot-updates-automatically.md) | Merge Dependabot's patch and minor updates of Go modules and test databases automatically, once every required check passes | Accepted |
 
 ## When to write one
 

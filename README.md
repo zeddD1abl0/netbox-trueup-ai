@@ -33,7 +33,7 @@ This project is AI-first. Most of its code is written by AI coding agents (curre
 
 In practice:
 
-- Every change reaches `main` through a pull request that a human reviews and merges.
+- Every change reaches `main` through a pull request that a human reviews and merges. The one exception is Dependabot's routine updates, patch and minor releases of Go modules and test databases, which merge themselves once every required check passes ([ADR 0031](docs/adr/0031-merge-routine-dependabot-updates-automatically.md)).
 - The same CI checks, linters, security scanners and tests apply whether a person or an agent wrote the code.
 - Commits and pull requests credit the AI tools that helped write them.
 - The instructions agents follow are public: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md) and [docs/tooling.md](docs/tooling.md).

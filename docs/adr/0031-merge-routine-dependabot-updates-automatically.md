@@ -1,0 +1,81 @@
+---
+status: accepted
+date: 2026-11-20
+decision-makers: "@zeddD1abl0"
+---
+
+# Merge Dependabot's patch and minor updates of Go modules and test databases automatically, once every required check passes
+
+## Context and problem
+
+Dependabot opens two to four pull requests a week: one for Go modules, one for GitHub Actions, and one for each set of test database images. Those merged so far waited one to five days for the maintainer (#5 to #22). [ADR 0004](0004-contribution-workflow.md) has the maintainer merge every pull request, and [ADR 0005](0005-ai-first-development.md) says every pull request has a human who has reviewed it.
+
+Should routine updates wait for the maintainer, or merge themselves once CI has checked them?
+
+## Decision drivers
+
+- A person decides anything that changes what the project targets or trusts: major releases, prereleases, NetBox's version, and the actions CI runs.
+- Nothing merges that CI hasn't exercised.
+- No stored secrets and no third-party apps with write access ([ADR 0005](0005-ai-first-development.md), [tooling.md](../tooling.md#9-considered-and-not-chosen)).
+- History on `main` stays signed and squash-merged ([ADR 0004](0004-contribution-workflow.md)).
+
+## Considered options
+
+1. The maintainer merges every Dependabot pull request, as now
+2. A workflow turns on auto-merge for some kinds of update
+3. A workflow turns on auto-merge for every update
+4. Renovate's automerge
+
+## Decision
+
+Chosen option: "a workflow turns on auto-merge for some kinds of update", because it saves the maintainer's time on the updates CI checks fully, and leaves the rest as they are.
+
+- **Which updates.** The workflow `.github/workflows/dependabot-auto-merge.yml` runs whenever a pull request Dependabot opened is opened, pushed to, edited or reopened, apart from its GitHub Actions updates, so a new release of fetch-metadata never runs with the workflow's write access before a maintainer reviews it. It reads the update with [dependabot/fetch-metadata](https://github.com/dependabot/fetch-metadata), and turns on auto-merge, to squash, only when:
+  - Dependabot caused the event, by opening, pushing to or editing the pull request, and started the run, which a re-run by anyone else doesn't;
+  - the pull request is for `main`, which the ruleset's required checks guard;
+  - every commit in the pull request is Dependabot's own: authored by Dependabot, and committed and signed by GitHub, which a local rebase or amend by anyone else changes, so nothing anyone else pushes merges without review;
+  - every dependency it updates is a Go module or an image in the tests' compose files, and has a patch or minor update, which includes security updates, since they skip Dependabot's cooldown;
+  - its new version is a release, not a prerelease or, for a Go module, a pseudo-version;
+  - neither go-git nor go-billy moves, since they are betas taken through reviewed updates ([ADR 0020](0020-git-sources-with-go-git.md)), whether Dependabot names them or another module's update moves them in `go.mod`, nor the NetBox image, since its version is the target ([ADR 0003](0003-initial-netbox-target.md));
+  - and `go.mod`'s `go` and `toolchain` lines stay as they are, since they set the Go release TrueUp needs, which CI keeps at the older of the two Go releases with security support.
+
+  GitHub turns auto-merge on only if the pull request's head is still the one the workflow checked. Whenever a run doesn't turn auto-merge on, including when it fails part-way, it turns auto-merge off, if it was on, and the pull request waits for the maintainer, as other pull requests do: major releases, prereleases, GitHub Actions, go-git, NetBox, a new Go release, updates whose size fetch-metadata can't tell, and any Dependabot pull request someone else has pushed a commit to, updated from GitHub, edited, reopened or re-run its workflow on. go-git and go-billy have a Dependabot group of their own, so they don't hold back the other Go modules.
+- **Merging.** GitHub merges when the ruleset's required checks pass, and only then. The integration tests become a required check, because they are the only tests that start PostgreSQL, Valkey and NetBox, and auto-merge doesn't wait for the others. The repository allows auto-merge.
+- **Accountability.** This is an exception to [ADR 0004](0004-contribution-workflow.md)'s "maintainer merges", and to [ADR 0005](0005-ai-first-development.md)'s "every pull request has a human who has reviewed it", for these updates only. The maintainer reviews the rule, in this workflow and in `.github/dependabot.yml`, rather than each update, and changing the rule takes a reviewed pull request. Agents still never approve or merge pull requests, and a commit an agent pushes to a Dependabot pull request turns its auto-merge off.
+
+### Consequences
+
+- Good, because routine updates land once their checks pass, instead of days later.
+- Good, because they pass the same checks as every other change, and GitHub signs the squash commits it makes.
+- Bad, because a compromised release that outlasts the 7-day cooldown and passes CI merges without anyone seeing it. The cooldown gives others a week to find a bad release, and only a release the maintainer makes ships it to users.
+- Bad, because every pull request now waits for the integration tests, 16 to 24 minutes in CI, before it can merge.
+- Bad, because GitHub starts no workflows for what a workflow's own token does, so CI isn't expected to run on `main` after these merges. Each update was tested on its pull request. The ruleset doesn't require branches to be up to date, so two updates merged close together are first tested together by the next pull request's CI. A GitHub App's token would start CI, but needs a stored secret. Requiring branches to be up to date would stall auto-merge: Dependabot doesn't update a branch that is only behind, and updating it from GitHub adds a commit that isn't Dependabot's. A merge queue can't be fed with a workflow's own token.
+- Bad, because, in Go, a major release is a new module path, which Dependabot doesn't propose, and a minor release of a v0 module may change its API. So in practice every Go release but go-git's merges once CI passes. The compiler and the tests catch API changes, but not changes of behaviour the tests don't cover. Treating v0 minor releases as major would hold back the `golang.org/x` modules, which are v0 and in most weeks' updates. Indirect requirements that an update moves in `go.mod`, as Go's minimal version selection does, follow the module that requires them, to whatever version it needs; only go-git and go-billy are checked there.
+- Bad, because an image's update type comes from its tag's numbers, so an image that moves only to a new Alpine release, such as PostgreSQL 16.15 from Alpine 3.24 to 3.25, counts as a patch and merges itself. The test databases' images only run the tests.
+- Bad, because the guard against other people's commits runs from the pull request's own copy of the workflow, so a push that changes the workflow changes the guard. It keeps mistakes out, such as an agent rebasing a Dependabot branch; it doesn't stop someone who sets out to get round it, but anyone who can push to a Dependabot branch can merge pull requests anyway, since the ruleset needs no approval. `pull_request_target` would run `main`'s copy instead, at the cost of a trigger that zizmor flags as dangerous.
+- Neutral, because a group with one update that doesn't qualify waits as a whole, as all of it waited before.
+- Bad, because auto-merge, once on, stays on until a run turns it off, so the guard relies on the workflow running for every push. A push that starts no workflow, such as one made with another workflow's token, starts none of the required checks either, so nothing merges. A run that fails before its steps start, for example because GitHub can't fetch fetch-metadata, turns nothing off; making the workflow's job a required check would close that, since a failed run would then block the merge.
+- Neutral, because turning auto-merge off by hand, reopening or editing the pull request, re-running its workflow, or updating it from GitHub by rebasing, which keeps Dependabot's commits as they were, lasts until Dependabot next pushes to it. Closing it holds it back, and a commit someone else pushes, or a merge from GitHub's "Update branch", stays in the branch, so it hands the pull request to the maintainer until Dependabot replaces its commits, for example when asked with `@dependabot rebase`.
+
+## Pros and cons of the options
+
+### The maintainer merges every Dependabot pull request
+
+- Good, because a person sees every change before it lands.
+- Bad, because, for routine updates, that person adds little to what the checks and the cooldown already do, and updates wait days.
+
+### Auto-merge for every update
+
+- Bad, because it would merge major releases, which change behaviour, and updates to the actions CI runs with tokens, without a person deciding.
+- Bad, because it would merge go-git betas, which [ADR 0020](0020-git-sources-with-go-git.md) takes through reviewed updates.
+
+### Renovate's automerge
+
+- Good, because it is more configurable, and covers `mise.toml`.
+- Bad, because it means installing a third-party app with write access, which [tooling.md](../tooling.md#9-considered-and-not-chosen) declined.
+
+## More information
+
+- GitHub: [automating Dependabot with GitHub Actions](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/automating-dependabot-with-github-actions), and [GITHUB_TOKEN](https://docs.github.com/en/actions/concepts/security/github_token) on events its use doesn't trigger.
+- fetch-metadata v3.1.0: `updated-dependencies-json` gives each dependency's update type, worked out from the versions when Dependabot's commit doesn't say, as for images, and empty when that fails; `update-type` is the largest of those it knows, so the workflow checks each dependency instead (`src/dependabot/update_metadata.ts`, `src/dependabot/output.ts`). `packageEcosystem` comes from the branch name (`go_modules`, `docker_compose`, `github_actions`). It fails unless the pull request's first commit is Dependabot's and has a signature GitHub verified, and looks at no other commit (`src/dependabot/verified_commits.ts`), so the workflow checks them all. GitHub takes a commit's author from its author email, which whoever makes the commit sets, and verifies the signature against its committer, so the workflow also checks that the committer is GitHub (`web-flow`), as on every commit Dependabot has made here.
+- GitHub CLI: `gh pr merge --auto --match-head-commit` passes the head to GitHub's `enablePullRequestAutoMerge` as `expectedHeadOid`, and merges at once when the pull request can already merge (`pkg/cmd/pr/merge/http.go`, `merge.go`).
