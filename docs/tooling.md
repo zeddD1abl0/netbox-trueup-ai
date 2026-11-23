@@ -76,7 +76,7 @@ Built-in Claude Code skills we rely on: `/code-review` and `/security-review` be
 | `netbox-migration` | Import patterns and dependency order for bulk loads. |
 | `netbox-ndx` | Structure of the community device-type library, a likely first sync source. |
 | `netbox-review-integration` | Reviews our NetBox client code for pagination, auth, and performance mistakes. |
-| `netbox-branching`, `netbox-changes` | Writing plans into NetBox branches and merging them, and opening change requests for those branches (milestone 2, ADR 0017). Covers the branch lifecycle, merge jobs, conflicts and merge gating. |
+| `netbox-branching`, `netbox-changes` | Running syncs in NetBox branches, which people merge in NetBox (milestone 2, ADR 0033). Covers the branch lifecycle, the branch header, conflicts and merge gating. TrueUp doesn't integrate with NetBox Changes, but its change requests and merge gating work on TrueUp's branches, so `netbox-changes` says what people meet there. |
 | `netbox-diode` | Reference only. We evaluated Diode as the write path and did not choose it (section 9). |
 | `setup-mcp` | Optional. Connects a NetBox MCP server to a local development NetBox (section 1.6). |
 

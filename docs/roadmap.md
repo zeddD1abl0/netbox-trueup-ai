@@ -172,25 +172,88 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
 
 ## Milestone 2: import and sync manufacturers and device types
 
-From the command line, import a selection of definitions and sync them to a local NetBox 4.7.2.
+From the command line, import a selection of definitions and sync them to a local NetBox 4.7.2: straight to main, or, where NetBox has netbox-branching and TrueUp is set to use it, through a branch that a person merges in NetBox ([ADR 0033](adr/0033-runs-against-main-or-a-chosen-branch.md)). Every import, plan and write is recorded with the operating system user who ran it.
 
-- **Import and links.** `import` links candidates and records requests to create absent objects, making the chosen source's definition primary. The primary can be switched to another source's definition, or to NetBox to leave the object as it is, and `unlink` stops management. Compare reports linked, orphaned and missing outcomes.
-- **Writes in the NetBox client.** `POST` and `PATCH` with `If-Match` and `changelog_message`, bulk creates, and NetBox 4.7's per-object bulk errors.
-- **Plans.** The planner, dependency order, missing manufacturers imported in the same plan, and stored plans with ETags. A `plan` command.
-- **Apply.** The executor, the apply lock, stale plans and sync history. `apply` and `history` commands.
-- **Change references.** `plan --change` attaches the ticket for the change, by URL or ticket number, recorded with the plan, in the audit log and in each write's changelog message.
-- **NetBox branches.** A plan can be written into a new NetBox branch and merged once approved, with merge jobs followed to the end and conflicts reported, never acknowledged ([ADR 0017](adr/0017-netbox-branches.md)). Where netbox-changes is installed, TrueUp opens a change request for each branch, and NetBox's decision is final. The test NetBox gains a variant with netbox-branching 1.2 installed, and one with netbox-changes as well.
-- **Audit log.** Every import, choice, plan, approval and write recorded with the operating system user who ran the command ([ADR 0014](adr/0014-audit-every-action.md)), and changelog messages in NetBox that name the approver. An `audit` command.
-- **Permission set.** `permissions export` writes the NetBox permissions the token needs, including the branching plugin's.
-- **Parity.** Device types created by TrueUp match those created by NetBox's own import.
+### Scope
 
-Done when, starting from a fresh local NetBox, you can import a selection of library device types where some already exist and some don't, apply the plan, and then compare shows everything in sync. The audit log shows who imported, approved and applied each change. Planning again produces an empty plan. Editing a linked object in NetBox, or a new version of the source, between planning and applying makes the plan stale instead of writing anything. The same plan can go through a NetBox branch instead: written into the branch, visible in NetBox's branch diff, and merged.
+- **In:** importing and linking manufacturers and device types, with their component templates; runs against main or a branch chosen from NetBox's own list; plans and applying them; change references; the audit log; the permission set TrueUp's token needs; parity of the device types TrueUp creates with those NetBox's own import creates.
+- **Out:** deletes, since orphaned objects and components are reported, not removed; overrides (M5), so a link whose primary is NetBox manages nothing yet; approval policies (M4); pruning the audit log; merging branches, which people do in NetBox; NetBox Changes' change requests, which TrueUp doesn't integrate with, though they work on its branches as on any other (ADR 0033).
+
+### Done when
+
+- Starting from a fresh local NetBox, you can import a selection of library device types where some already exist and some don't, plan, apply, and then `compare` shows everything in sync. Planning again produces an empty plan.
+- The audit log shows who imported, approved and applied each change.
+- Editing a linked object in NetBox, or a new version of the source, between planning and applying makes the plan stale instead of writing anything.
+- With branching off, the default, everything goes to main and nothing asks about branches.
+- With branching on and main protected, a run picks a branch from NetBox's list, compares in it and writes into it, never into main. Once a person merges the branch in NetBox, TrueUp records the merge, and `compare` against main shows everything in sync. A run abandoned at any stage leaves main as it was.
+- Device types TrueUp creates match those NetBox's own import creates from the same files.
+- `make check` and the integration tests pass in CI, against a NetBox with netbox-branching as well as one without.
+
+### Steps
+
+```mermaid
+flowchart LR
+    s16["16 Audit log"] --> s19["19 Import and links"]
+    s17["17 NetBox with<br/>netbox-branching"] --> s18["18 NetBox's branches"]
+    s18 --> s19
+    s19 --> s20["20 Compare<br/>linked objects"]
+    s20 --> s22["22 Runs and plans"]
+    s21["21 Writes in<br/>the client"] --> s23["23 Apply"]
+    s22 --> s23
+    s23 --> s24["24 A run's branch"]
+    s24 --> s25["25 Permission set"]
+    s23 --> s26["26 Parity of created<br/>device types"]
+```
+
+Steps 16, 17 and 21 can start at once. Every step works with branching off, the default, and its tests cover both.
+
+- **16. `feat(audit): keep an append-only audit log`.**
+  - `internal/audit`, and an `audit_events` table on both engines that triggers keep append-only. Each event says who acted (at the command line, the operating system user found by the process's user ID, never `$USER`, with the host, and sudo's user under sudo), what, when, through what, about what, and with what result, and is recorded in the same transaction as the change it describes.
+  - `source fetch` records sources added, reconfigured, moved to a new version and removed.
+  - `netbox-trueup-ai audit`, filtered by time, actor, action and source, as text or JSON.
+  - ADR 0034: what is audited, and how.
+
+- **17. `test: run a disposable NetBox with netbox-branching`.**
+  - An image built on the pinned netbox-docker image, with netbox-branching 1.2.x pinned by hash and configured as the plugin requires; a profile for `make netbox-up`, an option for `netboxtest`, and the integration tests run against it in CI.
+  - For tests only: netbox-branching's `merge_validators` refusing a merge, as a change request awaiting approval does, and a rule refusing writes to main, as a protected main does.
+
+- **18. `feat(netbox): find and read NetBox's branches`.**
+  - Settings `netbox.branching`, off by default, and `netbox.protect_main`, on by default. The client reads NetBox's installed plugins when it connects: branching on without netbox-branching 1.2.x is an error, and netbox-branching with branching off a warning.
+  - `netbox-trueup-ai netbox branches` lists what a run can target: NetBox's ready branches, and main where it is allowed. `netbox check --branch` and `compare --branch` read through a branch, with the `X-NetBox-Branch` header on every request, and comparisons record their branch.
+
+- **19. `feat(sync): import definitions and link them to NetBox`.**
+  - Links (the NetBox object and the primary definition it follows) and import requests, on both engines. `import` takes `compare`'s selection, against a run's target: a candidate is linked, an absent definition requested, and a conflict refused with its reasons. The primary switches to another source's definition, or to NetBox, and `unlink` stops management. Each is audited.
+
+- **20. `feat(compare): compare linked objects`.**
+  - A linked object is compared with its NetBox object by ID, with the linked, orphaned and missing outcomes, and linked objects join the default scope.
+
+- **21. `feat(netbox): write through the REST client`.**
+  - A write path apart from reads: `POST` of one object or a bulk create, and `PATCH` with `If-Match`, one object at a time, since NetBox checks `If-Match` only there, each with a `changelog_message` within NetBox's 200 characters. Writes are never retried, and uncertain outcomes, 412 answers and NetBox 4.7's per-object bulk errors are reported as such; `?background=true` is never used. `netbox check` reports whether the token may add and change what TrueUp writes.
+
+- **22. `feat(sync): plan runs against main or a branch`.**
+  - Runs: a person's work to true-up one target of the NetBox, from the first `plan` against it until the person finishes or abandons it. Abandoning never touches main.
+  - The planner, in `internal/sync`: creates for import requests, sending the definition's fields and NetBox's import defaults where they differ from its API's; `PATCH` of the managed fields that differ; dependency order; missing manufacturers imported in the same plan, and objects that need what no source defines blocked; a request whose object has appeared in NetBox linked instead of created.
+  - Plans stored with their run, the source versions, file digests and load they used, and the ETag of every object they change. `plan`, and `plan --change` for the change reference. Audited.
+
+- **23. `feat(sync): apply plans`.**
+  - The executor writes a plan into its run's target, one apply at a time for each target, and stops at a stale plan (a file it used changed, another reader or settings, or a 412), a failure or an uncertain write, re-reading NetBox rather than retrying. Changelog messages name TrueUp, the plan, the approver, the commit, the change reference and the file. Each write is audited as started and as completed, and recovery completes any left started. A write to main that NetBox refuses gets an error saying that main may be protected, and naming the settings.
+  - `apply` and `history`.
+
+- **24. `feat(sync): follow a run's branch, and create and delete branches`.**
+  - A run's branch merged in NetBox is recorded, and the objects created in it stay managed in main, with the same IDs; a branch archived or deleted without being merged abandons its run.
+  - `netbox.manage_branches`, off by default: TrueUp creates a branch for a run and waits until it is ready, and offers to delete the branches it created once their run is finished or abandoned. The docs say what turning it on involves. Audited.
+
+- **25. `feat(netbox): export the permissions TrueUp's token needs`.**
+  - `permissions export` writes the NetBox permissions TrueUp's token needs, from the specs and the settings, as a file NetBox imports: view on what TrueUp reads, add and change on what it writes, and netbox-branching's where branches are used or managed, never NetBox Changes' bypass. A user with only those passes `netbox check` and applies a plan.
+
+- **26. `test(sync): create device types as NetBox's own import does`.**
+  - The same files imported through NetBox's own import and applied by TrueUp make the same objects, every field compared, defaults included. Run by hand on 400 device types sampled from the whole library.
 
 ## Later milestones
 
 Proposed order, to be refined when milestone 2 is done.
 
-- **M3, web UI.** Browse and search sources and objects, each page in under a second, reading the database. Each object's page compares every source's definition and NetBox's object side by side, with a live edit area compared against them as you type, showing each colour, such as a port's, as a swatch beside its value. Import, choose the primary definition, and review and apply plans. Sign-in with OpenID Connect single sign-on or local accounts, built-in roles mapped from the identity provider's groups, and the audit log in the UI.
+- **M3, web UI.** Browse and search sources and objects, each page in under a second, reading the database. Each object's page compares every source's definition and NetBox's object side by side, with a live edit area compared against them as you type, showing each colour, such as a port's, as a swatch beside its value. Import, choose the primary definition, pick a run's branch from NetBox's list, and review and apply plans. Sign-in with OpenID Connect single sign-on or local accounts, built-in roles mapped from the identity provider's groups, and the audit log in the UI.
 - **M4, access and change management.** Permissions scoped to sources, object types and selections; approval policies, off by default, with separation of duties and required change references; SAML sign-in; and SCIM provisioning ([ADR 0015](adr/0015-sign-in-and-provisioning.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md)).
 - **M5, overrides and injected values.** Tick Override on any field to take it from another source, from NetBox, or from the live edit, and save live edits as overrides. Rules that inject values across many objects.
 - **M6, server operations.** Schedules, high availability with leader election, metrics for Prometheus and OpenTelemetry, traces, and running as a systemd unit or Windows service.
