@@ -39,6 +39,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0031](0031-merge-routine-dependabot-updates-automatically.md) | Merge Dependabot's patch and minor updates of Go modules and test databases automatically, once every required check passes | Accepted |
 | [0032](0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison | Accepted |
 | [0033](0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people | Accepted |
+| [0034](0034-audit-what-changes-what-trueup-manages.md) | Audit what changes what TrueUp manages, as the operating system user at the command line, in the change's own transaction | Accepted |
 
 ## When to write one
 

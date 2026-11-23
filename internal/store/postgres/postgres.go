@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/postgres/postgresdb"
@@ -201,13 +202,27 @@ func closeLock(ctx context.Context, conn *pgx.Conn, failed string) error {
 }
 
 // RecordFetch records a fetch of a source in one transaction.
-func (s *Store) RecordFetch(ctx context.Context, f store.Fetch) error {
+func (s *Store) RecordFetch(ctx context.Context, by audit.By, f store.Fetch) error {
 	f, err := f.Prepare()
 	if err != nil {
 		return fmt.Errorf("record a fetch: %w", err)
 	}
+	if by, err = store.PrepareBy(by); err != nil {
+		return fmt.Errorf("record the fetch of source %s: %w", f.Source.Name, err)
+	}
 	at := pgtype.Timestamptz{Time: f.FetchedAt, Valid: true}
 	err = s.inTx(ctx, pgx.TxOptions{}, func(q *postgresdb.Queries) error {
+		before, err := fetchedSourceState(ctx, q, f)
+		if err != nil {
+			return err
+		}
+		events, err := store.FetchEvents(by, before, f)
+		if err != nil {
+			return err
+		}
+		if err := insertEvents(ctx, q, events); err != nil {
+			return err
+		}
 		if err := q.UpsertSource(ctx, postgresdb.UpsertSourceParams{
 			Name:      f.Source.Name,
 			Kind:      f.Source.Kind,
@@ -348,14 +363,32 @@ func (s *Store) Snapshot(ctx context.Context, source string) (store.Snapshot, er
 // RemoveSources removes every source not named in keep, its snapshot, its
 // definitions and its comparisons, in one transaction. Foreign keys don't cascade, so it deletes each
 // source's rows from the bottom up, having locked the sources' rows first.
-func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, error) {
+func (s *Store) RemoveSources(ctx context.Context, by audit.By, keep []string) ([]string, error) {
+	by, err := store.PrepareBy(by)
+	if err != nil {
+		return nil, fmt.Errorf("remove sources no longer configured: %w", err)
+	}
 	var removed []string
-	err := s.inTx(ctx, pgx.TxOptions{}, func(q *postgresdb.Queries) error {
+	err = s.inTx(ctx, pgx.TxOptions{}, func(q *postgresdb.Queries) error {
 		names, err := q.LockSourcesToRemove(ctx, keep)
 		if err != nil {
 			return err
 		}
 		for _, name := range names {
+			before, err := sourceState(ctx, q, name)
+			if err != nil {
+				return fmt.Errorf("source %s: %w", name, err)
+			}
+			if before == nil {
+				return fmt.Errorf("source %s: its record went while it was locked", name)
+			}
+			event, err := store.RemovedEvent(by, name, *before)
+			if err != nil {
+				return fmt.Errorf("source %s: %w", name, err)
+			}
+			if err := insertEvents(ctx, q, []audit.Event{event}); err != nil {
+				return fmt.Errorf("source %s: %w", name, err)
+			}
 			for _, del := range []func(context.Context, string) error{
 				q.DeleteComparisons, q.DeleteDefinitionProblems, q.DeleteDefinitions, q.DeleteDefinitionLoad,
 				q.DeleteSnapshotFiles, q.DeleteSnapshotSkipped, q.DeleteSnapshot, q.DeleteSource,

@@ -2,7 +2,7 @@
 
 This document describes how NetBox TrueUp AI is designed: its components, how data moves between them, and where the trust boundaries are. Read it before you build or change a component.
 
-**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, the object model with specs for manufacturers and device types, the devicetype-library format with `list`, each source's definitions loaded into the database, and the comparison engine with `compare`, for manufacturers and device types, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
+**Status:** design. Apart from the command tree, declared configuration, logging, the read-only NetBox client, Git sources, the store on SQLite and PostgreSQL, the object model with specs for manufacturers and device types, the devicetype-library format with `list`, each source's definitions loaded into the database, the comparison engine with `compare`, for manufacturers and device types, and the audit log with `audit`, none of this exists yet. Each component below names the milestone that builds it; [roadmap.md](roadmap.md) lists the steps. When the code and this document disagree, fix one of them in the same pull request. Decisions that had real alternatives are recorded as [ADRs](adr/), and this document links to them instead of repeating their reasoning.
 
 ## Principles
 
@@ -358,7 +358,7 @@ erDiagram
 | Links | Provenance: the primary definition (source and file) each managed NetBox object follows, who linked it and when, and the source version and time of its last sync | M2 |
 | Import requests | Definitions a person asked to import that NetBox doesn't have yet | M2 |
 | Runs, plans and operations | Sync history: each run, its target (main or a branch) and how it ended; each plan, its change reference, who approved and applied it, and each write with before and after values | M2 |
-| Audit events | Every action: who, what, when, how and the result. Append-only | M2, with UI actions from M3 |
+| Audit events | Every action that changes what TrueUp manages, what NetBox holds or what sources it reads: who, what, when, through what, about what, and the result, recorded in the change's own transaction. Append-only: triggers refuse to change or delete one ([ADR 0034](adr/0034-audit-what-changes-what-trueup-manages.md)) | M2 (sources' changes exist), with UI actions from M3 |
 | Users and sessions | Local accounts, single sign-on identities, users and groups provisioned through SCIM, and sessions shared across replicas | M3, M4 |
 | Permissions and approval policies | Role grants on scopes, approval policies, and each approval or rejection | M3, M4 |
 | Runtime settings | Settings edited in the UI | M3 |
@@ -486,7 +486,7 @@ Sign-in and provisioning ([ADR 0015](adr/0015-sign-in-and-provisioning.md)):
 - **SCIM (M4).** An identity provider can provision and deprovision users and groups through TrueUp's SCIM 2.0 endpoints, authenticated with a bearer token for that provider. Deprovisioning a user ends their sessions straight away.
 - **Local accounts** use argon2id password hashes. They suit small installations, and keep an administrator able to sign in when the identity provider is down.
 - **No proxy authentication.** TrueUp never takes a user's identity from request headers set by a reverse proxy. Such headers are easy to forge when the proxy is bypassed or misconfigured.
-- **The CLI** acts as the operating system user that runs it, on a host that already holds the configuration and secrets. That is only as strong as the host's own accounts, so in a team deployment people should act through the UI.
+- **The CLI** acts as the operating system user that runs it, on a host that already holds the configuration and secrets: the user of the process's real user ID, named from the system's user database, never from `$USER`, with the host's name, and the user who ran sudo where a command runs through it ([ADR 0034](adr/0034-audit-what-changes-what-trueup-manages.md)). That is only as strong as the host's own accounts, so in a team deployment people should act through the UI.
 
 **Permissions** ([ADR 0016](adr/0016-permissions-and-approval-policies.md)). A permission grants a role to a user or group on a scope:
 
@@ -494,14 +494,14 @@ Sign-in and provisioning ([ADR 0015](adr/0015-sign-in-and-provisioning.md)):
 - **Scopes** are everything (M3), or a source, an object type, or a selection such as a manufacturer (M4), so different teams can own different parts of the data.
 - **Groups** come from the identity provider: OpenID Connect group claims, SAML attributes, or groups provisioned through SCIM. Each is mapped to roles explicitly; nothing is granted by default.
 
-**Audit log.** Every action that changes TrueUp's state or NetBox records an audit event:
+**Audit log.** Every action that changes what TrueUp manages, what NetBox holds, or what sources TrueUp reads records an audit event, in the same transaction as the change ([ADR 0034](adr/0034-audit-what-changes-what-trueup-manages.md)):
 
 - who: the actor, and how they were identified;
 - what: the action, the objects and plan involved, and before and after values where they matter;
 - when, and through what: UI, CLI, schedule or webhook, with the client address for UI requests and webhooks;
 - the result: success, or the error.
 
-This covers sign-ins and failed sign-ins; changes to users, roles, sources and settings; imports, primary and override choices; plans and approvals; and every write to NetBox. Audit events are append-only: TrueUp never changes or deletes them, apart from pruning after a configured retention period, and pruning is itself audited. The UI shows the audit log filtered by person, object or time, and each object's page shows its own.
+This covers sign-ins and failed sign-ins; changes to users, roles and settings; sources added, reconfigured, moved to a new version and removed; imports, primary and override choices; runs, plans and approvals; and every write to NetBox. Fetches that change nothing, loads, comparisons and lists refresh TrueUp's copies of sources and NetBox, and aren't audited. Audit events are append-only: TrueUp never changes or deletes them, and triggers on both engines refuse to, apart from pruning after a configured retention period, which comes with schedules or sinks, and is itself audited. `audit` lists the latest events, filtered by time, person, action or source; the UI shows the audit log filtered by person, object or time, and each object's page shows its own.
 
 **In NetBox.** NetBox records every write as made by TrueUp's service account, so each write's changelog message names the plan and the person who approved it ([ADR 0007](adr/0007-provenance-and-changelog-messages.md)).
 
@@ -690,7 +690,7 @@ internal/
   store/sqlite/           SQLite migrations, queries and store (exists)
   store/postgres/         PostgreSQL migrations, queries and store (exists)
   sync/                   links, planner, executor (M2)
-  audit/                  audit events (M2)
+  audit/                  audit events: actors, actions, times (exists)
   auth/                   sign-in, sessions, SCIM provisioning (M3, M4)
   policy/                 permissions and approval policies (M3, M4)
   web/                    handlers and templ templates (M3)
@@ -736,6 +736,7 @@ ADRs that record this design:
 | [0030](adr/0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first |
 | [0032](adr/0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison |
 | [0033](adr/0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people |
+| [0034](adr/0034-audit-what-changes-what-trueup-manages.md) | Audit what changes what TrueUp manages, as the operating system user at the command line, in the change's own transaction |
 
 ADRs still to write, with the work that needs each one:
 

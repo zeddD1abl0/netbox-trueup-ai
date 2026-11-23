@@ -22,11 +22,18 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 )
 
 // Open returns a new, empty store, and closes it when the test ends.
 type Open func(t *testing.T) store.Store
+
+// By is who the tests act as: a command line user.
+var By = audit.By{
+	Actor:   audit.Actor{Kind: audit.OSUser, Name: "tester", ID: "1000", Host: "test-host"},
+	Through: audit.CommandLine,
+}
 
 // Run runs every test against stores that open returns, each test with a
 // store of its own, in parallel.
@@ -70,6 +77,12 @@ func Run(t *testing.T, open Open) {
 		{"a large load", testLargeLoad},
 		{"definitions read while loads are recorded", testLoadsReadsAgree},
 		{"loads recorded while the source is fetched or removed", testLoadsWhileFetching},
+		{"fetches' audit events", testFetchEvents},
+		{"removals' audit events", testRemoveEvents},
+		{"recording audit events", testRecordEvents},
+		{"invalid audit events record nothing", testInvalidEvents},
+		{"filtering audit events", testEventFilters},
+		{"concurrent audit events", testConcurrentEvents},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -128,7 +141,7 @@ func summary(snap store.Snapshot) *store.Snapshot {
 
 func record(t *testing.T, s store.Store, f store.Fetch) {
 	t.Helper()
-	if err := s.RecordFetch(t.Context(), f); err != nil {
+	if err := s.RecordFetch(t.Context(), By, f); err != nil {
 		t.Fatalf("RecordFetch: %v", err)
 	}
 }
@@ -266,7 +279,7 @@ func testRemove(t *testing.T, s store.Store) {
 	}
 	record(t, s, failure("d", t0, "down"))
 
-	removed, err := s.RemoveSources(t.Context(), []string{"b", "not-recorded"})
+	removed, err := s.RemoveSources(t.Context(), By, []string{"b", "not-recorded"})
 	if err != nil {
 		t.Fatalf("RemoveSources: %v", err)
 	}
@@ -284,10 +297,10 @@ func testRemove(t *testing.T, s store.Store) {
 	record(t, s, again)
 	checkSnapshot(t, s, snapshotOf(again))
 
-	if removed, err := s.RemoveSources(t.Context(), []string{"a", "b"}); err != nil || len(removed) != 0 {
+	if removed, err := s.RemoveSources(t.Context(), By, []string{"a", "b"}); err != nil || len(removed) != 0 {
 		t.Errorf("RemoveSources with every source kept = %v, %v; want none removed", removed, err)
 	}
-	if removed, err := s.RemoveSources(t.Context(), nil); err != nil || !cmp.Equal(removed, []string{"a", "b"}) {
+	if removed, err := s.RemoveSources(t.Context(), By, nil); err != nil || !cmp.Equal(removed, []string{"a", "b"}) {
 		t.Errorf("RemoveSources with none kept = %v, %v; want a and b removed", removed, err)
 	}
 	if got := sources(t, s); len(got) != 0 {
@@ -343,7 +356,7 @@ func testInvalid(t *testing.T, s store.Store) {
 	for _, tt := range tests {
 		f := valid()
 		tt.change(&f)
-		if err := s.RecordFetch(t.Context(), f); err == nil {
+		if err := s.RecordFetch(t.Context(), By, f); err == nil {
 			t.Errorf("%s: RecordFetch succeeded", tt.name)
 		}
 	}
@@ -407,7 +420,7 @@ func testConcurrent(t *testing.T, s store.Store) {
 				// clear.
 				at := t0.Add(time.Duration(w*perWorker+i) * time.Second)
 				version := fmt.Sprintf("v-%d-%d", w, i)
-				if err := s.RecordFetch(t.Context(), success(name, version, at, "x.yaml", "y.yaml", version+".yaml")); err != nil {
+				if err := s.RecordFetch(t.Context(), By, success(name, version, at, "x.yaml", "y.yaml", version+".yaml")); err != nil {
 					errs <- err
 				}
 			}
@@ -452,7 +465,7 @@ func testReadsAgree(t *testing.T, s store.Store) {
 				return
 			default:
 			}
-			if err := s.RecordFetch(t.Context(), fetch(i)); err != nil {
+			if err := s.RecordFetch(t.Context(), By, fetch(i)); err != nil {
 				t.Errorf("RecordFetch: %v", err)
 				return
 			}
@@ -490,12 +503,12 @@ func testRemoveWhileRecording(t *testing.T, s store.Store) {
 		again := success("gone", fmt.Sprintf("v%d-again", i), at.Add(time.Millisecond), "b.yaml", "c.yaml")
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			if err := s.RecordFetch(t.Context(), again); err != nil {
+			if err := s.RecordFetch(t.Context(), By, again); err != nil {
 				t.Errorf("round %d: RecordFetch: %v", i, err)
 			}
 		})
 		wg.Go(func() {
-			if _, err := s.RemoveSources(t.Context(), []string{"kept"}); err != nil {
+			if _, err := s.RemoveSources(t.Context(), By, []string{"kept"}); err != nil {
 				t.Errorf("round %d: RemoveSources: %v", i, err)
 			}
 		})

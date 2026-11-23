@@ -57,6 +57,11 @@ of sources no longer configured are removed with their caches. Fetches of
 one source take turns, even in different processes: a fetch waits up to the
 source's fetch_timeout for another to finish, and otherwise fails.
 
+The audit log records, as the operating system user running the command,
+each source added, each source's kind, URL or ref changed, each new version
+fetched, and each source removed, in the same transaction as the change.
+"netbox-trueup-ai audit" lists them.
+
 Each version fetched is then read with the source's format, and its
 definitions and the problems with its files are loaded into the database,
 where list, compare and searches read them, unless the database holds them
@@ -292,7 +297,7 @@ func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root strin
 		}
 	}
 
-	forgotten, err := db.RemoveSources(ctx, keep)
+	forgotten, err := db.RemoveSources(ctx, a.by(), keep)
 	if err != nil {
 		if ctx.Err() != nil {
 			return interrupted()
@@ -360,7 +365,7 @@ func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[stri
 	}
 	rec.Source = store.SourceConfig{Name: s.Name, Kind: s.Kind, URL: s.URL, Ref: s.Ref}
 	rec.FetchedAt = started
-	if err := db.RecordFetch(ctx, rec); err != nil {
+	if err := db.RecordFetch(ctx, a.by(), rec); err != nil {
 		if ctx.Err() != nil {
 			return row, fmt.Errorf("interrupted while recording the fetch of source %s: %w", s.Name, ctx.Err())
 		}

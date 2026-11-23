@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/telemetry"
 )
@@ -25,9 +27,31 @@ type app struct {
 	// instead of the system's. Only tests set it.
 	sourceRootCAs *x509.CertPool
 
+	// actingAs is who the audit log records this process as acting:
+	// detected once (by), or set by tests.
+	actingAs *audit.By
+
 	// Set by loadConfig.
 	logger    *slog.Logger
 	logFormat config.LogFormat
+}
+
+// by returns who runs this command, for the audit log: the operating system
+// user, with the process's environment for sudo's variables.
+func (a *app) by() audit.By {
+	if a.actingAs == nil {
+		by := audit.CommandLineBy(func(name string) string {
+			// The last value wins, as for getenv.
+			for _, kv := range slices.Backward(a.environ) {
+				if v, ok := strings.CutPrefix(kv, name+"="); ok {
+					return v
+				}
+			}
+			return ""
+		})
+		a.actingAs = &by
+	}
+	return *a.actingAs
 }
 
 func newRootCommand(a *app) *cobra.Command {
@@ -47,7 +71,7 @@ effective settings and where each came from.`,
 	root.SetErr(a.stderr)
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
 	config.RegisterFlags(root.PersistentFlags())
-	root.AddCommand(newVersionCommand(), newConfigCommand(a), newNetBoxCommand(a), newSourceCommand(a), newMigrateCommand(a), newListCommand(a), newCompareCommand(a))
+	root.AddCommand(newVersionCommand(), newConfigCommand(a), newNetBoxCommand(a), newSourceCommand(a), newMigrateCommand(a), newListCommand(a), newCompareCommand(a), newAuditCommand(a))
 	root.SetHelpCommand(newHelpCommand())
 	root.InitDefaultHelpCmd()
 	root.InitDefaultCompletionCmd()

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 )
 
 // Store is TrueUp's database. It is safe for concurrent use, and several
@@ -32,7 +34,11 @@ type Store interface {
 	// Fetches of a source must be recorded in the order they happened, as
 	// they are when each holds the source's fetch lock (source.LockCache)
 	// until it is recorded.
-	RecordFetch(ctx context.Context, f Fetch) error
+	//
+	// In the same transaction it records, as by's actions, what the fetch
+	// changed of the source (FetchEvents): the source added, its kind, URL
+	// or ref changed, or a new version.
+	RecordFetch(ctx context.Context, by audit.By, f Fetch) error
 	// Sources returns every recorded source, sorted by name, each with its
 	// latest fetch and its snapshot without the file list.
 	Sources(ctx context.Context) ([]Source, error)
@@ -41,8 +47,9 @@ type Store interface {
 	Snapshot(ctx context.Context, source string) (Snapshot, error)
 	// RemoveSources removes what is recorded about every source not named
 	// in keep, snapshots, definitions and comparisons included, and returns
-	// the names it removed, sorted.
-	RemoveSources(ctx context.Context, keep []string) ([]string, error)
+	// the names it removed, sorted. In the same transaction it records each
+	// removal as by's action (RemovedEvent). Audit events stay.
+	RemoveSources(ctx context.Context, by audit.By, keep []string) ([]string, error)
 	// RecordLoad records a load of a source's snapshot as its latest, all
 	// of it or nothing. A load that succeeded replaces the definitions and
 	// problems recorded before; a definition the source still defines, of
@@ -87,6 +94,14 @@ type Store interface {
 	// Comparisons returns the comparisons recorded of a source's
 	// definitions, sorted by object type, path and identity.
 	Comparisons(ctx context.Context, source string) ([]RecordedComparison, error)
+	// RecordEvents records audit events, all of them or none, for actions
+	// that change nothing else TrueUp records, such as a write to NetBox.
+	// It returns an error, recording nothing, if an event isn't as
+	// PrepareEvent says. Events are never changed or deleted.
+	RecordEvents(ctx context.Context, events []audit.Event) error
+	// Events returns the latest audit events that a filter chooses, oldest
+	// first, in the order they were recorded.
+	Events(ctx context.Context, f audit.Filter) (audit.Page, error)
 	// Close closes the database.
 	Close() error
 }

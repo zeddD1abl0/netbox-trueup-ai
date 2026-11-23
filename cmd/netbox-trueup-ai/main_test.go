@@ -42,6 +42,7 @@ func runCLIApp(t *testing.T, stdout io.Writer, configure func(*app), env []strin
 		stderr:            &errOut,
 		environ:           env,
 		defaultConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
+		actingAs:          &testBy,
 	}
 	configure(a)
 	code := run(t.Context(), a, args)

@@ -5,6 +5,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/postgres/pgtest"
@@ -237,7 +239,7 @@ func TestMigrations(t *testing.T) {
 
 	pool := srv.Pool(t, database)
 	want := []string{
-		"comparisons", "definition_loads", "definition_problems", "definitions", "goose_db_version",
+		"audit_events", "comparisons", "definition_loads", "definition_problems", "definitions", "goose_db_version",
 		"snapshot_files", "snapshot_skipped", "snapshots", "sources",
 	}
 	if got := tables(t, pool, Schema); !slices.Equal(got, want) {
@@ -278,7 +280,7 @@ func TestDefinitionsMigrationKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := storetest.FillForMigration(t, before, execOn(before))
+	check := storetest.FillForMigration(t, before, sqlOn(before))
 	closeStore(t, before)
 	s, migrated, err := Open(t.Context(), Options{URL: url})
 	if err != nil {
@@ -300,7 +302,7 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := storetest.FillForComparisonsMigration(t, before, execOn(before))
+	check := storetest.FillForComparisonsMigration(t, before, sqlOn(before))
 	closeStore(t, before)
 	s, migrated, err := Open(t.Context(), Options{URL: url})
 	if err != nil {
@@ -314,6 +316,11 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 }
 
 // execOn returns a function that runs a statement on a store's database.
+// sqlOn returns what the shared migration tests need to fill s directly.
+func sqlOn(s *Store) storetest.SQL {
+	return storetest.SQL{Exec: execOn(s), Bytes: func(b []byte) string { return `'\x` + hex.EncodeToString(b) + `'::bytea` }}
+}
+
 func execOn(s *Store) func(*testing.T, string) {
 	return func(t *testing.T, statement string) {
 		t.Helper()
@@ -412,7 +419,7 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 		t.Errorf("waiting wasn't logged:\n%s", logs.String())
 	}
 	// The open store still works on the schema it knows.
-	if err := older.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := older.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Errorf("RecordFetch on the open store: %v", err)
 	}
 
@@ -436,7 +443,7 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 		t.Errorf("opening while a migration waits = %v, want it to wait for the migration", err)
 	}
 	older.pool.Reset()
-	if err := older.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := older.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Errorf("RecordFetch on a new connection while a migration waits: %v", err)
 	}
 
@@ -617,7 +624,7 @@ func TestAStoreThatLosesItsOwnConnection(t *testing.T) {
 		if _, _, err := open(t.Context(), Options{URL: url}, files, time.Second); !errors.Is(err, errTimeout) {
 			t.Fatalf("migrating while the store has a pooled connection = %v, want it to wait and give up", err)
 		}
-		if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+		if err := s.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 			t.Errorf("RecordFetch on the pooled connection: %v", err)
 		}
 
@@ -730,7 +737,7 @@ func TestPrivileges(t *testing.T) {
 	// A database administrator creates the schema for it.
 	srv.Exec(t, database, "CREATE SCHEMA netbox_trueup_ai AUTHORIZATION "+role)
 	s := openURL(t, url)
-	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := s.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Errorf("RecordFetch: %v", err)
 	}
 }
@@ -758,7 +765,7 @@ func TestSearchPath(t *testing.T) {
 	url = config.NewSecret(url.Reveal() + "&options=-c%20search_path%3Dpublic")
 
 	s := openURL(t, url)
-	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := s.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Fatalf("RecordFetch: %v", err)
 	}
 	pool := srv.Pool(t, database)
@@ -894,7 +901,7 @@ func TestAMigrationWhoseLockConnectionBreaks(t *testing.T) {
 	database := srv.NewDatabase(t)
 	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
 	seed := openURL(t, url)
-	if err := seed.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := seed.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Fatal(err)
 	}
 	closeStore(t, seed)
@@ -1227,7 +1234,7 @@ CREATE OPERATOR public.>= (LEFTARG = integer, RIGHTARG = integer, FUNCTION = pub
 	srv.Exec(t, "postgres", "ALTER ROLE "+role+" SET search_path = public, pg_catalog")
 
 	s := openURL(t, url)
-	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := s.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Fatal(err)
 	}
 	if calls := query(t, srv.Pool(t, database), "SELECT what FROM public.calls"); len(calls) != 0 {
@@ -1329,7 +1336,7 @@ func TestRecordComparisonsSeesAFetchItWaitedFor(t *testing.T) {
 				Source:    store.SourceConfig{Name: "lib", Kind: "git", URL: "https://git.example.com/lib.git"},
 				FetchedAt: time.Now(), Version: "v1",
 			}
-			if err := s.RecordFetch(t.Context(), fetch); err != nil {
+			if err := s.RecordFetch(t.Context(), storetest.By, fetch); err != nil {
 				t.Fatal(err)
 			}
 			k := store.DefinitionKey{ObjectType: "dcim.manufacturer", Identity: `{"name":"Dell"}`}
@@ -1391,5 +1398,73 @@ func TestRecordComparisonsSeesAFetchItWaitedFor(t *testing.T) {
 				t.Errorf("Comparisons = %d, %v; want none", len(got), err)
 			}
 		})
+	}
+}
+
+func TestAuditEventsNeverChange(t *testing.T) {
+	t.Parallel()
+	s := openURL(t, srv.NewURL(t))
+	event := audit.Event{By: storetest.By, Action: audit.SourceAdded, Result: audit.Succeeded, Source: "lib"}
+	if err := s.RecordEvents(t.Context(), []audit.Event{event}); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"UPDATE audit_events SET actor = 'mallory'", "DELETE FROM audit_events", "TRUNCATE audit_events",
+	} {
+		if _, err := s.pool.Exec(t.Context(), statement); err == nil || !strings.Contains(err.Error(), "audit events are never") {
+			t.Errorf("%s: %v, want the triggers' refusal", statement, err)
+		}
+	}
+	page, err := s.Events(t.Context(), audit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Actor.Name != "tester" {
+		t.Errorf("Events = %+v, want the event as recorded", page.Events)
+	}
+}
+
+// TestAuditEventsGoWithTheirChange checks that an event is recorded in the
+// transaction of the change it describes: a change that fails takes its
+// event with it.
+func TestAuditEventsGoWithTheirChange(t *testing.T) {
+	t.Parallel()
+	s := openURL(t, srv.NewURL(t))
+	exec := execOn(s)
+	exec(t, `CREATE FUNCTION refuse() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'refused'; END $$`)
+	exec(t, `CREATE TRIGGER refuse_source BEFORE INSERT ON sources
+		FOR EACH ROW WHEN (NEW.name = 'refused') EXECUTE FUNCTION refuse()`)
+	exec(t, `CREATE TRIGGER keep_source BEFORE DELETE ON sources
+		FOR EACH ROW WHEN (OLD.name = 'kept') EXECUTE FUNCTION refuse()`)
+	fetch := func(name string) store.Fetch {
+		return store.Fetch{
+			Source:    store.SourceConfig{Name: name, Kind: "git", URL: "https://git.example.com/" + name + ".git"},
+			FetchedAt: time.Date(2026, 11, 23, 1, 2, 3, 0, time.UTC),
+			Error:     "down",
+		}
+	}
+	if err := s.RecordFetch(t.Context(), storetest.By, fetch("refused")); err == nil {
+		t.Fatal("RecordFetch succeeded though the source's record was refused")
+	}
+	for _, name := range []string{"gone", "kept"} {
+		if err := s.RecordFetch(t.Context(), storetest.By, fetch(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// gone is removed first, and its event recorded, before kept fails.
+	if _, err := s.RemoveSources(t.Context(), storetest.By, nil); err == nil {
+		t.Fatal("RemoveSources succeeded though kept's removal was refused")
+	}
+	page, err := s.Events(t.Context(), audit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range page.Events {
+		got = append(got, string(e.Action)+" "+e.Source)
+	}
+	if want := []string{"source.added gone", "source.added kept"}; !slices.Equal(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
 	}
 }
