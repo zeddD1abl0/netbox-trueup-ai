@@ -22,7 +22,8 @@ INSERT INTO audit_events (
 
 -- name: ListAuditEvents :many
 -- Lists the latest events that match, newest first, up to max of them, or
--- all for null. A null filter, or no actions, matches any event.
+-- all for null. A null filter, or no actions, matches any event; actor
+-- matches an actor's name or ID.
 SELECT
     id, occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
     client_address, action, result, completes, error, source, object_type,
@@ -31,7 +32,11 @@ FROM audit_events
 WHERE
     (sqlc.narg(since)::timestamptz IS NULL OR occurred_at >= sqlc.narg(since))
     AND (sqlc.narg(until)::timestamptz IS NULL OR occurred_at < sqlc.narg(until))
-    AND (sqlc.narg(actor)::text IS NULL OR actor = sqlc.narg(actor))
+    AND (
+        sqlc.narg(actor)::text IS NULL
+        OR actor = sqlc.narg(actor)
+        OR actor_id = sqlc.narg(actor)
+    )
     AND (sqlc.narg(source)::text IS NULL OR source = sqlc.narg(source))
     AND (
         cardinality(sqlc.arg(actions)::text []) = 0
@@ -39,3 +44,7 @@ WHERE
     )
 ORDER BY id DESC
 LIMIT sqlc.narg(max)::bigint;
+
+-- name: GetStartedEvent :one
+-- Reads the action and result of an event that a result is to complete.
+SELECT action, result FROM audit_events WHERE id = $1;

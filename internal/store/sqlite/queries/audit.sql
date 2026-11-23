@@ -15,7 +15,8 @@ INSERT INTO audit_events (
 
 -- name: ListAuditEvents :many
 -- Lists the latest events that match, newest first, up to max of them, or
--- all for -1. A null filter matches any event. actions is a JSON array of
+-- all for -1. A null filter matches any event; actor matches an actor's
+-- name or ID. actions is a JSON array of
 -- them: sqlc.slice would number its parameters after max's, binding max to
 -- an action.
 SELECT
@@ -26,7 +27,11 @@ FROM audit_events
 WHERE
     (sqlc.narg(since) IS NULL OR occurred_at >= sqlc.narg(since))
     AND (sqlc.narg(until) IS NULL OR occurred_at < sqlc.narg(until))
-    AND (sqlc.narg(actor) IS NULL OR actor = sqlc.narg(actor))
+    AND (
+        sqlc.narg(actor) IS NULL
+        OR actor = sqlc.narg(actor)
+        OR actor_id = sqlc.narg(actor)
+    )
     AND (sqlc.narg(source) IS NULL OR source = sqlc.narg(source))
     AND (
         sqlc.narg(actions) IS NULL
@@ -34,3 +39,7 @@ WHERE
     )
 ORDER BY id DESC
 LIMIT sqlc.arg(max);
+
+-- name: GetStartedEvent :one
+-- Reads the action and result of an event that a result is to complete.
+SELECT action, result FROM audit_events WHERE id = ?;

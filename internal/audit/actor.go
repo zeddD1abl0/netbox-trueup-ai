@@ -15,13 +15,17 @@ import (
 // user.Current falls back to $USER for an ID the database lacks when built
 // without cgo, as TrueUp's releases are, so it isn't used there. An ID the
 // database lacks is recorded alone. On Windows the account comes from the
-// process's token, with its security identifier.
+// process's token, with its security identifier, and its name where the
+// identifier can be looked up.
 //
 // A command run through sudo, as another user than the one who ran sudo,
 // records sudo's SUDO_USER, or its SUDO_UID where that is all it gives, as
 // SudoUser. sudo sets them; the process's own user could set them too, but
 // SudoUser never replaces the user recorded, and root, or a service account
 // that people reach through sudo, can change the database anyway.
+//
+// It takes no context: neither the user database's lookup nor the host's
+// name can be interrupted, and both are local reads.
 func CommandLineActor(getenv func(string) string) Actor {
 	return commandLineActor(thisProcess(), getenv)
 }
@@ -32,17 +36,19 @@ type process struct {
 	goos     string
 	uid      int
 	lookupID func(uid string) (*user.User, error)
-	current  func() (*user.User, error)
-	hostname func() (string, error)
+	// windowsAccount is the account's name and security identifier, from
+	// the process's token, on Windows.
+	windowsAccount func() (name, sid string, err error)
+	hostname       func() (string, error)
 }
 
 func thisProcess() process {
 	return process{
-		goos:     runtime.GOOS,
-		uid:      os.Getuid(),
-		lookupID: user.LookupId,
-		current:  user.Current,
-		hostname: os.Hostname,
+		goos:           runtime.GOOS,
+		uid:            os.Getuid(),
+		lookupID:       user.LookupId,
+		windowsAccount: tokenAccount,
+		hostname:       os.Hostname,
 	}
 }
 
@@ -52,10 +58,9 @@ func commandLineActor(p process, getenv func(string) string) Actor {
 		a.Host = host
 	}
 	if p.goos == "windows" {
-		// os.Getuid is -1 on Windows; user.Current reads the process's
-		// token, not the environment.
-		if u, err := p.current(); err == nil {
-			a.Name, a.ID = u.Username, u.Uid
+		// os.Getuid is -1 on Windows.
+		if name, sid, err := p.windowsAccount(); err == nil {
+			a.Name, a.ID = name, sid
 		}
 		return a
 	}

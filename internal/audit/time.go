@@ -21,6 +21,10 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 		return time.Time{}, errors.New("is empty")
 	}
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		if t.IsZero() {
+			// A Filter takes the zero time for no bound.
+			return time.Time{}, fmt.Errorf("%s is the zero time, which stands for no bound: give a later time", strconv.Quote(s))
+		}
 		return t.UTC(), nil
 	}
 	ago, err := parseAgo(s)

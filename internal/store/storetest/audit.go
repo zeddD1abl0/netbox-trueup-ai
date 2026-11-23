@@ -3,6 +3,7 @@ package storetest
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -107,7 +108,7 @@ func testRemoveEvents(t *testing.T, s store.Store) {
 		return e
 	}
 	checkEvents(t, listEvents(t, s, audit.Filter{Actions: []audit.Action{audit.SourceRemoved}}).Events, from, time.Now(),
-		removal("a", `{"kind":"git","url":"https://git.example.com/a.git","ref":"main","version":"v1"}`),
+		removal("a", `{"kind":"git","url":"https://git.example.com/a.git","ref":"main","snapshot":{"url":"https://git.example.com/a.git","ref":"main","version":"v1"}}`),
 		removal("b", `{"kind":"git","url":"https://git.example.com/b.git","ref":"main"}`),
 	)
 	// A source's events outlive it.
@@ -121,6 +122,19 @@ func testRemoveEvents(t *testing.T, s store.Store) {
 	if got := listEvents(t, s, audit.Filter{}).Events; len(got) != 5 {
 		t.Errorf("%d events after removing nothing, want 5", len(got))
 	}
+
+	// A source whose last fetch, from another URL, failed keeps the
+	// snapshot of the URL it was fetched from.
+	moved := failure("c", t0.Add(time.Hour), "down")
+	moved.Source.URL = "https://git.example.com/moved.git"
+	record(t, s, moved)
+	from = time.Now()
+	if _, err := s.RemoveSources(t.Context(), other, nil); err != nil {
+		t.Fatal(err)
+	}
+	checkEvents(t, listEvents(t, s, audit.Filter{Actions: []audit.Action{audit.SourceRemoved}, Source: "c"}).Events, from, time.Now(),
+		removal("c", `{"kind":"git","url":"https://git.example.com/moved.git","ref":"main","snapshot":{"url":"https://git.example.com/c.git","ref":"main","version":"v1"}}`),
+	)
 }
 
 // fullEvent is an event with every field set.
@@ -133,7 +147,6 @@ func fullEvent() audit.Event {
 		},
 		Action:       "netbox.write",
 		Result:       audit.Failed,
-		Completes:    7,
 		Error:        "412 Precondition Failed",
 		Source:       "lib",
 		ObjectType:   "dcim.devicetype",
@@ -165,6 +178,41 @@ func testRecordEvents(t *testing.T, s store.Store) {
 	checkEvents(t, listEvents(t, s, audit.Filter{}).Events, from, time.Now(), wantFull, wantBare, wantOdd)
 }
 
+func testCompletions(t *testing.T, s store.Store) {
+	started := audit.Event{By: By, Action: "netbox.write", Result: audit.Started, Object: "Dell / R640"}
+	done := audit.Event{By: By, Action: audit.SourceAdded, Result: audit.Succeeded}
+	if err := s.RecordEvents(t.Context(), []audit.Event{started, done}); err != nil {
+		t.Fatal(err)
+	}
+	all := listEvents(t, s, audit.Filter{}).Events
+	startedID, doneID := all[0].ID, all[1].ID
+	completion := func(id int64, action audit.Action) audit.Event {
+		return audit.Event{By: By, Action: action, Result: audit.Failed, Error: "412", Completes: id}
+	}
+	for _, tt := range []struct {
+		name string
+		e    audit.Event
+	}{
+		{"an event that isn't recorded", completion(doneID+1000, "netbox.write")},
+		{"an event that wasn't started", completion(doneID, audit.SourceAdded)},
+		{"an event of another action", completion(startedID, "netbox.read")},
+	} {
+		if err := s.RecordEvents(t.Context(), []audit.Event{tt.e}); err == nil {
+			t.Errorf("RecordEvents completing %s succeeded", tt.name)
+		}
+	}
+	if err := s.RecordEvents(t.Context(), []audit.Event{completion(startedID, "netbox.write")}); err != nil {
+		t.Fatalf("RecordEvents completing a started event: %v", err)
+	}
+	if err := s.RecordEvents(t.Context(), []audit.Event{completion(startedID, "netbox.write")}); err == nil {
+		t.Error("RecordEvents completed a started event twice")
+	}
+	got := listEvents(t, s, audit.Filter{}).Events
+	if len(got) != 3 || got[2].Completes != startedID || got[2].Result != audit.Failed {
+		t.Errorf("events = %+v, want the started event's one completion last", got)
+	}
+}
+
 func testInvalidEvents(t *testing.T, s store.Store) {
 	tests := []struct {
 		name   string
@@ -180,7 +228,7 @@ func testInvalidEvents(t *testing.T, s store.Store) {
 		{"no result", func(e *audit.Event) { e.Result = "" }},
 		{"a failure without an error", func(e *audit.Event) { e.Error = "" }},
 		{"an error on a success", func(e *audit.Event) { e.Result = audit.Succeeded }},
-		{"a started event completing another", func(e *audit.Event) { e.Result, e.Error = audit.Started, "" }},
+		{"a started event completing another", func(e *audit.Event) { e.Result, e.Error, e.Completes = audit.Started, "", 7 }},
 		{"a negative completion", func(e *audit.Event) { e.Completes = -1 }},
 		{"a negative NetBox ID", func(e *audit.Event) { e.NetBoxID = -1 }},
 		{"details that aren't JSON", func(e *audit.Event) { e.Details = json.RawMessage(`{"a":`) }},
@@ -221,7 +269,7 @@ func testInvalidEvents(t *testing.T, s store.Store) {
 func testEventFilters(t *testing.T, s store.Store) {
 	event := func(actor string, action audit.Action, source string) audit.Event {
 		e := audit.Event{By: By, Action: action, Result: audit.Succeeded, Source: source}
-		e.Actor.Name = actor
+		e.Actor.Name, e.Actor.ID = actor, fmt.Sprintf("%d", len(actor)*100+int(actor[0]))
 		return e
 	}
 	first := []audit.Event{
@@ -269,6 +317,7 @@ func testEventFilters(t *testing.T, s store.Store) {
 		{"everything", audit.Filter{}, "01234"},
 		{"an actor, exactly", audit.Filter{Actor: "ann"}, "03"},
 		{"an actor no event has", audit.Filter{Actor: "carol"}, ""},
+		{"an actor by ID", audit.Filter{Actor: "398"}, "14"},
 		{"an action", audit.Filter{Actions: []audit.Action{audit.SourceNewVersion}}, "24"},
 		{"actions", audit.Filter{Actions: []audit.Action{audit.SourceAdded, audit.SourceRemoved}}, "013"},
 		{"a source", audit.Filter{Source: "a"}, "02"},
@@ -281,6 +330,7 @@ func testEventFilters(t *testing.T, s store.Store) {
 		{"the latest two", audit.Filter{Limit: 2}, "34+"},
 		{"the latest of an action", audit.Filter{Actions: []audit.Action{audit.SourceAdded}, Limit: 1}, "1+"},
 		{"a limit of all of them", audit.Filter{Limit: 5}, "01234"},
+		{"the greatest limit", audit.Filter{Limit: math.MaxInt}, "01234"},
 	}
 	for _, tt := range tests {
 		if got := ids(listEvents(t, s, tt.filter)); got != tt.want {

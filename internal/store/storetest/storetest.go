@@ -81,6 +81,7 @@ func Run(t *testing.T, open Open) {
 		{"removals' audit events", testRemoveEvents},
 		{"recording audit events", testRecordEvents},
 		{"invalid audit events record nothing", testInvalidEvents},
+		{"completing audit events", testCompletions},
 		{"filtering audit events", testEventFilters},
 		{"concurrent audit events", testConcurrentEvents},
 	}

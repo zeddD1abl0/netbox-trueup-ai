@@ -45,9 +45,14 @@ CREATE TABLE audit_events (
 
 CREATE INDEX audit_events_by_time ON audit_events (occurred_at);
 CREATE INDEX audit_events_by_actor ON audit_events (actor, id);
+CREATE INDEX audit_events_by_actor_id ON audit_events (actor_id, id);
 CREATE INDEX audit_events_by_action ON audit_events (action, id);
 CREATE INDEX audit_events_by_source ON audit_events (source, id);
 CREATE INDEX audit_events_by_object ON audit_events (object_type, netbox_id, id);
+
+-- A started action is completed once, by one result.
+CREATE UNIQUE INDEX audit_events_by_completed ON audit_events (completes)
+WHERE completes IS NOT NULL;
 
 -- Events are never changed or deleted. The triggers guard against a bug in
 -- TrueUp, not against someone who can change the database.

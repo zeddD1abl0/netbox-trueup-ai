@@ -32,7 +32,7 @@ func sourceState(ctx context.Context, q *sqlitedb.Queries, name string) (*store.
 	case err != nil:
 		return nil, fmt.Errorf("read its snapshot: %w", err)
 	default:
-		state.Version = snap.Version
+		state.Version, state.SnapshotURL, state.SnapshotRef = snap.Version, snap.Url, snap.Ref
 	}
 	return state, nil
 }
@@ -44,6 +44,16 @@ func insertEvents(ctx context.Context, q *sqlitedb.Queries, events []audit.Event
 		e, err := store.PrepareEvent(e)
 		if err != nil {
 			return err
+		}
+		if e.Completes > 0 {
+			started, err := q.GetStartedEvent(ctx, e.Completes)
+			found := !errors.Is(err, sql.ErrNoRows)
+			if err != nil && found {
+				return fmt.Errorf("read audit event %d: %w", e.Completes, err)
+			}
+			if err := store.CheckCompletion(e, found, audit.Action(started.Action), audit.Result(started.Result)); err != nil {
+				return err
+			}
 		}
 		if err := q.InsertAuditEvent(ctx, sqlitedb.InsertAuditEventParams{
 			OccurredAt:    at,

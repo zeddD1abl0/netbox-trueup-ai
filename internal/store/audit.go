@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 	"unicode/utf8"
 
@@ -12,15 +13,18 @@ import (
 )
 
 // SourceState is what a source's audit events compare: its configuration
-// as its latest fetch found it, and its snapshot's version, or "" if it has
+// as its latest fetch found it, which a failed fetch records too, and its
+// snapshot's version, the URL fetched and the ref resolved, each "" if it has
 // none.
 type SourceState struct {
-	Config  SourceConfig
-	Version string
+	Config      SourceConfig
+	Version     string
+	SnapshotURL string
+	SnapshotRef string
 }
 
-// sourceDetails is the details of a source added or removed: its
-// configuration, and its version if it has one.
+// sourceDetails is the details of a source added: its configuration, and
+// the version its fetch found, if it succeeded.
 type sourceDetails struct {
 	Kind    string  `json:"kind"`
 	URL     string  `json:"url"`
@@ -101,13 +105,25 @@ func FetchEvents(by audit.By, before *SourceState, f Fetch) ([]audit.Event, erro
 	return events, nil
 }
 
+// snapshotDetails is the snapshot a source held when it was removed: the
+// version, the URL it was fetched from, which a later failed fetch may have
+// changed in the configuration, and the ref it was resolved from.
+type snapshotDetails struct {
+	URL     string `json:"url"`
+	Ref     string `json:"ref"`
+	Version string `json:"version"`
+}
+
 // RemovedEvent returns the audit event of removing the records of a source
-// no longer configured, as by's action, with its configuration and version
-// as they were.
+// no longer configured, as by's action, with its configuration as its
+// latest fetch found it, and its snapshot, if it had one.
 func RemovedEvent(by audit.By, name string, before SourceState) (audit.Event, error) {
-	d := sourceDetails{Kind: before.Config.Kind, URL: before.Config.URL, Ref: before.Config.Ref}
+	d := struct {
+		configDetails
+		Snapshot *snapshotDetails `json:"snapshot,omitempty"`
+	}{configDetails: configDetails{Kind: before.Config.Kind, URL: before.Config.URL, Ref: before.Config.Ref}}
 	if before.Version != "" {
-		d.Version = &before.Version
+		d.Snapshot = &snapshotDetails{URL: before.SnapshotURL, Ref: before.SnapshotRef, Version: before.Version}
 	}
 	b, err := json.Marshal(d)
 	if err != nil {
@@ -122,9 +138,10 @@ func RemovedEvent(by audit.By, name string, before SourceState) (audit.Event, er
 // details as compact JSON, "{}" for none. Every engine calls it first, so
 // that all of them store the same. It fails where PrepareBy does; for a
 // result it doesn't know; an action that isn't an object and a verb; an
-// error on an event that didn't fail, or none on one that did; a
-// completion of no event, or a started event that completes one; a
-// negative NetBox ID; or details that aren't a JSON object.
+// error on an event that didn't fail, or none on one that did; a negative
+// completion, or a started event that completes one; a negative NetBox ID;
+// or details that aren't a JSON object. What a completion completes is
+// checked as it is recorded (CheckCompletion).
 func PrepareEvent(e audit.Event) (audit.Event, error) {
 	by, err := PrepareBy(e.By)
 	if err != nil {
@@ -177,13 +194,38 @@ func PrepareBy(by audit.By) (audit.By, error) {
 	return by, nil
 }
 
+// CheckCompletion checks that an event that completes another, as
+// PrepareEvent returns it, completes an event recorded as started, of the
+// same action, given that event's action and result as recorded, or found
+// false if none is. An engine calls it in the transaction that records the
+// completion; a unique index lets a started event be completed once.
+func CheckCompletion(e audit.Event, found bool, action audit.Action, result audit.Result) error {
+	switch {
+	case !found:
+		return fmt.Errorf("audit event %s completes event %d, which isn't recorded", e.Action, e.Completes)
+	case result != audit.Started:
+		return fmt.Errorf("audit event %s completes event %d, which wasn't recorded as started", e.Action, e.Completes)
+	case action != e.Action:
+		return fmt.Errorf("audit event %s completes event %d, of another action, %s", e.Action, e.Completes, action)
+	}
+	return nil
+}
+
+// maxLimit is the most events a filter's limit names; a greater one lists
+// them all, as no database holds more, and an engine can add one to it.
+const maxLimit = math.MaxInt32
+
 // PrepareFilter checks a filter of audit events and returns it as an engine
 // reads it: its times in UTC, rounded up to the microsecond, since events
 // are recorded to the microsecond, so that "at Since or later" and "before
-// Until" choose the same events either way. It fails for a negative limit.
+// Until" choose the same events either way, and a limit beyond maxLimit as
+// none. It fails for a negative limit.
 func PrepareFilter(f audit.Filter) (audit.Filter, error) {
 	if f.Limit < 0 {
 		return audit.Filter{}, fmt.Errorf("a limit of %d events isn't one", f.Limit)
+	}
+	if f.Limit > maxLimit {
+		f.Limit = 0
 	}
 	for _, t := range []*time.Time{&f.Since, &f.Until} {
 		if t.IsZero() {

@@ -133,7 +133,10 @@ type Recorded struct {
 	// ID orders events: each is greater than those recorded before it, and
 	// never reused.
 	ID int64
-	// OccurredAt is when it was recorded, in UTC, to the microsecond.
+	// OccurredAt is when it was recorded, in UTC, to the microsecond, by
+	// the clock of the process that recorded it. Times don't order events:
+	// events that processes, or hosts, record at once can have times out of
+	// their IDs' order.
 	OccurredAt time.Time
 	Event
 }
@@ -143,7 +146,7 @@ type Filter struct {
 	// Since and Until bound when the events were recorded: at Since or
 	// later, and before Until. A zero time bounds nothing.
 	Since, Until time.Time
-	// Actor is an actor's name, Actions the actions, and Source a
+	// Actor is an actor's name or ID, Actions the actions, and Source a
 	// source's name, each matched exactly; empty matches any.
 	Actor   string
 	Actions []Action

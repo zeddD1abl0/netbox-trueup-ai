@@ -23,7 +23,7 @@ func fakeProcess(uid int, users map[string]string, host string) process {
 			}
 			return &user.User{Uid: id, Username: name}, nil
 		},
-		current: func() (*user.User, error) { return nil, errors.New("not on Windows") },
+		windowsAccount: func() (string, string, error) { return "", "", errors.New("not on Windows") },
 		hostname: func() (string, error) {
 			if host == "" {
 				return "", errors.New("no host name")
@@ -107,16 +107,19 @@ func TestCommandLineActorOnWindows(t *testing.T) {
 	t.Parallel()
 	p := fakeProcess(-1, nil, "WS1")
 	p.goos = "windows"
-	p.current = func() (*user.User, error) {
-		return &user.User{Uid: "S-1-5-21-1-2-3-1001", Username: `CORP\jordan`}, nil
-	}
+	p.windowsAccount = func() (string, string, error) { return `CORP\jordan`, "S-1-5-21-1-2-3-1001", nil }
 	want := Actor{Kind: OSUser, Name: `CORP\jordan`, ID: "S-1-5-21-1-2-3-1001", Host: "WS1"}
 	if diff := cmp.Diff(want, commandLineActor(p, env("SUDO_UID", "1000"))); diff != "" {
 		t.Errorf("on Windows (-want +got):\n%s", diff)
 	}
-	p.current = func() (*user.User, error) { return nil, errors.New("no token") }
+	// An account whose name can't be looked up still has its identifier.
+	p.windowsAccount = func() (string, string, error) { return "", "S-1-5-21-1-2-3-1002", nil }
+	if got := commandLineActor(p, env()); got != (Actor{Kind: OSUser, ID: "S-1-5-21-1-2-3-1002", Host: "WS1"}) {
+		t.Errorf("on Windows without the account's name = %+v, want its identifier", got)
+	}
+	p.windowsAccount = func() (string, string, error) { return "", "", errors.New("no token") }
 	if got := commandLineActor(p, env()); got != (Actor{Kind: OSUser, Host: "WS1"}) {
-		t.Errorf("on Windows without the account = %+v, want its host alone", got)
+		t.Errorf("on Windows without the token = %+v, want its host alone", got)
 	}
 }
 
@@ -157,7 +160,9 @@ func TestParseTime(t *testing.T) {
 	}
 	for _, in := range []string{
 		"", "yesterday", "-5m", "-1d", "+1d", "1.5d", "d", "7D", "1w", "36501d", "999999999999d",
-		"876001h", "2026-11-23", "2026-11-23 09:30:00", "2026-11-23T09:30:00", " 7d",
+		"876001h", "2026-11-23", "2026-11-23 09:30:00", "2026-11-23T09:30:00", " 7d", "4294967295d",
+		// The zero time, which a Filter takes for no bound.
+		"0001-01-01T00:00:00Z", "0001-01-01T10:00:00+10:00",
 	} {
 		if got, err := ParseTime(in, now); err == nil {
 			t.Errorf("ParseTime(%q) = %v, want an error", in, got)

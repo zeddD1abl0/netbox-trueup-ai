@@ -252,12 +252,12 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	check(t, s)
 }
 
-// execOn returns a function that runs a statement on a store's database.
 // sqlOn returns what the shared migration tests need to fill s directly.
 func sqlOn(s *Store) storetest.SQL {
 	return storetest.SQL{Exec: execOn(s), Bytes: func(b []byte) string { return "X'" + hex.EncodeToString(b) + "'" }}
 }
 
+// execOn returns a function that runs a statement on a store's database.
 func execOn(s *Store) func(*testing.T, string) {
 	return func(t *testing.T, statement string) {
 		t.Helper()

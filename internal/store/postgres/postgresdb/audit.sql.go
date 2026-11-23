@@ -30,6 +30,23 @@ func (q *Queries) GetSourceConfig(ctx context.Context, name string) (GetSourceCo
 	return i, err
 }
 
+const getStartedEvent = `-- name: GetStartedEvent :one
+SELECT action, result FROM audit_events WHERE id = $1
+`
+
+type GetStartedEventRow struct {
+	Action string
+	Result string
+}
+
+// Reads the action and result of an event that a result is to complete.
+func (q *Queries) GetStartedEvent(ctx context.Context, id int64) (GetStartedEventRow, error) {
+	row := q.db.QueryRow(ctx, getStartedEvent, id)
+	var i GetStartedEventRow
+	err := row.Scan(&i.Action, &i.Result)
+	return i, err
+}
+
 const insertAuditEvent = `-- name: InsertAuditEvent :exec
 INSERT INTO audit_events (
     occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
@@ -129,7 +146,11 @@ FROM audit_events
 WHERE
     ($1::timestamptz IS NULL OR occurred_at >= $1)
     AND ($2::timestamptz IS NULL OR occurred_at < $2)
-    AND ($3::text IS NULL OR actor = $3)
+    AND (
+        $3::text IS NULL
+        OR actor = $3
+        OR actor_id = $3
+    )
     AND ($4::text IS NULL OR source = $4)
     AND (
         cardinality($5::text []) = 0
@@ -149,7 +170,8 @@ type ListAuditEventsParams struct {
 }
 
 // Lists the latest events that match, newest first, up to max of them, or
-// all for null. A null filter, or no actions, matches any event.
+// all for null. A null filter, or no actions, matches any event; actor
+// matches an actor's name or ID.
 func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error) {
 	rows, err := q.db.Query(ctx, listAuditEvents,
 		arg.Since,

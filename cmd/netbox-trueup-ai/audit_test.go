@@ -87,7 +87,7 @@ func TestAuditRecordsSourceChanges(t *testing.T) {
 		{"source.added", "lib", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"","version":"` + commit + `"}`},
 		{"source.reconfigured", "lib", "tester", `{"before":` + conf("") + `,"after":` + conf("master") + `}`},
 		{"source.added", "other", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"","version":"` + commit + `"}`},
-		{"source.removed", "lib", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"master","version":"` + commit + `"}`},
+		{"source.removed", "lib", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"master","snapshot":{"url":"` + repoURL + `","ref":"master","version":"` + commit + `"}}`},
 	}
 	if diff := cmp.Diff(want, summarize(t, got.Events)); diff != "" {
 		t.Errorf("audit (-want +got):\n%s", diff)
@@ -119,6 +119,9 @@ func TestAuditRecordsSourceChanges(t *testing.T) {
 	if got := auditLog(t, env, "--actor", "Tester"); len(got.Events) != 0 {
 		t.Errorf("audit --actor Tester = %d events, want none: names match exactly", len(got.Events))
 	}
+	if got := auditLog(t, env, "--actor", "1000"); len(got.Events) != 4 {
+		t.Errorf("audit --actor 1000 = %d events, want 4: an ID matches too", len(got.Events))
+	}
 }
 
 func TestAuditText(t *testing.T) {
@@ -145,14 +148,19 @@ func TestAuditText(t *testing.T) {
 			By: testBy, Action: audit.SourceAdded, Result: audit.Succeeded, Source: "lib",
 			Details: json.RawMessage(`{"kind":"git","url":"https://git.example.com/lib.git","ref":"","version":"abc"}`),
 		},
-		{
-			By: odd, Action: "netbox.write", Result: audit.Failed, Completes: 1, Error: "refused\u202e",
-			ObjectType: "dcim.devicetype", Object: "Dell / R640", NetBoxURL: "https://netbox.example.com/", NetBoxBranch: "a1b2c3d4", NetBoxID: 7,
-			Details: json.RawMessage(`{"before":{"u_height":1},"note":"line\nbreak"}`),
-		},
+		{By: odd, Action: "netbox.write", Result: audit.Started, ObjectType: "dcim.devicetype", Object: "Dell / R640"},
 		{By: audit.By{Actor: audit.Actor{Kind: audit.OSUser, ID: "1234"}, Through: audit.CommandLine}, Action: audit.SourceRemoved, Result: audit.Succeeded},
 	}
 	if err := s.RecordEvents(t.Context(), events); err != nil {
+		t.Fatal(err)
+	}
+	// A result completes the event recorded as started, by its ID.
+	result := audit.Event{
+		By: odd, Action: "netbox.write", Result: audit.Failed, Completes: 2, Error: "refused\u202e",
+		ObjectType: "dcim.devicetype", Object: "Dell / R640", NetBoxURL: "https://netbox.example.com/", NetBoxBranch: "a1b2c3d4", NetBoxID: 7,
+		Details: json.RawMessage(`{"before":{"u_height":1},"note":"line\nbreak"}`),
+	}
+	if err := s.RecordEvents(t.Context(), []audit.Event{result}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -173,22 +181,26 @@ func TestAuditText(t *testing.T) {
     ref: ` + `
     version: abc
 
-#2  TIME  netbox.write  failed, completing #1
+#2  TIME  netbox.write  started
+    by root (uid 0), through sudo from jordan, on "host\x1b[31m", at the command line
+    about dcim.devicetype Dell / R640
+
+#3  TIME  source.removed  succeeded
+    by uid 1234, at the command line
+
+#4  TIME  netbox.write  failed, completing #2
     by root (uid 0), through sudo from jordan, on "host\x1b[31m", at the command line
     about dcim.devicetype Dell / R640, NetBox https://netbox.example.com/ branch a1b2c3d4 ID 7
     error: "refused\u202e"
     before: {"u_height":1}
     note: "line\nbreak"
-
-#3  TIME  source.removed  succeeded
-    by uid 1234, at the command line
 `
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("audit (-want +got):\n%s", diff)
 	}
 
 	r = runCLI(t, nil, env, "audit", "--limit", "2")
-	if !strings.HasPrefix(r.stdout, "The latest 2 events that match; --limit 0 lists them all.\n\n#2 ") {
+	if !strings.HasPrefix(r.stdout, "The latest 2 events that match; --limit 0 lists them all.\n\n#3 ") {
 		t.Errorf("audit --limit 2 doesn't say more match:\n%s", r.stdout)
 	}
 }

@@ -51,7 +51,9 @@ The latest events that match are listed, oldest first: by default the latest
 100, or as many as --limit says, or all with --limit 0. --since and --until
 take an RFC 3339 time, such as 2026-11-23T09:30:00Z, or a duration back from
 now, such as 90m, 24h or 7d: events recorded at --since or later, and before
---until. --actor matches a user's name exactly, case included.
+--until. --actor matches a user's name, or a user ID, such as 1000, exactly,
+case included: a user whose name the system's user database lacks, as in
+some containers, is recorded by ID alone.
 
 The database is created and migrated first if needed. Reading the log isn't
 audited.
@@ -85,7 +87,7 @@ Exit codes:
 	}
 	cmd.Flags().StringVar(&since, "since", "", "list events recorded at this `time` or later: RFC 3339, or a duration back from now")
 	cmd.Flags().StringVar(&until, "until", "", "list events recorded before this `time`: RFC 3339, or a duration back from now")
-	cmd.Flags().StringVar(&actor, "actor", "", "list events by the user with this `name`, exactly")
+	cmd.Flags().StringVar(&actor, "actor", "", "list events by the user with this `name` or user ID, exactly")
 	cmd.Flags().StringArrayVar(&actions, "action", nil, "list events of this `action`, such as source.added; repeat for more")
 	cmd.Flags().StringVar(&sourceName, "source", "", "list events about the source with this `name`")
 	cmd.Flags().IntVar(&limit, "limit", defaultAuditLimit, "list at most this `many` of the latest events; 0 for all")
