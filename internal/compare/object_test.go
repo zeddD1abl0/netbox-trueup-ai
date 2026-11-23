@@ -522,8 +522,8 @@ func TestObjectsRefused(t *testing.T) {
 			r[0].Outcome = "linked"
 		}, `the outcome "linked"`},
 		{"a row twice", func(r []compare.Result) {
-			r[1].Rows = append(r[1].Rows, r[1].Rows[0])
-		}, "has the row manufacturer twice"},
+			r[1].Rows = append(r[1].Rows, r[1].Rows[len(r[1].Rows)-1])
+		}, `has the row interfaces["eth1"].type twice`},
 		{"a reference by its ID alone", func(r []compare.Result) {
 			r[1].Unresolved = []compare.Unresolved{{Field: "manufacturer", Ref: model.Reference{Type: "dcim.manufacturer", ID: 3}}}
 		}, "manufacturer has an identity of 0 fields, but a dcim.manufacturer's has 1"},
@@ -558,10 +558,14 @@ func TestObjectsRefused(t *testing.T) {
 		{"a reference to a type the field can't refer to", func(r []compare.Result) {
 			r[1].Identity = map[string]model.Value{"manufacturer": model.Reference{Type: "dcim.devicetype", Key: map[string]model.Value{"name": model.String("Dell")}}, "model": model.String("R670")}
 		}, `refers to a "dcim.devicetype", which manufacturer can't`},
+		{"a field after the children", func(r []compare.Result) {
+			r[1].Rows = append(r[1].Rows[1:], r[1].Rows[0])
+		}, "has the field manufacturer after its children's rows"},
 		{"a child's field before the child", func(r []compare.Result) {
-			field := r[1].Rows[len(r[1].Rows)-1]
-			r[1].Rows = append([]compare.Row{field}, r[1].Rows[:len(r[1].Rows)-1]...)
-		}, `has the row interfaces["eth1"].type before its child's`},
+			// eth0's row, eth0's type: swap them.
+			n := len(r[1].Rows)
+			r[1].Rows[n-4], r[1].Rows[n-3] = r[1].Rows[n-3], r[1].Rows[n-4]
+		}, `has the row interfaces["eth0"].type before its child's`},
 		{"a child's field among another's", func(r []compare.Result) {
 			// eth0's row, eth0's type, eth1's row, eth1's type: swap the
 			// types.
@@ -762,5 +766,20 @@ func TestObjectJSONNeedsEachDefinitionsComparison(t *testing.T) {
 	o := compare.Object{Type: "dcim.manufacturer", Columns: []compare.Column{{Kind: compare.DefinitionColumn, Source: "lib"}}}
 	if _, err := json.Marshal(o); err == nil || !strings.Contains(err.Error(), "has 0 definitions' comparisons") {
 		t.Errorf("json.Marshal: %v", err)
+	}
+}
+
+func TestObjectUnresolvedOnceAsNetBoxWouldStoreIt(t *testing.T) {
+	t.Parallel()
+	// Two definitions of a device type whose manufacturer NetBox hasn't
+	// got; one's reference to it untrimmed, as a record could hold it.
+	results := run(t, []compare.Definition{deviceType("Dell", "R670", "r670", nil), other(deviceType("Dell", "R670", "r670", nil))}, nil)
+	results[1].Unresolved[0].Ref.Key = map[string]model.Value{"name": model.String("Dell ")}
+	objects, err := compare.Objects(dcim.Specs(), results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(objects[0].Unresolved); n != 1 {
+		t.Errorf("the object has %d unresolved references, want Dell's once", n)
 	}
 }

@@ -321,7 +321,8 @@ func Objects(specs []*model.Spec, results []Result) ([]Object, error) {
 // checkResult checks that a result has the shape Compare gives one: a
 // definition's column, then NetBox's object's where its identity matches
 // one; an outcome that its NetBox match, collisions and references bear
-// out; rows whose paths go through its type's spec, with a cell for each
+// out; rows whose paths go through its type's spec, the object's fields
+// before its children's, with a cell for each
 // column, a child's row's cells true, false or, where that version hasn't
 // the child's parent, unset; each row differing where two of its cells do,
 // managed only where the definition sets it, and as many differences as
@@ -346,8 +347,12 @@ func checkResult(specs []*model.Spec, r *Result) error {
 	if s == nil {
 		return fmt.Errorf("the comparison is of a %s, which has no spec", strconv.Quote(r.Type))
 	}
-	differences := 0
+	differences, children := 0, false
 	for _, row := range r.Rows {
+		if len(row.Path) == 1 && children {
+			return fmt.Errorf("the comparison of a %s has the field %s after its children's rows", r.Type, row.Path)
+		}
+		children = children || len(row.Path) > 1
 		if len(row.Cells) != len(r.Columns) {
 			return fmt.Errorf("the comparison of a %s has a row %s with %d cells for %d columns", r.Type, row.Path, len(row.Cells), len(r.Columns))
 		}
@@ -451,7 +456,7 @@ func buildObject(specs []*model.Spec, fields map[string]map[string]bool, o *Obje
 		o.Columns = append(o.Columns, Column{Kind: NetBoxColumn, ID: o.NetBoxID})
 	}
 	var err error
-	if o.Collisions, o.Unresolved, err = unionOf(results, of); err != nil {
+	if o.Collisions, o.Unresolved, err = unionOf(specs, results, of); err != nil {
 		return nil, fmt.Errorf("%s: %w", describeObject(o), err)
 	}
 
@@ -486,7 +491,7 @@ func buildObject(specs []*model.Spec, fields map[string]map[string]bool, o *Obje
 // NetBox's children sharing a key, are taken from the first definition that
 // has any at that child's path, so that nested children, which have no
 // IDs, are each counted once.
-func unionOf(results []Result, of []int) ([]Collision, []Unresolved, error) {
+func unionOf(specs []*model.Spec, results []Result, of []int) ([]Collision, []Unresolved, error) {
 	var collisions []Collision
 	type own struct {
 		rule string
@@ -540,7 +545,12 @@ func unionOf(results []Result, of []int) ([]Collision, []Unresolved, error) {
 	refs := map[string]string{}
 	for _, i := range of {
 		for _, u := range results[i].Unresolved {
-			k := u.Field + "\x00" + valueKey(model.Reference{Type: u.Ref.Type, Key: u.Ref.Key})
+			// As grouping keys what it refers to.
+			key, _, err := objectKey(specs, u.Ref.Type, u.Ref.Key)
+			if err != nil {
+				return nil, nil, fmt.Errorf("its %s %w", u.Field, err)
+			}
+			k := u.Field + "\x00" + key
 			candidates := fmt.Sprint(u.Candidates)
 			if was, ok := refs[k]; ok {
 				if was != candidates {
@@ -582,7 +592,11 @@ func ruleFields(s *model.Spec) map[string]bool {
 func wouldHold(fields map[string]bool, r *Result) map[string]model.Value {
 	held := map[string]model.Value{}
 	for _, row := range r.Rows {
-		if len(row.Path) != 1 || row.Path[0].Key != nil || !fields[row.Path[0].Field] {
+		if len(row.Path) != 1 {
+			// The object's own fields come first, then its children.
+			break
+		}
+		if row.Path[0].Key != nil || !fields[row.Path[0].Field] {
 			continue
 		}
 		switch {
@@ -697,7 +711,11 @@ func netboxHolds(o *Object) map[string]model.Value {
 	held := map[string]model.Value{}
 	nb := len(o.Columns) - 1
 	for _, row := range o.Rows {
-		if len(row.Path) == 1 && row.Path[0].Key == nil {
+		if len(row.Path) != 1 {
+			// The object's own fields come first, then its children.
+			break
+		}
+		if row.Path[0].Key == nil {
 			held[row.Path[0].Field] = row.Cells[nb]
 		}
 	}

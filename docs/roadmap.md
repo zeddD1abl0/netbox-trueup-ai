@@ -162,7 +162,7 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - Measured against the whole library: by default 0.4 seconds and 100 MB with an empty NetBox, 0.5 seconds with 15 manufacturers and 33 device types, and 1.3 seconds with 400 device types, against 3.7 to 4.7 seconds and 680 to 700 MB for comparing everything, which `--all` still takes.
     - No new dependency.
 
-15. **`feat(compare): compare definitions across sources`.** Done in #PR.
+15. **`feat(compare): compare definitions across sources`.** Done in #33.
     - Definitions from every source compared are grouped into objects by type and identity as NetBox would store them, from their unique values; by default an object is compared if any of its definitions matches or collides with NetBox, with all of its definitions ([ADR 0032](adr/0032-compare-definitions-across-sources-as-objects.md)).
     - Each definition keeps its outcome against NetBox; an object is a conflict if one of its definitions is, if a source defines it more than once, or if it clashes with another object, which two do when importing both would leave NetBox holding the same name or slug; otherwise it has its definitions' outcome, and is in step when NetBox and every definition agree. `--exit-code` counts objects.
     - `compare` shows each object with a column for each definition, plus NetBox, in text and JSON, which gains `counts`, `duplicated_in`, `clashes`, and each definition's own outcome in its column. Each definition's comparison is recorded alone, as before, and an object is built by merging them (`compare.Objects`), so the web UI can build it from records.

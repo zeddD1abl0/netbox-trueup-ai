@@ -1416,7 +1416,7 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 		if o.NetBoxID != 0 {
 			heading += ", NetBox #" + strconv.FormatInt(o.NetBoxID, 10)
 		}
-		fmt.Fprintf(&b, "  %s, in %s:\n", cell(heading), cell(listText(where)))
+		fmt.Fprintf(&b, "  %s, in %s:\n", cell(heading), cell(format.List(where)))
 		tw = tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 		header := append([]string{"    FIELD"}, columnNames(defs)...)
 		if o.NetBoxID != 0 {
@@ -1550,7 +1550,7 @@ func conflictText(o compare.Object) []string {
 		if len(files) > 2 {
 			times = strconv.Itoa(len(files)) + " times"
 		}
-		parts = append(parts, fmt.Sprintf("%s defines it %s, in %s", src, times, listText(files)))
+		parts = append(parts, fmt.Sprintf("%s defines it %s, in %s", src, times, format.List(files)))
 	}
 	// Each reason once, after the definitions that give it, such as
 	// NetBox's children sharing a key, which every definition finds.
@@ -1567,7 +1567,7 @@ func conflictText(o compare.Object) []string {
 	var by []string
 	byDefinitions := map[string][]string{}
 	for _, p := range reasons {
-		who := listText(givenBy[p])
+		who := format.List(givenBy[p])
 		if byDefinitions[who] == nil {
 			by = append(by, who)
 		}
@@ -1583,7 +1583,7 @@ func conflictText(o compare.Object) []string {
 			for _, c := range clash.Columns {
 				mine = append(mine, definitionText(defs[c]))
 			}
-			prefix = listText(mine) + ": "
+			prefix = format.List(mine) + ": "
 		}
 		var with, values []string
 		for _, w := range clash.With {
@@ -1596,7 +1596,7 @@ func conflictText(o compare.Object) []string {
 		if len(with) > 1 {
 			all = "all"
 		}
-		parts = append(parts, fmt.Sprintf("%sit and %s would %s have %s, which NetBox keeps unique", prefix, listText(with), all, listText(values)))
+		parts = append(parts, fmt.Sprintf("%sit and %s would %s have %s, which NetBox keeps unique", prefix, format.List(with), all, format.List(values)))
 	}
 	return parts
 }
@@ -1663,17 +1663,6 @@ func collisionText(typ string, r compare.Result) []string {
 			r.NetBoxID, p, times, as, none))
 	}
 	return parts
-}
-
-// listText joins items as a list in a sentence: a, b and c.
-func listText(items []string) string {
-	switch len(items) {
-	case 0:
-		return ""
-	case 1:
-		return items[0]
-	}
-	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // notComparedText says how many definitions NetBox hasn't got weren't
