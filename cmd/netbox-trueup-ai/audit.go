@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -51,9 +52,9 @@ The latest events that match are listed, oldest first: by default the latest
 100, or as many as --limit says, or all with --limit 0. --since and --until
 take an RFC 3339 time, such as 2026-11-23T09:30:00Z, or a duration back from
 now, such as 90m, 24h or 7d: events recorded at --since or later, and before
---until. --actor matches a user's name, or a user ID, such as 1000, exactly,
-case included: a user whose name the system's user database lacks, as in
-some containers, is recorded by ID alone.
+--until. --actor matches a user's name, or a user ID, such as 1000, or the
+user who ran sudo, exactly, case included: a user whose name the system's
+user database lacks, as in some containers, is recorded by ID alone.
 
 The database is created and migrated first if needed. Reading the log isn't
 audited.
@@ -67,6 +68,11 @@ Exit codes:
      release can't use.`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			for _, flag := range []string{"since", "until"} {
+				if cmd.Flags().Changed(flag) && cmd.Flags().Lookup(flag).Value.String() == "" {
+					return usageError{fmt.Errorf("--%s needs a time: RFC 3339, or a duration back from now, such as 24h", flag)}
+				}
+			}
 			filter, err := auditFilter(time.Now(), since, until, actor, sourceName, actions, limit)
 			if err != nil {
 				return usageError{err}
@@ -87,7 +93,7 @@ Exit codes:
 	}
 	cmd.Flags().StringVar(&since, "since", "", "list events recorded at this `time` or later: RFC 3339, or a duration back from now")
 	cmd.Flags().StringVar(&until, "until", "", "list events recorded before this `time`: RFC 3339, or a duration back from now")
-	cmd.Flags().StringVar(&actor, "actor", "", "list events by the user with this `name` or user ID, exactly")
+	cmd.Flags().StringVar(&actor, "actor", "", "list events by the user with this `name` or user ID, or run through sudo by them, exactly")
 	cmd.Flags().StringArrayVar(&actions, "action", nil, "list events of this `action`, such as source.added; repeat for more")
 	cmd.Flags().StringVar(&sourceName, "source", "", "list events about the source with this `name`")
 	cmd.Flags().IntVar(&limit, "limit", defaultAuditLimit, "list at most this `many` of the latest events; 0 for all")
@@ -101,6 +107,12 @@ func auditFilter(now time.Time, since, until, actor, sourceName string, actions 
 	f := audit.Filter{Actor: actor, Source: sourceName, Limit: limit}
 	if limit < 0 {
 		return audit.Filter{}, fmt.Errorf("--limit must be 0, for all, or more, not %d", limit)
+	}
+	for _, flag := range []struct{ name, value string }{{"--actor", actor}, {"--source", sourceName}} {
+		// Events hold UTF-8 text alone, which PostgreSQL insists on.
+		if !utf8.ValidString(flag.value) || strings.ContainsRune(flag.value, 0) {
+			return audit.Filter{}, fmt.Errorf("%s %s isn't UTF-8 text", flag.name, strconv.Quote(flag.value))
+		}
 	}
 	for _, flag := range []struct {
 		name, value string

@@ -97,7 +97,11 @@ func TestCommandLineActor(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		if diff := cmp.Diff(tt.want, commandLineActor(tt.p, tt.env)); diff != "" {
+		got, err := commandLineActor(tt.p, tt.env)
+		if err != nil {
+			t.Errorf("%s: %v", tt.name, err)
+		}
+		if diff := cmp.Diff(tt.want, got); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", tt.name, diff)
 		}
 	}
@@ -109,23 +113,31 @@ func TestCommandLineActorOnWindows(t *testing.T) {
 	p.goos = "windows"
 	p.windowsAccount = func() (string, string, error) { return `CORP\jordan`, "S-1-5-21-1-2-3-1001", nil }
 	want := Actor{Kind: OSUser, Name: `CORP\jordan`, ID: "S-1-5-21-1-2-3-1001", Host: "WS1"}
-	if diff := cmp.Diff(want, commandLineActor(p, env("SUDO_UID", "1000"))); diff != "" {
+	got, err := commandLineActor(p, env("SUDO_UID", "1000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("on Windows (-want +got):\n%s", diff)
 	}
 	// An account whose name can't be looked up still has its identifier.
 	p.windowsAccount = func() (string, string, error) { return "", "S-1-5-21-1-2-3-1002", nil }
-	if got := commandLineActor(p, env()); got != (Actor{Kind: OSUser, ID: "S-1-5-21-1-2-3-1002", Host: "WS1"}) {
-		t.Errorf("on Windows without the account's name = %+v, want its identifier", got)
+	if got, err := commandLineActor(p, env()); err != nil || got != (Actor{Kind: OSUser, ID: "S-1-5-21-1-2-3-1002", Host: "WS1"}) {
+		t.Errorf("on Windows without the account's name = %+v, %v; want its identifier", got, err)
 	}
-	p.windowsAccount = func() (string, string, error) { return "", "", errors.New("no token") }
-	if got := commandLineActor(p, env()); got != (Actor{Kind: OSUser, Host: "WS1"}) {
-		t.Errorf("on Windows without the token = %+v, want its host alone", got)
+	// Without the token, nobody can be named: an error, not an empty actor.
+	p.windowsAccount = func() (string, string, error) { return "", "", errors.New("access denied") }
+	if got, err := commandLineActor(p, env()); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Errorf("on Windows without the token = %+v, %v; want the token's error", got, err)
 	}
 }
 
 func TestCommandLineActorOfThisProcess(t *testing.T) {
 	t.Parallel()
-	got := CommandLineActor(env("USER", "mallory"))
+	got, err := CommandLineActor(env("USER", "mallory"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Kind != OSUser || (got.Name == "" && got.ID == "") {
 		t.Errorf("CommandLineActor = %+v, want this process's user", got)
 	}

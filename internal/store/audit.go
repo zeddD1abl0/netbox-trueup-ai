@@ -219,13 +219,21 @@ const maxLimit = math.MaxInt32
 // reads it: its times in UTC, rounded up to the microsecond, since events
 // are recorded to the microsecond, so that "at Since or later" and "before
 // Until" choose the same events either way, and a limit beyond maxLimit as
-// none. It fails for a negative limit.
+// none. It fails for a negative limit, and an actor or source that isn't
+// text.
 func PrepareFilter(f audit.Filter) (audit.Filter, error) {
 	if f.Limit < 0 {
 		return audit.Filter{}, fmt.Errorf("a limit of %d events isn't one", f.Limit)
 	}
 	if f.Limit > maxLimit {
 		f.Limit = 0
+	}
+	for _, field := range []struct{ name, value string }{{"actor", f.Actor}, {"source", f.Source}} {
+		// Events hold text alone (PrepareEvent), so such a filter would
+		// match nothing, and PostgreSQL refuses it.
+		if !isText(field.value) {
+			return audit.Filter{}, fmt.Errorf("an audit filter's %s %q isn't UTF-8 text", field.name, field.value)
+		}
 	}
 	for _, t := range []*time.Time{&f.Since, &f.Until} {
 		if t.IsZero() {

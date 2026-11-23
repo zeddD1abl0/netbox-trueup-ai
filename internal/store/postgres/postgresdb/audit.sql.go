@@ -150,6 +150,7 @@ WHERE
         $3::text IS NULL
         OR actor = $3
         OR actor_id = $3
+        OR sudo_user = $3
     )
     AND ($4::text IS NULL OR source = $4)
     AND (
@@ -171,7 +172,7 @@ type ListAuditEventsParams struct {
 
 // Lists the latest events that match, newest first, up to max of them, or
 // all for null. A null filter, or no actions, matches any event; actor
-// matches an actor's name or ID.
+// matches an actor's name or ID, or the user who ran sudo.
 func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error) {
 	rows, err := q.db.Query(ctx, listAuditEvents,
 		arg.Since,

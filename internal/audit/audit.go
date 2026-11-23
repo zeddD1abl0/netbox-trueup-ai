@@ -97,8 +97,12 @@ type By struct {
 
 // CommandLineBy returns where an action run at the command line comes from:
 // the operating system user running this process (CommandLineActor).
-func CommandLineBy(getenv func(string) string) By {
-	return By{Actor: CommandLineActor(getenv), Through: CommandLine}
+func CommandLineBy(getenv func(string) string) (By, error) {
+	actor, err := CommandLineActor(getenv)
+	if err != nil {
+		return By{}, err
+	}
+	return By{Actor: actor, Through: CommandLine}, nil
 }
 
 // Event is one action, as recorded.
@@ -146,8 +150,9 @@ type Filter struct {
 	// Since and Until bound when the events were recorded: at Since or
 	// later, and before Until. A zero time bounds nothing.
 	Since, Until time.Time
-	// Actor is an actor's name or ID, Actions the actions, and Source a
-	// source's name, each matched exactly; empty matches any.
+	// Actor is an actor's name or ID, or the name of the user who ran sudo
+	// to act as it; Actions the actions; and Source a source's name. Each
+	// is matched exactly; empty matches any.
 	Actor   string
 	Actions []Action
 	Source  string

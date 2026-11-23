@@ -245,8 +245,10 @@ func testInvalidEvents(t *testing.T, s store.Store) {
 			t.Errorf("RecordEvents with %s succeeded", tt.name)
 		}
 	}
-	if _, err := s.Events(t.Context(), audit.Filter{Limit: -1}); err == nil {
-		t.Error("Events with a negative limit succeeded")
+	for _, f := range []audit.Filter{{Limit: -1}, {Actor: "a\xffb"}, {Source: "a\x00b"}} {
+		if _, err := s.Events(t.Context(), f); err == nil {
+			t.Errorf("Events with %+v succeeded", f)
+		}
 	}
 
 	// A fetch or a removal without an actor records nothing, though it
@@ -277,9 +279,11 @@ func testEventFilters(t *testing.T, s store.Store) {
 		event("bob", audit.SourceAdded, "b"),
 		event("Ann", audit.SourceNewVersion, "a"),
 	}
+	sudo := event("svc", audit.SourceNewVersion, "")
+	sudo.Actor.SudoUser = "bob"
 	second := []audit.Event{
 		event("ann", audit.SourceRemoved, "b"),
-		event("bob", audit.SourceNewVersion, ""),
+		sudo,
 	}
 	if err := s.RecordEvents(t.Context(), first); err != nil {
 		t.Fatal(err)
@@ -317,7 +321,9 @@ func testEventFilters(t *testing.T, s store.Store) {
 		{"everything", audit.Filter{}, "01234"},
 		{"an actor, exactly", audit.Filter{Actor: "ann"}, "03"},
 		{"an actor no event has", audit.Filter{Actor: "carol"}, ""},
-		{"an actor by ID", audit.Filter{Actor: "398"}, "14"},
+		{"an actor by ID", audit.Filter{Actor: "398"}, "1"},
+		{"an actor, through sudo too", audit.Filter{Actor: "bob"}, "14"},
+		{"the account sudo ran as", audit.Filter{Actor: "svc"}, "4"},
 		{"an action", audit.Filter{Actions: []audit.Action{audit.SourceNewVersion}}, "24"},
 		{"actions", audit.Filter{Actions: []audit.Action{audit.SourceAdded, audit.SourceRemoved}}, "013"},
 		{"a source", audit.Filter{Source: "a"}, "02"},

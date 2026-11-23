@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"regexp"
 	"runtime"
@@ -18,7 +19,7 @@ import (
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/engine"
 )
 
-// testBy is who commands act as in tests, unless a test clears actingAs.
+// testBy is who commands act as in tests, unless a test sets whoami.
 var testBy = audit.By{
 	Actor:   audit.Actor{Kind: audit.OSUser, Name: "tester", ID: "1000", Host: "test-host"},
 	Through: audit.CommandLine,
@@ -205,6 +206,30 @@ func TestAuditText(t *testing.T) {
 	}
 }
 
+// TestAuditNobodyFetchesNothing checks that a command that can't tell who
+// runs it changes nothing: an action nobody can be named for isn't taken.
+func TestAuditNobodyFetchesNothing(t *testing.T) {
+	t.Parallel()
+	repoURL, pool, _ := gitRepo(t)
+	env, dataDir := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
+	nobody := func(a *app) {
+		a.sourceRootCAs = pool
+		a.whoami = func() (audit.By, error) { return audit.By{}, errors.New("no token") }
+	}
+	r := runCLIApp(t, nil, nobody, env, "source", "fetch")
+	if r.code != exitFailure || !strings.Contains(r.stderr, "no token") {
+		t.Errorf("source fetch by nobody: exit code %d, stderr %q; want %d and the reason", r.code, r.stderr, exitFailure)
+	}
+	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if sources, err := s.Sources(t.Context()); err != nil || len(sources) != 0 {
+		t.Errorf("Sources = %v, %v; want none recorded", sources, err)
+	}
+}
+
 func TestAuditFlags(t *testing.T) {
 	t.Parallel()
 	env := []string{"TRUEUP_DATA_DIR=" + t.TempDir()}
@@ -217,6 +242,10 @@ func TestAuditFlags(t *testing.T) {
 		{[]string{"--action", "source.deleted"}, "--action source.deleted isn't an action TrueUp records; it records source.added, source.new_version, source.reconfigured, source.removed"},
 		{[]string{"--limit", "-1"}, "--limit must be 0, for all, or more, not -1"},
 		{[]string{"extra"}, `takes no arguments, but got "extra"`},
+		{[]string{"--since="}, "--since needs a time"},
+		{[]string{"--until", ""}, "--until needs a time"},
+		{[]string{"--actor", "a\xffb"}, `--actor "a\xffb" isn't UTF-8 text`},
+		{[]string{"--source", "a\x00b"}, `--source "a\x00b" isn't UTF-8 text`},
 	} {
 		r := runCLI(t, nil, env, append([]string{"audit"}, tt.args...)...)
 		if r.code != exitUsage || !strings.Contains(r.stderr, tt.want) {
@@ -252,10 +281,10 @@ func TestAuditActsAsTheProcessUser(t *testing.T) {
 	}
 	repoURL, pool, _ := gitRepo(t)
 	env, _ := sourcesEnv(t, `[{"name":"lib","kind":"git","url":"`+repoURL+`","format":"devicetype-library"}]`)
-	env = append(env, "SUDO_UID=99999", "SUDO_USER=someone-else", "SUDO_USER=alice", "USER=mallory")
+	env = append(env, "SUDO_UID=99999", "SUDO_USER=alice", "SUDO_USER=someone-else", "USER=mallory")
 	asProcess := func(a *app) {
 		a.sourceRootCAs = pool
-		a.actingAs = nil
+		a.whoami = nil
 	}
 	if r := runCLIApp(t, nil, asProcess, env, "source", "fetch"); r.code != exitOK {
 		t.Fatalf("source fetch: exit code %d\nstderr: %s", r.code, r.stderr)
@@ -272,7 +301,7 @@ func TestAuditActsAsTheProcessUser(t *testing.T) {
 		t.Error("the actor's name came from $USER")
 	}
 	if a.SudoUser == nil || *a.SudoUser != "alice" {
-		t.Errorf("sudo user %v, want alice, sudo's last SUDO_USER", a.SudoUser)
+		t.Errorf("sudo user %v, want alice, the first SUDO_USER, as getenv reads it", a.SudoUser)
 	}
 }
 

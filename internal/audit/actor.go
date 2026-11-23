@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"fmt"
 	"os"
 	"os/user"
 	"runtime"
@@ -24,9 +25,11 @@ import (
 // SudoUser never replaces the user recorded, and root, or a service account
 // that people reach through sudo, can change the database anyway.
 //
-// It takes no context: neither the user database's lookup nor the host's
-// name can be interrupted, and both are local reads.
-func CommandLineActor(getenv func(string) string) Actor {
+// It fails only where it can't tell who runs the process at all, as on
+// Windows without the process's token: an action nobody can be named for
+// isn't taken. It takes no context: neither the user database's lookup nor
+// the host's name can be interrupted, and both are local reads.
+func CommandLineActor(getenv func(string) string) (Actor, error) {
 	return commandLineActor(thisProcess(), getenv)
 }
 
@@ -52,17 +55,19 @@ func thisProcess() process {
 	}
 }
 
-func commandLineActor(p process, getenv func(string) string) Actor {
+func commandLineActor(p process, getenv func(string) string) (Actor, error) {
 	a := Actor{Kind: OSUser}
 	if host, err := p.hostname(); err == nil {
 		a.Host = host
 	}
 	if p.goos == "windows" {
 		// os.Getuid is -1 on Windows.
-		if name, sid, err := p.windowsAccount(); err == nil {
-			a.Name, a.ID = name, sid
+		name, sid, err := p.windowsAccount()
+		if err != nil {
+			return Actor{}, fmt.Errorf("can't tell which account runs this process: read its token: %w", err)
 		}
-		return a
+		a.Name, a.ID = name, sid
+		return a, nil
 	}
 	a.ID = strconv.Itoa(p.uid)
 	if u, err := p.lookupID(a.ID); err == nil && u.Uid == a.ID {
@@ -74,5 +79,5 @@ func commandLineActor(p process, getenv func(string) string) Actor {
 			a.SudoUser = "uid " + sudoUID
 		}
 	}
-	return a
+	return a, nil
 }

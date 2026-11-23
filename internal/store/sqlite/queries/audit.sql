@@ -16,7 +16,7 @@ INSERT INTO audit_events (
 -- name: ListAuditEvents :many
 -- Lists the latest events that match, newest first, up to max of them, or
 -- all for -1. A null filter matches any event; actor matches an actor's
--- name or ID. actions is a JSON array of
+-- name or ID, or the user who ran sudo. actions is a JSON array of
 -- them: sqlc.slice would number its parameters after max's, binding max to
 -- an action.
 SELECT
@@ -31,6 +31,7 @@ WHERE
         sqlc.narg(actor) IS NULL
         OR actor = sqlc.narg(actor)
         OR actor_id = sqlc.narg(actor)
+        OR sudo_user = sqlc.narg(actor)
     )
     AND (sqlc.narg(source) IS NULL OR source = sqlc.narg(source))
     AND (

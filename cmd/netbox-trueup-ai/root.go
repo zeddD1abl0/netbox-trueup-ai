@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,9 +26,10 @@ type app struct {
 	// instead of the system's. Only tests set it.
 	sourceRootCAs *x509.CertPool
 
-	// actingAs is who the audit log records this process as acting:
-	// detected once (by), or set by tests.
-	actingAs *audit.By
+	// whoami, if set, says who the audit log records this process as
+	// acting, in place of the operating system user (by). Only tests set
+	// it.
+	whoami func() (audit.By, error)
 
 	// Set by loadConfig.
 	logger    *slog.Logger
@@ -37,21 +37,25 @@ type app struct {
 }
 
 // by returns who runs this command, for the audit log: the operating system
-// user, with the process's environment for sudo's variables.
-func (a *app) by() audit.By {
-	if a.actingAs == nil {
-		by := audit.CommandLineBy(func(name string) string {
-			// The last value wins, as for getenv.
-			for _, kv := range slices.Backward(a.environ) {
-				if v, ok := strings.CutPrefix(kv, name+"="); ok {
-					return v
-				}
-			}
-			return ""
-		})
-		a.actingAs = &by
+// user, with the process's environment for sudo's variables. It fails where
+// it can't tell, and a command that changes what is audited stops then.
+func (a *app) by() (audit.By, error) {
+	if a.whoami != nil {
+		return a.whoami()
 	}
-	return *a.actingAs
+	by, err := audit.CommandLineBy(func(name string) string {
+		// The first value wins, as Go's and C's getenv take it.
+		for _, kv := range a.environ {
+			if v, ok := strings.CutPrefix(kv, name+"="); ok {
+				return v
+			}
+		}
+		return ""
+	})
+	if err != nil {
+		return audit.By{}, fmt.Errorf("can't tell who runs this command, for the audit log: %w", err)
+	}
+	return by, nil
 }
 
 func newRootCommand(a *app) *cobra.Command {

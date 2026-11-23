@@ -23,7 +23,7 @@ INSERT INTO audit_events (
 -- name: ListAuditEvents :many
 -- Lists the latest events that match, newest first, up to max of them, or
 -- all for null. A null filter, or no actions, matches any event; actor
--- matches an actor's name or ID.
+-- matches an actor's name or ID, or the user who ran sudo.
 SELECT
     id, occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
     client_address, action, result, completes, error, source, object_type,
@@ -36,6 +36,7 @@ WHERE
         sqlc.narg(actor)::text IS NULL
         OR actor = sqlc.narg(actor)
         OR actor_id = sqlc.narg(actor)
+        OR sudo_user = sqlc.narg(actor)
     )
     AND (sqlc.narg(source)::text IS NULL OR source = sqlc.narg(source))
     AND (

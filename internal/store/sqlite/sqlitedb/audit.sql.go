@@ -117,6 +117,7 @@ WHERE
         ?3 IS NULL
         OR actor = ?3
         OR actor_id = ?3
+        OR sudo_user = ?3
     )
     AND (?4 IS NULL OR source = ?4)
     AND (
@@ -138,7 +139,7 @@ type ListAuditEventsParams struct {
 
 // Lists the latest events that match, newest first, up to max of them, or
 // all for -1. A null filter matches any event; actor matches an actor's
-// name or ID. actions is a JSON array of
+// name or ID, or the user who ran sudo. actions is a JSON array of
 // them: sqlc.slice would number its parameters after max's, binding max to
 // an action.
 func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error) {

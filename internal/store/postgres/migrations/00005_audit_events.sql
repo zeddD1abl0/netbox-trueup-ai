@@ -45,6 +45,7 @@ CREATE TABLE audit_events (
 CREATE INDEX audit_events_by_time ON audit_events (occurred_at);
 CREATE INDEX audit_events_by_actor ON audit_events (actor, id);
 CREATE INDEX audit_events_by_actor_id ON audit_events (actor_id, id);
+CREATE INDEX audit_events_by_sudo_user ON audit_events (sudo_user, id);
 CREATE INDEX audit_events_by_action ON audit_events (action, id);
 CREATE INDEX audit_events_by_source ON audit_events (source, id);
 CREATE INDEX audit_events_by_object ON audit_events (object_type, netbox_id, id);
