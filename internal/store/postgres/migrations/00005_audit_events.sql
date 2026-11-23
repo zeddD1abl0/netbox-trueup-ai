@@ -14,12 +14,14 @@ CREATE TABLE audit_events (
     -- When it was recorded.
     occurred_at timestamptz NOT NULL,
     -- Who acted: how they were identified, their name ('' where it isn't
-    -- known), their ID, the host, and the user who ran sudo, if any.
+    -- known), their ID, the host, and the user who ran sudo, if any, by
+    -- name ('' where sudo gives none) and ID.
     actor_kind text NOT NULL,
     actor text COLLATE "C" NOT NULL,
     actor_id text NOT NULL,
     host text NOT NULL,
     sudo_user text,
+    sudo_user_id text,
     -- How the action reached TrueUp, and from what address, if any.
     through text NOT NULL,
     client_address text,
@@ -46,6 +48,7 @@ CREATE INDEX audit_events_by_time ON audit_events (occurred_at);
 CREATE INDEX audit_events_by_actor ON audit_events (actor, id);
 CREATE INDEX audit_events_by_actor_id ON audit_events (actor_id, id);
 CREATE INDEX audit_events_by_sudo_user ON audit_events (sudo_user, id);
+CREATE INDEX audit_events_by_sudo_user_id ON audit_events (sudo_user_id, id);
 CREATE INDEX audit_events_by_action ON audit_events (action, id);
 CREATE INDEX audit_events_by_source ON audit_events (source, id);
 CREATE INDEX audit_events_by_object ON audit_events (object_type, netbox_id, id);

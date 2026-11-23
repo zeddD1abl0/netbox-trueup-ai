@@ -20,10 +20,10 @@ import (
 // identifier can be looked up.
 //
 // A command run through sudo, as another user than the one who ran sudo,
-// records sudo's SUDO_USER, or its SUDO_UID where that is all it gives, as
-// SudoUser. sudo sets them; the process's own user could set them too, but
-// SudoUser never replaces the user recorded, and root, or a service account
-// that people reach through sudo, can change the database anyway.
+// records sudo's SUDO_UID and SUDO_USER as SudoUserID and SudoUser. sudo
+// sets them; the process's own user could set them too, but they never
+// replace the user recorded, and root, or a service account that people
+// reach through sudo, can change the database anyway.
 //
 // It fails only where it can't tell who runs the process at all, as on
 // Windows without the process's token: an action nobody can be named for
@@ -74,10 +74,7 @@ func commandLineActor(p process, getenv func(string) string) (Actor, error) {
 		a.Name = u.Username
 	}
 	if sudoUID := getenv("SUDO_UID"); sudoUID != "" && sudoUID != a.ID {
-		a.SudoUser = getenv("SUDO_USER")
-		if a.SudoUser == "" {
-			a.SudoUser = "uid " + sudoUID
-		}
+		a.SudoUser, a.SudoUserID = getenv("SUDO_USER"), sudoUID
 	}
 	return a, nil
 }

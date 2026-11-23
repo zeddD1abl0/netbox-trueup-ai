@@ -48,8 +48,9 @@ func sourceState(ctx context.Context, q *postgresdb.Queries, name string) (*stor
 // fetch waits for this one rather than recording it as added too; if
 // another recorded it first, this one waits for that and reads it.
 func fetchedSourceState(ctx context.Context, q *postgresdb.Queries, f store.Fetch) (*store.SourceState, error) {
-	// Twice is enough: the second try finds the row the first didn't, unless
-	// a removal took it meanwhile, which a third would race again.
+	// The second try finds the row another transaction recorded first; a
+	// third covers a removal that took that row between the two. A record
+	// that keeps changing past that is reported, not chased.
 	for range 3 {
 		state, err := sourceState(ctx, q, f.Source.Name)
 		if err != nil || state != nil {
@@ -98,6 +99,7 @@ func insertEvents(ctx context.Context, q *postgresdb.Queries, events []audit.Eve
 			ActorID:       e.Actor.ID,
 			Host:          e.Actor.Host,
 			SudoUser:      nullText(e.Actor.SudoUser),
+			SudoUserID:    nullText(e.Actor.SudoUserID),
 			Through:       string(e.Through),
 			ClientAddress: nullText(e.ClientAddress),
 			Action:        string(e.Action),
@@ -172,7 +174,7 @@ func (s *Store) Events(ctx context.Context, f audit.Filter) (audit.Page, error) 
 		page.Events[i] = audit.Recorded{ID: r.ID, OccurredAt: at, Event: audit.Event{
 			By: audit.By{
 				Actor: audit.Actor{
-					Kind: audit.ActorKind(r.ActorKind), Name: r.Actor, ID: r.ActorID, Host: r.Host, SudoUser: r.SudoUser.String,
+					Kind: audit.ActorKind(r.ActorKind), Name: r.Actor, ID: r.ActorID, Host: r.Host, SudoUser: r.SudoUser.String, SudoUserID: r.SudoUserID.String,
 				},
 				Through:       audit.Through(r.Through),
 				ClientAddress: r.ClientAddress.String,

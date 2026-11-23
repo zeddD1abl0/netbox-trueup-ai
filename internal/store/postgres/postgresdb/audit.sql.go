@@ -49,12 +49,12 @@ func (q *Queries) GetStartedEvent(ctx context.Context, id int64) (GetStartedEven
 
 const insertAuditEvent = `-- name: InsertAuditEvent :exec
 INSERT INTO audit_events (
-    occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
-    client_address, action, result, completes, error, source, object_type,
-    object, netbox_url, netbox_branch, netbox_id, details
+    occurred_at, actor_kind, actor, actor_id, host, sudo_user, sudo_user_id,
+    through, client_address, action, result, completes, error, source,
+    object_type, object, netbox_url, netbox_branch, netbox_id, details
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19
+    $17, $18, $19, $20
 )
 `
 
@@ -65,6 +65,7 @@ type InsertAuditEventParams struct {
 	ActorID       string
 	Host          string
 	SudoUser      pgtype.Text
+	SudoUserID    pgtype.Text
 	Through       string
 	ClientAddress pgtype.Text
 	Action        string
@@ -88,6 +89,7 @@ func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventPara
 		arg.ActorID,
 		arg.Host,
 		arg.SudoUser,
+		arg.SudoUserID,
 		arg.Through,
 		arg.ClientAddress,
 		arg.Action,
@@ -139,9 +141,9 @@ func (q *Queries) InsertSourceIfAbsent(ctx context.Context, arg InsertSourceIfAb
 
 const listAuditEvents = `-- name: ListAuditEvents :many
 SELECT
-    id, occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
-    client_address, action, result, completes, error, source, object_type,
-    object, netbox_url, netbox_branch, netbox_id, details
+    id, occurred_at, actor_kind, actor, actor_id, host, sudo_user,
+    sudo_user_id, through, client_address, action, result, completes, error,
+    source, object_type, object, netbox_url, netbox_branch, netbox_id, details
 FROM audit_events
 WHERE
     ($1::timestamptz IS NULL OR occurred_at >= $1)
@@ -151,6 +153,7 @@ WHERE
         OR actor = $3
         OR actor_id = $3
         OR sudo_user = $3
+        OR sudo_user_id = $3
     )
     AND ($4::text IS NULL OR source = $4)
     AND (
@@ -172,7 +175,7 @@ type ListAuditEventsParams struct {
 
 // Lists the latest events that match, newest first, up to max of them, or
 // all for null. A null filter, or no actions, matches any event; actor
-// matches an actor's name or ID, or the user who ran sudo.
+// matches an actor's name or ID, or the name or ID of the user who ran sudo.
 func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error) {
 	rows, err := q.db.Query(ctx, listAuditEvents,
 		arg.Since,
@@ -197,6 +200,7 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 			&i.ActorID,
 			&i.Host,
 			&i.SudoUser,
+			&i.SudoUserID,
 			&i.Through,
 			&i.ClientAddress,
 			&i.Action,

@@ -37,9 +37,11 @@ type Actor struct {
 	// Host is the name of the host the actor acted on, or "" where it
 	// couldn't be read.
 	Host string
-	// SudoUser is, for a command run through sudo, the user who ran sudo,
-	// as sudo's environment reports it, or "" otherwise.
-	SudoUser string
+	// SudoUser and SudoUserID are, for a command run through sudo, the user
+	// who ran sudo, as sudo's environment reports them: a name, or "" where
+	// sudo gives none, and a user ID. Both are "" otherwise.
+	SudoUser   string
+	SudoUserID string
 }
 
 // Through says how an action reached TrueUp. Its values are part of the
@@ -150,9 +152,9 @@ type Filter struct {
 	// Since and Until bound when the events were recorded: at Since or
 	// later, and before Until. A zero time bounds nothing.
 	Since, Until time.Time
-	// Actor is an actor's name or ID, or the name of the user who ran sudo
-	// to act as it; Actions the actions; and Source a source's name. Each
-	// is matched exactly; empty matches any.
+	// Actor is an actor's name or ID, or the name or ID of the user who ran
+	// sudo to act as it; Actions the actions; and Source a source's name.
+	// Each is matched exactly; empty matches any.
 	Actor   string
 	Actions []Action
 	Source  string

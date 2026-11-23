@@ -142,7 +142,7 @@ func TestAuditText(t *testing.T) {
 		t.Fatal(err)
 	}
 	odd := testBy
-	odd.Actor.Name, odd.Actor.Host, odd.Actor.SudoUser = "root", "host\x1b[31m", "jordan"
+	odd.Actor.Name, odd.Actor.Host, odd.Actor.SudoUser, odd.Actor.SudoUserID = "root", "host\x1b[31m", "jordan", "1000"
 	odd.Actor.ID = "0"
 	events := []audit.Event{
 		{
@@ -183,14 +183,14 @@ func TestAuditText(t *testing.T) {
     version: abc
 
 #2  TIME  netbox.write  started
-    by root (uid 0), through sudo from jordan, on "host\x1b[31m", at the command line
+    by root (uid 0), through sudo from jordan (uid 1000), on "host\x1b[31m", at the command line
     about dcim.devicetype Dell / R640
 
 #3  TIME  source.removed  succeeded
     by uid 1234, at the command line
 
 #4  TIME  netbox.write  failed, completing #2
-    by root (uid 0), through sudo from jordan, on "host\x1b[31m", at the command line
+    by root (uid 0), through sudo from jordan (uid 1000), on "host\x1b[31m", at the command line
     about dcim.devicetype Dell / R640, NetBox https://netbox.example.com/ branch a1b2c3d4 ID 7
     error: "refused\u202e"
     before: {"u_height":1}
@@ -303,6 +303,9 @@ func TestAuditActsAsTheProcessUser(t *testing.T) {
 	if a.SudoUser == nil || *a.SudoUser != "alice" {
 		t.Errorf("sudo user %v, want alice, the first SUDO_USER, as getenv reads it", a.SudoUser)
 	}
+	if a.SudoUserID == nil || *a.SudoUserID != "99999" {
+		t.Errorf("sudo user ID %v, want 99999", a.SudoUserID)
+	}
 }
 
 // FuzzAuditText checks that audit's text never passes a character that
@@ -317,7 +320,7 @@ func FuzzAuditText(f *testing.F) {
 			return
 		}
 		e := audit.Recorded{ID: 1, OccurredAt: time.Unix(0, 0).UTC(), Event: audit.Event{
-			By:     audit.By{Actor: audit.Actor{Kind: audit.OSUser, Name: host, ID: host, Host: host, SudoUser: host}, Through: audit.CommandLine, ClientAddress: host},
+			By:     audit.By{Actor: audit.Actor{Kind: audit.OSUser, Name: host, ID: host, Host: host, SudoUser: host, SudoUserID: host}, Through: audit.CommandLine, ClientAddress: host},
 			Action: audit.SourceAdded, Result: audit.Failed, Error: errText, Source: host,
 			ObjectType: objectType, Object: object, NetBoxURL: host, NetBoxBranch: host, NetBoxID: 3, Details: details,
 		}}
@@ -346,4 +349,21 @@ func FuzzAuditText(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestDetailLines(t *testing.T) {
+	t.Parallel()
+	got, err := detailLines(json.RawMessage(`{"before":null,"after":"v1","n":1,"o":{"a":[1,2]},"s":"a\u202eb","":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"before: null", "after: v1", "n: 1", `o: {"a":[1,2]}`, `s: "a\u202eb"`, ": "}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("detailLines (-want +got):\n%s", diff)
+	}
+	for _, bad := range []string{`[1]`, `"x"`, `{"a":`, `{1:2}`} {
+		if _, err := detailLines(json.RawMessage(bad)); err == nil {
+			t.Errorf("detailLines(%s) succeeded", bad)
+		}
+	}
 }

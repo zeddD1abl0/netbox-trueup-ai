@@ -107,7 +107,7 @@ Exit codes:
 		},
 	}
 	addOutputFlag(cmd, &out)
-	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does")
+	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does, audited as it is")
 	cmd.Flags().StringVar(&search, "search", "", "list only the definitions whose manufacturer, model or part number holds this text, ignoring case")
 	return cmd
 }

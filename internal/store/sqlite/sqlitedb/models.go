@@ -16,6 +16,7 @@ type AuditEvent struct {
 	ActorID       string
 	Host          string
 	SudoUser      sql.NullString
+	SudoUserID    sql.NullString
 	Through       string
 	ClientAddress sql.NullString
 	Action        string

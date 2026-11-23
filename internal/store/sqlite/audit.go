@@ -62,6 +62,7 @@ func insertEvents(ctx context.Context, q *sqlitedb.Queries, events []audit.Event
 			ActorID:       e.Actor.ID,
 			Host:          e.Actor.Host,
 			SudoUser:      nullString(e.Actor.SudoUser),
+			SudoUserID:    nullString(e.Actor.SudoUserID),
 			Through:       string(e.Through),
 			ClientAddress: nullString(e.ClientAddress),
 			Action:        string(e.Action),
@@ -146,7 +147,7 @@ func (s *Store) Events(ctx context.Context, f audit.Filter) (audit.Page, error) 
 		page.Events[i] = audit.Recorded{ID: r.ID, OccurredAt: at, Event: audit.Event{
 			By: audit.By{
 				Actor: audit.Actor{
-					Kind: audit.ActorKind(r.ActorKind), Name: r.Actor, ID: r.ActorID, Host: r.Host, SudoUser: r.SudoUser.String,
+					Kind: audit.ActorKind(r.ActorKind), Name: r.Actor, ID: r.ActorID, Host: r.Host, SudoUser: r.SudoUser.String, SudoUserID: r.SudoUserID.String,
 				},
 				Through:       audit.Through(r.Through),
 				ClientAddress: r.ClientAddress.String,

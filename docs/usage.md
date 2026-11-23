@@ -210,7 +210,7 @@ Each run records the comparison of each definition it compared with NetBox, alon
 
 ## See who changed what
 
-Every action that changes what TrueUp manages, what NetBox holds, or what sources TrueUp reads is recorded in an audit log in the database, never changed or deleted ([ADR 0034](adr/0034-audit-what-changes-what-trueup-manages.md)). So far that is what `source fetch` changes: a source added, its kind, URL or ref changed, a new version fetched, and a source no longer configured removed. Fetching a version TrueUp holds, loading, listing and comparing change nothing that is audited. Importing, planning and applying will be recorded as they arrive.
+Every action that changes what TrueUp manages, what NetBox holds, or what sources TrueUp reads is recorded in an audit log in the database, never changed or deleted ([ADR 0034](adr/0034-audit-what-changes-what-trueup-manages.md)). So far that is what fetching changes, with `source fetch`, or with `list` or `compare` and `--fetch`: a source added, its kind, URL or ref changed, a new version fetched, and a source no longer configured removed. Fetching a version TrueUp holds, loading, listing and comparing change nothing that is audited. A command that can't tell who runs it fetches nothing. Importing, planning and applying will be recorded as they arrive.
 
 ```sh
 netbox-trueup-ai audit
@@ -227,7 +227,7 @@ lists the latest 100 events, oldest first, each with who acted, when, and what c
     ref: master
 ```
 
-At the command line, who acted is the operating system user running the command, found by its user ID, never from `$USER`; a user ID the system's user database lacks, as in some containers or for users from a directory such as LDAP, is shown alone. A command run through sudo records the user who ran sudo too. Narrow the list with `--since` and `--until`, each an RFC 3339 time or a duration back from now (`90m`, `24h`, `7d`), `--actor NAME`, which matches a user ID too, and the user who ran sudo, `--action ACTION`, repeatable, and `--source NAME`; `--limit N` lists more or fewer of the latest, and `--limit 0` all of them. `--output json` prints `{"events": [...], "more": ...}`, each event with its `actor` as an object, and `more` true when `--limit` left older ones out.
+At the command line, who acted is the operating system user running the command, found by its user ID, never from `$USER`; a user ID the system's user database lacks, as in some containers or for users from a directory such as LDAP, is shown alone. A command run through sudo records the user who ran sudo too, by name and user ID. Narrow the list with `--since` and `--until`, each an RFC 3339 time or a duration back from now (`90m`, `24h`, `7d`), `--actor NAME`, which matches a user ID too, and the name or ID of the user who ran sudo, `--action ACTION`, repeatable, and `--source NAME`; `--limit N` lists more or fewer of the latest, and `--limit 0` all of them. `--output json` prints `{"events": [...], "more": ...}`, each event with its `actor` as an object, and `more` true when `--limit` left older ones out.
 
 ## Reading the JSON
 

@@ -16,6 +16,7 @@ type AuditEvent struct {
 	ActorID       string
 	Host          string
 	SudoUser      pgtype.Text
+	SudoUserID    pgtype.Text
 	Through       string
 	ClientAddress pgtype.Text
 	Action        string

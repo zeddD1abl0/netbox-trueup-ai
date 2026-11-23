@@ -306,6 +306,9 @@ func (s *Store) RemoveSources(ctx context.Context, by audit.By, keep []string) (
 			if err != nil {
 				return fmt.Errorf("source %s: %w", name, err)
 			}
+			if before == nil {
+				return fmt.Errorf("source %s: its record went while it was listed", name)
+			}
 			event, err := store.RemovedEvent(by, name, *before)
 			if err != nil {
 				return fmt.Errorf("source %s: %w", name, err)

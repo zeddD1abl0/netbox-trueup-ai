@@ -12,22 +12,22 @@ ON CONFLICT (name) DO NOTHING;
 
 -- name: InsertAuditEvent :exec
 INSERT INTO audit_events (
-    occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
-    client_address, action, result, completes, error, source, object_type,
-    object, netbox_url, netbox_branch, netbox_id, details
+    occurred_at, actor_kind, actor, actor_id, host, sudo_user, sudo_user_id,
+    through, client_address, action, result, completes, error, source,
+    object_type, object, netbox_url, netbox_branch, netbox_id, details
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19
+    $17, $18, $19, $20
 );
 
 -- name: ListAuditEvents :many
 -- Lists the latest events that match, newest first, up to max of them, or
 -- all for null. A null filter, or no actions, matches any event; actor
--- matches an actor's name or ID, or the user who ran sudo.
+-- matches an actor's name or ID, or the name or ID of the user who ran sudo.
 SELECT
-    id, occurred_at, actor_kind, actor, actor_id, host, sudo_user, through,
-    client_address, action, result, completes, error, source, object_type,
-    object, netbox_url, netbox_branch, netbox_id, details
+    id, occurred_at, actor_kind, actor, actor_id, host, sudo_user,
+    sudo_user_id, through, client_address, action, result, completes, error,
+    source, object_type, object, netbox_url, netbox_branch, netbox_id, details
 FROM audit_events
 WHERE
     (sqlc.narg(since)::timestamptz IS NULL OR occurred_at >= sqlc.narg(since))
@@ -37,6 +37,7 @@ WHERE
         OR actor = sqlc.narg(actor)
         OR actor_id = sqlc.narg(actor)
         OR sudo_user = sqlc.narg(actor)
+        OR sudo_user_id = sqlc.narg(actor)
     )
     AND (sqlc.narg(source)::text IS NULL OR source = sqlc.narg(source))
     AND (

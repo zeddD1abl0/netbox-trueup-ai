@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,15 +46,17 @@ Actions recorded so far:
   source.new_version   a source whose fetch found another version
   source.removed       a source no longer configured, whose records went
 
-Fetches that find the version TrueUp holds, loads, comparisons and lists
-change nothing that is audited. Events are never changed or deleted.
+These are recorded by source fetch, and by list and compare with --fetch,
+which fetch the same way. Fetches that find the version TrueUp holds, loads,
+comparisons and lists change nothing that is audited. A command that can't
+tell who runs it fetches nothing. Events are never changed or deleted.
 
 The latest events that match are listed, oldest first: by default the latest
 100, or as many as --limit says, or all with --limit 0. --since and --until
 take an RFC 3339 time, such as 2026-11-23T09:30:00Z, or a duration back from
 now, such as 90m, 24h or 7d: events recorded at --since or later, and before
---until. --actor matches a user's name, or a user ID, such as 1000, or the
-user who ran sudo, exactly, case included: a user whose name the system's
+--until. --actor matches a user's name or user ID, such as 1000, or those of
+the user who ran sudo, exactly, case included: a user whose name the system's
 user database lacks, as in some containers, is recorded by ID alone.
 
 The database is created and migrated first if needed. Reading the log isn't
@@ -195,11 +198,12 @@ type eventJSON struct {
 }
 
 type actorJSON struct {
-	Kind     string  `json:"kind"`
-	Name     *string `json:"name"`
-	ID       *string `json:"id"`
-	Host     *string `json:"host"`
-	SudoUser *string `json:"sudo_user"`
+	Kind       string  `json:"kind"`
+	Name       *string `json:"name"`
+	ID         *string `json:"id"`
+	Host       *string `json:"host"`
+	SudoUser   *string `json:"sudo_user"`
+	SudoUserID *string `json:"sudo_user_id"`
 }
 
 func auditResult(page audit.Page) auditJSON {
@@ -222,7 +226,7 @@ func auditResult(page audit.Page) auditJSON {
 			OccurredAt: e.OccurredAt,
 			Actor: actorJSON{
 				Kind: string(e.Actor.Kind), Name: text(e.Actor.Name), ID: text(e.Actor.ID),
-				Host: text(e.Actor.Host), SudoUser: text(e.Actor.SudoUser),
+				Host: text(e.Actor.Host), SudoUser: text(e.Actor.SudoUser), SudoUserID: text(e.Actor.SudoUserID),
 			},
 			Through:       string(e.Through),
 			ClientAddress: text(e.ClientAddress),
@@ -288,16 +292,9 @@ func writeAuditText(w io.Writer, page audit.Page, limit int) error {
 // describeBy says who acted, and how the action reached TrueUp.
 func describeBy(by audit.By) string {
 	var b strings.Builder
-	switch {
-	case by.Actor.Name != "" && by.Actor.ID != "":
-		fmt.Fprintf(&b, "%s (%s)", cell(by.Actor.Name), describeID(by.Actor.ID))
-	case by.Actor.Name != "":
-		b.WriteString(cell(by.Actor.Name))
-	default:
-		b.WriteString(describeID(by.Actor.ID))
-	}
-	if by.Actor.SudoUser != "" {
-		fmt.Fprintf(&b, ", through sudo from %s", cell(by.Actor.SudoUser))
+	b.WriteString(describeUser(by.Actor.Name, by.Actor.ID))
+	if by.Actor.SudoUser != "" || by.Actor.SudoUserID != "" {
+		fmt.Fprintf(&b, ", through sudo from %s", describeUser(by.Actor.SudoUser, by.Actor.SudoUserID))
 	}
 	if by.Actor.Host != "" {
 		fmt.Fprintf(&b, ", on %s", cell(by.Actor.Host))
@@ -312,6 +309,19 @@ func describeBy(by audit.By) string {
 		fmt.Fprintf(&b, " from %s", cell(by.ClientAddress))
 	}
 	return b.String()
+}
+
+// describeUser writes a user's name with its ID, or either alone where the
+// other isn't known.
+func describeUser(name, id string) string {
+	switch {
+	case name != "" && id != "":
+		return fmt.Sprintf("%s (%s)", cell(name), describeID(id))
+	case name != "":
+		return cell(name)
+	default:
+		return describeID(id)
+	}
 }
 
 // describeID writes a Unix user ID as one, and any other ID, such as a
@@ -372,7 +382,8 @@ func detailLines(details json.RawMessage) ([]string, error) {
 			return nil, fmt.Errorf("its details: %w", err)
 		}
 		var s string
-		if err := json.Unmarshal(value, &s); err == nil {
+		// null unmarshals into a string as "", which it isn't.
+		if err := json.Unmarshal(value, &s); err == nil && !bytes.Equal(value, []byte("null")) {
 			lines = append(lines, cell(key)+": "+cell(s))
 			continue
 		}

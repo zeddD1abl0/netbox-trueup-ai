@@ -28,8 +28,9 @@ func listEvents(t *testing.T, s store.Store, f audit.Filter) audit.Page {
 	return page
 }
 
-// checkEvents checks that got holds the events want, in order, recorded in
-// order between from and to, with IDs that rise.
+// checkEvents checks that got holds the events want, in order, recorded
+// between from and to, with IDs that rise. Times don't order events, so
+// they aren't checked against each other.
 func checkEvents(t *testing.T, got []audit.Recorded, from, to time.Time, want ...audit.Event) {
 	t.Helper()
 	events := make([]audit.Event, len(got))
@@ -37,9 +38,6 @@ func checkEvents(t *testing.T, got []audit.Recorded, from, to time.Time, want ..
 		events[i] = r.Event
 		if i > 0 && r.ID <= got[i-1].ID {
 			t.Errorf("event %d has ID %d, after %d", i, r.ID, got[i-1].ID)
-		}
-		if i > 0 && r.OccurredAt.Before(got[i-1].OccurredAt) {
-			t.Errorf("event %d occurred at %v, before the event before it, at %v", i, r.OccurredAt, got[i-1].OccurredAt)
 		}
 		if r.OccurredAt.Location() != time.UTC {
 			t.Errorf("event %d occurred at %v, not in UTC", i, r.OccurredAt)
@@ -141,7 +139,7 @@ func testRemoveEvents(t *testing.T, s store.Store) {
 func fullEvent() audit.Event {
 	return audit.Event{
 		By: audit.By{
-			Actor:         audit.Actor{Kind: audit.OSUser, Name: "root", ID: "0", Host: "host.example.com", SudoUser: "jordan"},
+			Actor:         audit.Actor{Kind: audit.OSUser, Name: "root", ID: "0", Host: "host.example.com", SudoUser: "jordan", SudoUserID: "1000"},
 			Through:       audit.CommandLine,
 			ClientAddress: "192.0.2.10",
 		},
@@ -280,7 +278,7 @@ func testEventFilters(t *testing.T, s store.Store) {
 		event("Ann", audit.SourceNewVersion, "a"),
 	}
 	sudo := event("svc", audit.SourceNewVersion, "")
-	sudo.Actor.SudoUser = "bob"
+	sudo.Actor.SudoUser, sudo.Actor.SudoUserID = "bob", "398"
 	second := []audit.Event{
 		event("ann", audit.SourceRemoved, "b"),
 		sudo,
@@ -321,8 +319,8 @@ func testEventFilters(t *testing.T, s store.Store) {
 		{"everything", audit.Filter{}, "01234"},
 		{"an actor, exactly", audit.Filter{Actor: "ann"}, "03"},
 		{"an actor no event has", audit.Filter{Actor: "carol"}, ""},
-		{"an actor by ID", audit.Filter{Actor: "398"}, "1"},
 		{"an actor, through sudo too", audit.Filter{Actor: "bob"}, "14"},
+		{"an actor by ID, through sudo too", audit.Filter{Actor: "398"}, "14"},
 		{"the account sudo ran as", audit.Filter{Actor: "svc"}, "4"},
 		{"an action", audit.Filter{Actions: []audit.Action{audit.SourceNewVersion}}, "24"},
 		{"actions", audit.Filter{Actions: []audit.Action{audit.SourceAdded, audit.SourceRemoved}}, "013"},

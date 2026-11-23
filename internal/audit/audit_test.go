@@ -71,17 +71,17 @@ func TestCommandLineActor(t *testing.T) {
 		{
 			"root through sudo",
 			fakeProcess(0, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "jordan"),
-			Actor{Kind: OSUser, Name: "root", ID: "0", Host: "build", SudoUser: "jordan"},
+			Actor{Kind: OSUser, Name: "root", ID: "0", Host: "build", SudoUser: "jordan", SudoUserID: "1000"},
 		},
 		{
 			"a service account through sudo",
 			fakeProcess(990, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "jordan"),
-			Actor{Kind: OSUser, Name: "trueup", ID: "990", Host: "build", SudoUser: "jordan"},
+			Actor{Kind: OSUser, Name: "trueup", ID: "990", Host: "build", SudoUser: "jordan", SudoUserID: "1000"},
 		},
 		{
 			"sudo's user ID without a name",
 			fakeProcess(0, users, "build"), env("SUDO_UID", "1000"),
-			Actor{Kind: OSUser, Name: "root", ID: "0", Host: "build", SudoUser: "uid 1000"},
+			Actor{Kind: OSUser, Name: "root", ID: "0", Host: "build", SudoUserID: "1000"},
 		},
 		{
 			// sudo to oneself, or SUDO_ variables left in the environment

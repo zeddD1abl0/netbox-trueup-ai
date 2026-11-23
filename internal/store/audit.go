@@ -188,7 +188,7 @@ func PrepareBy(by audit.By) (audit.By, error) {
 	case !by.Through.Known():
 		return audit.By{}, fmt.Errorf("an audit event came through no known channel, %q", by.Through)
 	}
-	for _, s := range []*string{&by.Actor.Name, &by.Actor.ID, &by.Actor.Host, &by.Actor.SudoUser, &by.ClientAddress} {
+	for _, s := range []*string{&by.Actor.Name, &by.Actor.ID, &by.Actor.Host, &by.Actor.SudoUser, &by.Actor.SudoUserID, &by.ClientAddress} {
 		*s = cleanText(*s)
 	}
 	return by, nil
