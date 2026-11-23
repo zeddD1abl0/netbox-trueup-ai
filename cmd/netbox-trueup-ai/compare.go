@@ -64,10 +64,21 @@ type's manufacturer and model, and manufacturer and slug. Its outcome is:
              a device type whose model matches one device type and whose
              slug another, so NetBox couldn't hold both. A person decides.
 
+Definitions of one object, from any of the sources compared, are compared
+as that object, side by side with NetBox's: two device types with the same
+manufacturer and model, as NetBox would store them, are one object. Each
+definition keeps its own outcome; the object's is a conflict if one of its
+definitions is, if a source defines it twice, or if it clashes with another
+object, which two objects do when importing both would give NetBox two
+objects with the same name or slug that NetBox hasn't got yet; and otherwise
+its definitions' outcome. It is in step when NetBox and every definition
+agree.
+
 What is compared:
 
-  By default, what NetBox has: the candidates and conflicts. The
-  definitions NetBox hasn't got are only counted.
+  By default, what NetBox has: the objects some of whose definitions are
+  candidates or conflicts, with all of their definitions. The definitions
+  of objects NetBox hasn't got are only counted.
   --manufacturer and --model compare what they name, absent included: a
   manufacturer and its device types, and the device types with a model,
   with their manufacturers. Together, a manufacturer's device types with
@@ -88,8 +99,9 @@ the device type, exactly, and compared field by field in the same way. A
 template the definition has and NetBox hasn't is one difference. A template
 only NetBox has is listed, but isn't a difference: TrueUp never removes one.
 
-The comparison of each definition compared is recorded in TrueUp's database,
-as the latest, against the version of the source compared. By default, and
+The comparison of each definition compared with NetBox, alone, is recorded
+in TrueUp's database, as the latest, against the version of the source
+compared. By default, and
 with --all, the source's other comparisons are removed; with --manufacturer
 or --model, they are kept. NetBox is only read. The token sees what its
 permissions let it see: where they have constraints, the objects they hide
@@ -118,9 +130,9 @@ Exit codes:
      loaded again while it was compared, or some files are invalid, or no
      source read defines a manufacturer --manufacturer names, or a model
      --model names. The rest is compared, and the result printed as usual.
-  5  Only with --exit-code: everything was read, and some definitions
-     compared aren't in step with NetBox: they are absent, in conflict, or
-     differ.`,
+  5  Only with --exit-code: everything was read, and some objects compared
+     aren't in step with NetBox: they are absent, in conflict, or differ,
+     from NetBox or between sources.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if sel.all && (len(sel.manufacturers) > 0 || len(sel.models) > 0) {
 				return usageError{errors.New("--all compares every definition, so it can't be given with --manufacturer or --model")}
@@ -154,15 +166,15 @@ Exit codes:
 			if !result.OK {
 				return outcomeError{code: exitCompareProblems, err: errors.New(result.summary())}
 			}
-			if compared, inStep := result.counts(); signal && compared > inStep {
-				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d definitions compared aren't in step with NetBox", compared-inStep, compared)}
+			if c := result.Counts; signal && c.Compared > c.InStep {
+				return outcomeError{code: exitNotInStep, err: fmt.Errorf("%d of the %d objects compared aren't in step with NetBox", c.Compared-c.InStep, c.Compared)}
 			}
 			return nil
 		},
 	}
 	addOutputFlag(cmd, &out)
 	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does")
-	cmd.Flags().BoolVar(&signal, "exit-code", false, "exit with 5 when some definitions compared aren't in step with NetBox")
+	cmd.Flags().BoolVar(&signal, "exit-code", false, "exit with 5 when some objects compared aren't in step with NetBox")
 	cmd.Flags().StringArrayVar(&sel.manufacturers, "manufacturer", nil,
 		"compare only this manufacturer, by its name as NetBox would store it, and its device types; repeat it for more")
 	cmd.Flags().StringArrayVar(&sel.models, "model", nil,
@@ -238,28 +250,62 @@ type compareJSON struct {
 	NetBox     compareNetBoxJSON   `json:"netbox"`
 	ComparedAt time.Time           `json:"compared_at"`
 	Sources    []compareSourceJSON `json:"sources"`
-	// Objects are the comparisons of the definitions, source by source, in
-	// the order each source's format gives them, as JSON, which the
-	// database records too.
-	Objects  []json.RawMessage `json:"objects"`
-	Warnings []warningJSON     `json:"warnings"`
+	// Counts counts the objects compared by their outcome.
+	Counts compareCountsJSON `json:"counts"`
+	// Objects are the objects compared, each with every definition of it
+	// compared, in the order of their first definitions: sources in the
+	// configuration's order, each in its format's.
+	Objects  []objectOut   `json:"objects"`
+	Warnings []warningJSON `json:"warnings"`
 
-	// results are the Objects, kept for text output only, with only the
+	// objects are the Objects, kept for text output only, with only the
 	// rows that differ, since they take more memory than their JSON;
 	// Objects are kept for JSON output only. unknown says which names given
 	// to --manufacturer and --model no source read defines.
-	results []compare.Result
+	objects []compare.Object
 	unknown []string
 }
 
-// counts returns how many definitions were compared, and how many of them
-// are in step with NetBox, from the sources' counts.
-func (r compareJSON) counts() (compared, inStep int) {
-	for _, s := range r.Sources {
-		compared += s.InStep + s.Differing + s.Absent + s.Conflicts
-		inStep += s.InStep
+// compareCountsJSON counts objects, or a source's definitions, by outcome.
+type compareCountsJSON struct {
+	Compared  int `json:"compared"`
+	InStep    int `json:"in_step"`
+	Differing int `json:"differing"`
+	Absent    int `json:"absent"`
+	Conflicts int `json:"conflicts"`
+}
+
+// add counts one more object or definition.
+func (c *compareCountsJSON) add(outcome compare.Outcome, inStep bool) {
+	c.Compared++
+	switch {
+	case inStep:
+		c.InStep++
+	case outcome == compare.Candidate:
+		c.Differing++
+	case outcome == compare.Absent:
+		c.Absent++
+	case outcome == compare.Conflict:
+		c.Conflicts++
 	}
-	return compared, inStep
+}
+
+// objectOut is an object's JSON, as `compare --output json` gives it: head,
+// every field but its rows, ending with "rows":, then rows, the rows' JSON,
+// and a closing brace. An object of one definition takes its rows' JSON
+// from the comparison the database records, so that the rows, most of what
+// either holds, are written once.
+type objectOut struct {
+	head, rows json.RawMessage
+}
+
+var _ json.Marshaler = objectOut{}
+
+// MarshalJSON writes the object whole.
+func (o objectOut) MarshalJSON() ([]byte, error) {
+	out := make([]byte, 0, len(o.head)+len(o.rows)+1)
+	out = append(append(append(out, o.head...), o.rows...), '}')
+	return out, nil
 }
 
 type compareNetBoxJSON struct {
@@ -326,9 +372,13 @@ type sourceCompared struct {
 	rows   []store.Definition
 	unique []compare.Definition
 	// chosen are the definitions compared, by their index in rows, and
-	// whole each of them, read whole.
-	chosen []int
-	whole  []compare.Definition
+	// whole each of them, read whole. By default, matched says whether
+	// each of them, cut down to its unique values, matches or collides with
+	// a NetBox object: those that don't are compared as other definitions of
+	// an object that does.
+	chosen  []int
+	matched []bool
+	whole   []compare.Definition
 }
 
 // runCompare opens the database, connects to NetBox, fetches the sources if
@@ -368,18 +418,19 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 }
 
 // compareSources reads each source's last fetched version, chooses the
-// definitions to compare, compares them with NetBox, and records the
-// comparisons. It reads each definition cut down to its unique values
-// first, and whole only once it is chosen: by default, once its unique
-// values match a NetBox object, or collide with one. A source that can't
-// be read, or whose comparisons can't be recorded, is reported in the
-// result; NetBox and the database failing are errors.
+// definitions to compare, compares them with NetBox, groups them into the
+// objects they define, and records the comparisons. It reads each
+// definition cut down to its unique values first, and whole only once it is
+// chosen: by default, once its unique values, or those of another
+// definition of its object, match a NetBox object, or collide with one. A
+// source that can't be read, or whose comparisons can't be recorded, is
+// reported in the result; NetBox and the database failing are errors.
 func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.Store, c *netbox.Client, sources []config.Source,
 	fetchErrors map[string]string, sel compareSelection, forText bool,
 ) (compareJSON, error) {
 	specs := dcim.Specs()
 	scope := sel.scope()
-	result := compareJSON{OK: true, Scope: scope, Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}}
+	result := compareJSON{OK: true, Scope: scope, Sources: []compareSourceJSON{}, Objects: []objectOut{}, Warnings: []warningJSON{}}
 	var compared []sourceCompared
 	for _, s := range sources {
 		row := &compareSourceJSON{Name: s.Name, Format: s.Format, Problems: []problemJSON{}}
@@ -438,6 +489,19 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		result.Warnings = append(result.Warnings, warningJSON{Message: msg})
 		result.OK = false
 	}
+	// The objects the definitions define, across the sources read: each is
+	// compared with all of its definitions, or not at all
+	// (docs/adr/0032-compare-definitions-across-sources-as-objects.md).
+	// --all and the default scope have chosen every definition.
+	var groups [][]definitionAt
+	if scope != scopeAll {
+		if groups, err = groupDefinitions(specs, compared); err != nil {
+			return compareJSON{}, err
+		}
+	}
+	if scope == scopeSelection {
+		chooseWhole(compared, groups)
+	}
 
 	// NetBox's objects that stand on their own, which the definitions
 	// chosen could match or collide with, read for their unique values.
@@ -454,34 +518,12 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			return compareJSON{}, err
 		}
 	}
-	// By default, only what NetBox has is compared: what the definitions'
-	// unique values match or collide with, which the whole definitions do
-	// too (compare.UniqueValues).
+	// By default, only what NetBox has is compared: the objects any of
+	// whose definitions' unique values match or collide with a NetBox
+	// object, which their whole definitions do too (compare.UniqueValues).
 	if scope == scopeNetBox && len(first) > 0 {
-		outcomes, err := compare.Compare(specs, first, observed)
-		if err != nil {
-			return compareJSON{}, fmt.Errorf("compare with NetBox: %w", err)
-		}
-		// Used by position below, so checked as checkResults checks the
-		// whole definitions' results.
-		if len(outcomes) != len(first) {
-			return compareJSON{}, fmt.Errorf("compare with NetBox: %d results for the %d definitions matched", len(outcomes), len(first))
-		}
-		for i, r := range outcomes {
-			if !resultOf(r, first[i]) {
-				return compareJSON{}, fmt.Errorf("compare with NetBox: result %d of those matched is of another definition", i)
-			}
-		}
-		for j := range compared {
-			sc := &compared[j]
-			kept := sc.chosen[:0]
-			for _, i := range sc.chosen {
-				if outcomes[0].Outcome != compare.Absent {
-					kept = append(kept, i)
-				}
-				outcomes = outcomes[1:]
-			}
-			sc.chosen = kept
+		if err := chooseWhatNetBoxHas(specs, compared, groups, first, observed); err != nil {
+			return compareJSON{}, err
 		}
 	}
 	// The unique values have chosen what to read whole: let them go first.
@@ -490,6 +532,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	}
 
 	// The whole of each definition compared, which --all read already.
+	readFailed := false
 	for j := range compared {
 		sc := &compared[j]
 		if sc.row.Version == nil || scope == scopeAll {
@@ -505,8 +548,14 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			// As a source that couldn't be read at all shows.
 			*sc.row = compareSourceJSON{Name: sc.row.Name, Format: sc.row.Format, Problems: []problemJSON{}}
 			a.failSource(sc.row, err.Error())
-			sc.chosen, sc.whole = nil, nil
+			sc.chosen, sc.matched, sc.whole = nil, nil, nil
+			readFailed = true
 		}
+	}
+	// A source that couldn't be read whole leaves its definitions out: by
+	// default, an object compared for one of them alone isn't compared.
+	if scope == scopeNetBox && readFailed {
+		dropUnmatched(compared, groups)
 	}
 	var defs []compare.Definition
 	for _, sc := range compared {
@@ -537,7 +586,46 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 	if err := checkResults(compared, results, scope); err != nil {
 		return compareJSON{}, err
 	}
-	for _, sc := range compared {
+	// Every result comes from one reading of NetBox, so Objects failing is
+	// TrueUp's own failure.
+	objects, err := compare.Objects(specs, results)
+	if err != nil {
+		return compareJSON{}, fmt.Errorf("compare with NetBox: %w; please report it", err)
+	}
+
+	// Each definition's comparison, and each object, is written as JSON,
+	// an object at a time, and then let go, since a result takes more memory
+	// than its JSON: kept are what the counts and the database need, and
+	// for text output the rows of each object that differ.
+	recorded := make([]recordedComparison, len(results))
+	for k := range objects {
+		o := &objects[k]
+		result.Counts.add(o.Outcome, o.InStep())
+		for _, i := range o.Results {
+			rec, err := writeComparison(results[i])
+			if err != nil {
+				return compareJSON{}, err
+			}
+			recorded[i] = rec
+		}
+		if forText {
+			o.Rows = differing(o.Rows)
+		} else {
+			out, err := writeObject(*o, recorded)
+			if err != nil {
+				return compareJSON{}, err
+			}
+			result.Objects = append(result.Objects, out)
+		}
+		for _, i := range o.Results {
+			results[i] = compare.Result{}
+		}
+		if !forText {
+			*o = compare.Object{}
+		}
+	}
+	for j := range compared {
+		sc := &compared[j]
 		if sc.row.Version == nil {
 			result.OK = false
 			result.Sources = append(result.Sources, *sc.row)
@@ -551,28 +639,9 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			result.Sources = append(result.Sources, *sc.row)
 			continue
 		}
-		mine := results[:len(sc.chosen)]
-		results = results[len(sc.chosen):]
-		// Each result is written as JSON once, for the database and for
-		// the output alike. For JSON output, a result is let go once it is
-		// written, since it takes more memory than its JSON, keeping only
-		// what the counts and the database need.
-		written := make([]json.RawMessage, len(mine))
-		outcomes := make([]outcomeOf, len(mine))
-		for i := range mine {
-			out, err := json.Marshal(mine[i])
-			if err != nil {
-				return compareJSON{}, fmt.Errorf("source %s: write the comparison of %s: %w", sc.row.Name, sc.rows[sc.chosen[i]].DefinitionKey, err)
-			}
-			written[i] = out
-			outcomes[i] = outcomeOf{outcome: mine[i].Outcome, netboxID: mine[i].NetBoxID, differences: mine[i].Differences, inStep: mine[i].InStep()}
-			if forText {
-				mine[i].Rows = differing(mine[i].Rows)
-			} else {
-				mine[i] = compare.Result{}
-			}
-		}
-		if err := recordComparisons(ctx, db, sc, scope, outcomes, written, result); err != nil {
+		mine := recorded[:len(sc.whole)]
+		recorded = recorded[len(sc.whole):]
+		if err := recordComparisons(ctx, db, *sc, scope, mine, result); err != nil {
 			if !errors.Is(err, store.ErrSnapshotChanged) {
 				return compareJSON{}, err
 			}
@@ -581,27 +650,243 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 			// go/unsafe-quoting).
 			a.failSource(sc.row, fmt.Sprintf("its comparisons were not recorded: %v; compare again, or if the source was fetched meanwhile, run 'netbox-trueup-ai source fetch', or use --fetch, first", err))
 		}
-		for _, o := range outcomes {
-			switch {
-			case o.inStep:
-				sc.row.InStep++
-			case o.outcome == compare.Candidate:
-				sc.row.Differing++
-			case o.outcome == compare.Absent:
-				sc.row.Absent++
-			case o.outcome == compare.Conflict:
-				sc.row.Conflicts++
-			}
+		var counts compareCountsJSON
+		for _, rec := range mine {
+			counts.add(rec.outcome, rec.inStep)
 		}
+		sc.row.InStep, sc.row.Differing, sc.row.Absent, sc.row.Conflicts = counts.InStep, counts.Differing, counts.Absent, counts.Conflicts
 		result.OK = result.OK && sc.row.OK
 		result.Sources = append(result.Sources, *sc.row)
-		if forText {
-			result.results = append(result.results, mine...)
-		} else {
-			result.Objects = append(result.Objects, written...)
-		}
+	}
+	if len(recorded) > 0 {
+		return compareJSON{}, fmt.Errorf("compare with NetBox: %d comparisons of no source's definition; please report it", len(recorded))
+	}
+	if forText {
+		result.objects = objects
 	}
 	return result, nil
+}
+
+// definitionAt is a definition of one of the sources compared: the source,
+// by its index among them, and the definition, by its index in the
+// source's rows.
+type definitionAt struct {
+	source, index int
+}
+
+// groupDefinitions groups the definitions of the sources read into the
+// objects they define, as compare.Group does, from their unique values.
+func groupDefinitions(specs []*model.Spec, compared []sourceCompared) ([][]definitionAt, error) {
+	var all []compare.Definition
+	var at []definitionAt
+	for j, sc := range compared {
+		for i := range sc.unique {
+			all = append(all, sc.unique[i])
+			at = append(at, definitionAt{j, i})
+		}
+	}
+	grouped, err := compare.Group(specs, all)
+	if err != nil {
+		return nil, fmt.Errorf("compare with NetBox: %w", err)
+	}
+	groups := make([][]definitionAt, len(grouped))
+	for g, of := range grouped {
+		for _, k := range of {
+			groups[g] = append(groups[g], at[k])
+		}
+	}
+	return groups, nil
+}
+
+// chooseWhole chooses every definition of each object some of whose
+// definitions are chosen, keeping each source's chosen in its order.
+func chooseWhole(compared []sourceCompared, groups [][]definitionAt) {
+	chosen := make([]map[int]bool, len(compared))
+	for j, sc := range compared {
+		chosen[j] = make(map[int]bool, len(sc.chosen))
+		for _, i := range sc.chosen {
+			chosen[j][i] = true
+		}
+	}
+	added := false
+	for _, g := range groups {
+		if !slices.ContainsFunc(g, func(d definitionAt) bool { return chosen[d.source][d.index] }) {
+			continue
+		}
+		for _, d := range g {
+			if !chosen[d.source][d.index] {
+				chosen[d.source][d.index], added = true, true
+			}
+		}
+	}
+	if !added {
+		return
+	}
+	for j := range compared {
+		compared[j].chosen = slices.Sorted(maps.Keys(chosen[j]))
+	}
+}
+
+// chooseWhatNetBoxHas keeps, of the definitions chosen, whose unique values
+// are first, those of the objects some of whose definitions match a NetBox
+// object, or collide with one, recording which of them do.
+func chooseWhatNetBoxHas(specs []*model.Spec, compared []sourceCompared, groups [][]definitionAt, first []compare.Definition, observed []compare.Observed) error {
+	outcomes, err := compare.Compare(specs, first, observed)
+	if err != nil {
+		return fmt.Errorf("compare with NetBox: %w", err)
+	}
+	// Used by position below, so checked as checkResults checks the
+	// whole definitions' results.
+	if len(outcomes) != len(first) {
+		return fmt.Errorf("compare with NetBox: %d results for the %d definitions matched", len(outcomes), len(first))
+	}
+	for i, r := range outcomes {
+		if !resultOf(r, first[i]) {
+			return fmt.Errorf("compare with NetBox: result %d of those matched is of another definition", i)
+		}
+	}
+	matched := make([]map[int]bool, len(compared))
+	for j := range compared {
+		sc := &compared[j]
+		matched[j] = make(map[int]bool, len(sc.chosen))
+		for _, i := range sc.chosen {
+			matched[j][i] = outcomes[0].Outcome != compare.Absent
+			outcomes = outcomes[1:]
+		}
+	}
+	keep := keepMatched(len(compared), groups, matched)
+	for j := range compared {
+		sc := &compared[j]
+		kept := sc.chosen[:0]
+		sc.matched = nil
+		for _, i := range sc.chosen {
+			if keep[j][i] {
+				kept = append(kept, i)
+				sc.matched = append(sc.matched, matched[j][i])
+			}
+		}
+		sc.chosen = kept
+	}
+	return nil
+}
+
+// keepMatched returns, of n sources, the definitions of the objects some
+// of whose definitions are matched, by source and by index: the objects
+// compared by default.
+func keepMatched(n int, groups [][]definitionAt, matched []map[int]bool) []map[int]bool {
+	keep := make([]map[int]bool, n)
+	for j := range keep {
+		keep[j] = map[int]bool{}
+	}
+	for _, g := range groups {
+		if slices.ContainsFunc(g, func(d definitionAt) bool { return matched[d.source][d.index] }) {
+			for _, d := range g {
+				keep[d.source][d.index] = true
+			}
+		}
+	}
+	return keep
+}
+
+// dropUnmatched leaves out, by default, the definitions of the objects none
+// of whose definitions still to compare matches or collides with a NetBox
+// object, as when the source of the one that did couldn't be read whole.
+func dropUnmatched(compared []sourceCompared, groups [][]definitionAt) {
+	matched := make([]map[int]bool, len(compared))
+	for j, sc := range compared {
+		matched[j] = make(map[int]bool, len(sc.chosen))
+		for k, i := range sc.chosen {
+			matched[j][i] = sc.matched[k]
+		}
+	}
+	keep := keepMatched(len(compared), groups, matched)
+	for j := range compared {
+		sc := &compared[j]
+		var chosen []int
+		var still []bool
+		var whole []compare.Definition
+		for k, i := range sc.chosen {
+			if keep[j][i] {
+				chosen, still, whole = append(chosen, i), append(still, sc.matched[k]), append(whole, sc.whole[k])
+			}
+		}
+		sc.chosen, sc.matched, sc.whole = chosen, still, whole
+	}
+}
+
+// recordedComparison is a definition's comparison, as the database records
+// it, and what the counts need of it.
+type recordedComparison struct {
+	json        json.RawMessage
+	outcome     compare.Outcome
+	netboxID    int64
+	differences int
+	inStep      bool
+	// rows is where its rows' JSON starts in json.
+	rows int
+}
+
+// writeComparison writes a definition's comparison as the database records
+// it, noting where its rows' JSON starts, which an object of that
+// definition alone shares.
+func writeComparison(r compare.Result) (recordedComparison, error) {
+	out, err := json.Marshal(r)
+	if err != nil {
+		return recordedComparison{}, fmt.Errorf("write the comparison of %s: %w", objectName(r.Type, r.Identity), err)
+	}
+	head := r
+	head.Rows = nil
+	h, err := json.Marshal(head)
+	if err != nil {
+		return recordedComparison{}, fmt.Errorf("write the comparison of %s: %w", objectName(r.Type, r.Identity), err)
+	}
+	at, ok := rowsAt(h, out)
+	if !ok {
+		return recordedComparison{}, fmt.Errorf("write the comparison of %s: its rows aren't its JSON's last field", objectName(r.Type, r.Identity))
+	}
+	return recordedComparison{json: out, outcome: r.Outcome, netboxID: r.NetBoxID, differences: r.Differences, inStep: r.InStep(), rows: at}, nil
+}
+
+// rowsAt returns where the rows' JSON starts in whole, the JSON of something
+// whose last field is its rows, given head, its JSON without rows, which
+// must end with "rows":[]}; or false.
+func rowsAt(head, whole []byte) (int, bool) {
+	const empty = `"rows":[]}`
+	if !bytes.HasSuffix(head, []byte(empty)) {
+		return 0, false
+	}
+	at := len(head) - len("[]}")
+	if !bytes.HasPrefix(whole, head[:at]) || len(whole) < at+2 || whole[at] != '[' || whole[len(whole)-1] != '}' {
+		return 0, false
+	}
+	return at, true
+}
+
+// writeObject writes an object as `compare --output json` gives it: its
+// rows' JSON taken from its definition's comparison, as recorded, where it
+// has one definition and so the same rows.
+func writeObject(o compare.Object, recorded []recordedComparison) (objectOut, error) {
+	head := o
+	head.Rows = nil
+	h, err := json.Marshal(head)
+	if err != nil {
+		return objectOut{}, fmt.Errorf("write the comparison of %s: %w", objectName(o.Type, o.Identity), err)
+	}
+	whole, rows := h, []byte(nil)
+	if len(o.Results) == 1 {
+		rec := recorded[o.Results[0]]
+		rows = rec.json[rec.rows : len(rec.json)-1]
+	} else if whole, err = json.Marshal(o); err != nil {
+		return objectOut{}, fmt.Errorf("write the comparison of %s: %w", objectName(o.Type, o.Identity), err)
+	}
+	at, ok := rowsAt(h, whole)
+	if !ok {
+		return objectOut{}, fmt.Errorf("write the comparison of %s: its rows aren't its JSON's last field", objectName(o.Type, o.Identity))
+	}
+	if rows == nil {
+		rows = whole[at : len(whole)-1]
+	}
+	return objectOut{head: h[:at], rows: rows}, nil
 }
 
 // readSource reads what the database holds of a source's last fetched
@@ -784,12 +1069,16 @@ func readChosen(ctx context.Context, db store.Store, specs []*model.Spec, sc *so
 
 // checkResults checks that Compare gave a result for each definition
 // compared of the sources read, in their order, with an outcome it knows,
-// and by default, none that NetBox hasn't got, since its unique values
-// matched NetBox; before any source's comparisons are recorded.
+// and by default, absent exactly where its unique values matched nothing in
+// NetBox, as for another definition of an object NetBox has; before any
+// source's comparisons are recorded.
 func checkResults(compared []sourceCompared, results []compare.Result, scope compareScope) error {
 	for _, sc := range compared {
 		if sc.row.Version == nil {
 			continue
+		}
+		if len(sc.chosen) != len(sc.whole) || scope == scopeNetBox && len(sc.matched) != len(sc.chosen) {
+			return fmt.Errorf("compare with NetBox: source %s has %d definitions chosen, %d read and %d matched; please report it", sc.row.Name, len(sc.chosen), len(sc.whole), len(sc.matched))
 		}
 		if len(results) < len(sc.whole) {
 			return fmt.Errorf("compare with NetBox: %d results for the %d definitions of source %s", len(results), len(sc.whole), sc.row.Name)
@@ -803,11 +1092,12 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 			switch r.Outcome {
 			case compare.Candidate, compare.Conflict:
 			case compare.Absent:
-				if scope == scopeNetBox {
-					return fmt.Errorf("compare with NetBox: %s is absent, though its unique values matched NetBox; please report it", key)
-				}
 			default:
 				return fmt.Errorf("compare with NetBox: the comparison of %s has the outcome %q", key, r.Outcome)
+			}
+			if scope == scopeNetBox && sc.matched[i] == (r.Outcome == compare.Absent) {
+				return fmt.Errorf("compare with NetBox: %s is %s, though its unique values matched %s; please report it",
+					key, r.Outcome, map[bool]string{true: "NetBox", false: "nothing in NetBox"}[sc.matched[i]])
 			}
 		}
 		results = results[len(sc.whole):]
@@ -819,9 +1109,18 @@ func checkResults(compared []sourceCompared, results []compare.Result, scope com
 }
 
 // resultOf reports whether r is the result of comparing d: of its type,
-// source and file.
+// source, file and identity, which tells a source's derived definitions,
+// which have no file, apart.
 func resultOf(r compare.Result, d compare.Definition) bool {
-	return r.Type == d.Object.Type && len(r.Columns) > 0 && r.Columns[0].Source == d.Source && r.Columns[0].Path == d.Path
+	if r.Type != d.Object.Type || len(r.Columns) == 0 || r.Columns[0].Source != d.Source || r.Columns[0].Path != d.Path || len(r.Identity) != len(d.Identity) {
+		return false
+	}
+	for name, v := range d.Identity {
+		if w, ok := r.Identity[name]; !ok || v == nil || w == nil || !model.Equal(v, w) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *app) failSource(row *compareSourceJSON, msg string) {
@@ -841,20 +1140,11 @@ func differing(rows []compare.Row) []compare.Row {
 	return out
 }
 
-// outcomeOf is what the counts and the database need of a result.
-type outcomeOf struct {
-	outcome     compare.Outcome
-	netboxID    int64
-	differences int
-	inStep      bool
-}
-
-// recordComparisons records one source's comparisons, results written as
-// JSON, as the latest of their definitions, against the load whose
-// definitions were read. Every scope but a selection looked at every
-// definition, so its run is whole: the source's other comparisons are
-// removed.
-func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, scope compareScope, outcomes []outcomeOf, written []json.RawMessage, run compareJSON) error {
+// recordComparisons records one source's comparisons, as the latest of
+// their definitions, against the load whose definitions were read. Every
+// scope but a selection looked at every definition, so its run is whole:
+// the source's other comparisons are removed.
+func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, scope compareScope, recorded []recordedComparison, run compareJSON) error {
 	rec := store.ComparisonRun{
 		Source:        sc.row.Name,
 		Loaded:        sc.status.Loaded,
@@ -864,9 +1154,9 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, s
 		NetBoxVersion: run.NetBox.Version,
 		Whole:         scope != scopeSelection,
 	}
-	for i, o := range outcomes {
+	for i, r := range recorded {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{
-			DefinitionID: sc.rows[sc.chosen[i]].ID, Outcome: string(o.outcome), NetBoxID: o.netboxID, Differences: o.differences, Result: written[i],
+			DefinitionID: sc.rows[sc.chosen[i]].ID, Outcome: string(r.outcome), NetBoxID: r.netboxID, Differences: r.differences, Result: r.json,
 		})
 	}
 	return db.RecordComparisons(ctx, rec)
@@ -1058,12 +1348,17 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
+	if r.Counts.Compared > 0 {
+		b.WriteString("\n" + countsText(r.Counts) + "\n")
+	}
 	if line := notComparedText(r); line != "" {
 		b.WriteString("\n" + line + "\n")
 	}
 
-	var notInStep []compare.Result
-	for _, o := range r.results {
+	// A line for each object not in step, and one for each of its
+	// definitions after the first.
+	var notInStep []compare.Object
+	for _, o := range r.objects {
 		if !o.InStep() {
 			notInStep = append(notInStep, o)
 		}
@@ -1071,17 +1366,22 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	if len(notInStep) > 0 {
 		b.WriteString("\n")
 		tw = tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "SOURCE\tOUTCOME\tTYPE\tMANUFACTURER\tMODEL\tNETBOX\tDIFFERENCES\tFROM")
+		_, _ = fmt.Fprintln(tw, "OUTCOME\tTYPE\tMANUFACTURER\tMODEL\tNETBOX\tDIFFERENCES\tSOURCE\tFROM")
 		for _, o := range notInStep {
-			def := o.Columns[0]
 			manufacturer, modelName := identityCells(o.Type, o.Identity)
 			netboxID, differences := "-", "-"
 			if o.NetBoxID != 0 {
 				netboxID, differences = "#"+strconv.FormatInt(o.NetBoxID, 10), strconv.Itoa(o.Differences)
+			} else if o.Differences > 0 {
+				differences = strconv.Itoa(o.Differences)
 			}
-			_, _ = fmt.Fprintln(tw, strings.Join([]string{
-				def.Source, string(o.Outcome), typeName(o.Type), cell(manufacturer), cell(modelName), netboxID, differences, cell(fromText(def)),
-			}, "\t"))
+			object := []string{string(o.Outcome), typeName(o.Type), cell(manufacturer), cell(modelName), netboxID, differences}
+			for c, d := range definitionColumns(o) {
+				if c > 0 {
+					object = []string{"", "", "", "", "", ""}
+				}
+				_, _ = fmt.Fprintln(tw, strings.Join(append(object, d.Source, cell(fromText(d))), "\t"))
+			}
 		}
 		if err := tw.Flush(); err != nil {
 			return fmt.Errorf("write output: %w", err)
@@ -1089,84 +1389,53 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	}
 
 	var conflicts []string
-	for _, o := range r.results {
-		if o.Outcome != compare.Conflict {
-			continue
+	for _, o := range r.objects {
+		if o.Outcome == compare.Conflict {
+			conflicts = append(conflicts, "  "+cell(objectName(o.Type, o.Identity)+": "+strings.Join(conflictText(o), "; ")))
 		}
-		var parts []string
-		for _, u := range o.Unresolved {
-			if len(u.Candidates) == 0 {
-				continue
-			}
-			ids := make([]string, len(u.Candidates))
-			for i, id := range u.Candidates {
-				ids[i] = "#" + strconv.FormatInt(id, 10)
-			}
-			parts = append(parts, fmt.Sprintf("its %s, %s, could be any of NetBox's %ss %s, which NetBox should keep unique",
-				u.Field, strconv.Quote(text(u.Ref)), typeName(u.Ref.Type), strings.Join(ids, ", ")))
-		}
-		twice := map[string][]string{}
-		var where []string
-		for _, c := range o.Collisions {
-			if len(c.Path) > 0 {
-				p := c.Path.String()
-				if twice[p] == nil {
-					where = append(where, p)
-				}
-				// A nested child, such as a front port's mapping, has no
-				// NetBox ID.
-				id := ""
-				if c.ID != 0 {
-					id = "#" + strconv.FormatInt(c.ID, 10)
-				}
-				twice[p] = append(twice[p], id)
-				continue
-			}
-			verb := "matches"
-			if len(c.Rule) > 1 {
-				verb = "match"
-			}
-			parts = append(parts, fmt.Sprintf("its %s %s NetBox's %s #%d, %s",
-				strings.Join(c.Rule, " and "), verb, typeName(o.Type), c.ID, identityText(o.Type, c.Identity)))
-		}
-		for _, p := range where {
-			times, none := "twice", "neither"
-			if n := len(twice[p]); n > 2 {
-				times, none = strconv.Itoa(n)+" times", "none"
-			}
-			as := ""
-			if ids := slices.DeleteFunc(twice[p], func(id string) bool { return id == "" }); len(ids) > 0 {
-				as = ", as " + strings.Join(ids, ", ")
-			}
-			parts = append(parts, fmt.Sprintf("NetBox's #%d has %s %s%s, which NetBox should keep unique, so %s is compared",
-				o.NetBoxID, p, times, as, none))
-		}
-		conflicts = append(conflicts, "  "+cell(objectText(o)+": "+strings.Join(parts, "; ")))
 	}
 	if len(conflicts) > 0 {
 		b.WriteString("\nConflicts:\n" + strings.Join(conflicts, "\n") + "\n")
 	}
 
 	first := true
-	for _, o := range r.results {
-		if o.NetBoxID == 0 || o.Differences == 0 {
+	for _, o := range r.objects {
+		if o.Differences == 0 {
 			continue
 		}
 		if first {
 			b.WriteString("\nDifferences:\n")
 			first = false
 		}
-		fmt.Fprintf(&b, "  %s, NetBox #%d:\n", cell(objectText(o)), o.NetBoxID)
+		defs := definitionColumns(o)
+		where := make([]string, len(defs))
+		for c, d := range defs {
+			where[c] = definitionText(d)
+		}
+		heading := objectName(o.Type, o.Identity)
+		if o.NetBoxID != 0 {
+			heading += ", NetBox #" + strconv.FormatInt(o.NetBoxID, 10)
+		}
+		fmt.Fprintf(&b, "  %s, in %s:\n", cell(heading), cell(format.List(where)))
 		tw = tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "    FIELD\tDEFINITION\tNETBOX")
+		header := append([]string{"    FIELD"}, columnNames(defs)...)
+		if o.NetBoxID != 0 {
+			header = append(header, "NETBOX")
+		}
+		_, _ = fmt.Fprintln(tw, strings.Join(header, "\t"))
 		for _, row := range o.Rows {
-			if row.Differs && row.Managed {
-				mine, theirs := valueText(row.Cells[0]), valueText(row.Cells[1])
-				if isChildRow(row) {
-					mine, theirs = presenceText(row.Cells[0]), presenceText(row.Cells[1])
-				}
-				_, _ = fmt.Fprintf(tw, "    %s\t%s\t%s\n", cell(row.Path.String()), cell(mine), cell(theirs))
+			if !row.Differs || !row.Managed {
+				continue
 			}
+			cells := []string{"    " + cell(row.Path.String())}
+			for _, v := range row.Cells {
+				text := valueText(v)
+				if isChildRow(row) {
+					text = presenceText(v)
+				}
+				cells = append(cells, cell(text))
+			}
+			_, _ = fmt.Fprintln(tw, strings.Join(cells, "\t"))
 		}
 		if err := tw.Flush(); err != nil {
 			return fmt.Errorf("write output: %w", err)
@@ -1174,7 +1443,7 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	}
 
 	var onlyNetBox []string
-	for _, o := range r.results {
+	for _, o := range r.objects {
 		var children []string
 		for _, row := range o.Rows {
 			if isChildRow(row) && row.Differs && !row.Managed {
@@ -1186,7 +1455,7 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 			}
 		}
 		if len(children) > 0 {
-			onlyNetBox = append(onlyNetBox, fmt.Sprintf("  %s, NetBox #%d: %s", cell(objectText(o)), o.NetBoxID, cell(strings.Join(children, ", "))))
+			onlyNetBox = append(onlyNetBox, fmt.Sprintf("  %s, NetBox #%d: %s", cell(objectName(o.Type, o.Identity)), o.NetBoxID, cell(strings.Join(children, ", "))))
 		}
 	}
 	if len(onlyNetBox) > 0 {
@@ -1228,6 +1497,172 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 		return fmt.Errorf("write output: %w", err)
 	}
 	return nil
+}
+
+// countsText says how many objects were compared, by outcome.
+func countsText(c compareCountsJSON) string {
+	objects := "objects"
+	if c.Compared == 1 {
+		objects = "object"
+	}
+	return fmt.Sprintf("%d %s compared: %d in step, %d differing, %d absent, %d in conflict.", c.Compared, objects, c.InStep, c.Differing, c.Absent, c.Conflicts)
+}
+
+// definitionColumns returns an object's definitions' columns.
+func definitionColumns(o compare.Object) []compare.Column {
+	return slices.DeleteFunc(slices.Clone(o.Columns), func(c compare.Column) bool { return c.Kind != compare.DefinitionColumn })
+}
+
+// columnNames heads a column for each definition with its source's name,
+// numbered where a source defines the object more than once.
+func columnNames(defs []compare.Column) []string {
+	count := map[string]int{}
+	for _, d := range defs {
+		count[d.Source]++
+	}
+	seen := map[string]int{}
+	names := make([]string, len(defs))
+	for c, d := range defs {
+		names[c] = cell(d.Source)
+		if count[d.Source] > 1 {
+			seen[d.Source]++
+			names[c] += " (" + strconv.Itoa(seen[d.Source]) + ")"
+		}
+	}
+	return names
+}
+
+// conflictText says why an object is a conflict: a source defining it more
+// than once, each definition's collisions and ambiguous references,
+// prefixed by the definition, and its clashes with other objects, prefixed
+// by the definitions that clash where the object has several.
+func conflictText(o compare.Object) []string {
+	var parts []string
+	defs := definitionColumns(o)
+	for _, src := range o.DuplicatedIn {
+		var files []string
+		for _, d := range defs {
+			if d.Source == src {
+				files = append(files, fromText(d))
+			}
+		}
+		times := "twice"
+		if len(files) > 2 {
+			times = strconv.Itoa(len(files)) + " times"
+		}
+		parts = append(parts, fmt.Sprintf("%s defines it %s, in %s", src, times, format.List(files)))
+	}
+	// Each reason once, after the definitions that give it, such as
+	// NetBox's children sharing a key, which every definition finds.
+	var reasons []string
+	givenBy := map[string][]string{}
+	for _, d := range o.Definitions {
+		for _, p := range collisionText(o.Type, d) {
+			if givenBy[p] == nil {
+				reasons = append(reasons, p)
+			}
+			givenBy[p] = append(givenBy[p], definitionText(d.Columns[0]))
+		}
+	}
+	var by []string
+	byDefinitions := map[string][]string{}
+	for _, p := range reasons {
+		who := format.List(givenBy[p])
+		if byDefinitions[who] == nil {
+			by = append(by, who)
+		}
+		byDefinitions[who] = append(byDefinitions[who], p)
+	}
+	for _, who := range by {
+		parts = append(parts, who+": "+strings.Join(byDefinitions[who], "; "))
+	}
+	for _, clash := range o.Clashes {
+		prefix := ""
+		if len(o.Definitions) > 1 {
+			var mine []string
+			for _, c := range clash.Columns {
+				mine = append(mine, definitionText(defs[c]))
+			}
+			prefix = format.List(mine) + ": "
+		}
+		var with, values []string
+		for _, w := range clash.With {
+			with = append(with, fmt.Sprintf("%s (%s, %s)", objectName(w.Type, w.Identity), w.Column.Source, fromText(w.Column)))
+		}
+		for _, f := range clash.Rule {
+			values = append(values, "the "+f+" "+clashValueText(clash.Values[f]))
+		}
+		all := "both"
+		if len(with) > 1 {
+			all = "all"
+		}
+		parts = append(parts, fmt.Sprintf("%sit and %s would %s have %s, which NetBox keeps unique", prefix, format.List(with), all, format.List(values)))
+	}
+	return parts
+}
+
+// clashValueText writes a value a clash is over: a reference by its name.
+func clashValueText(v model.Value) string {
+	if ref, ok := v.(model.Reference); ok && len(ref.Key) > 0 {
+		return strconv.Quote(text(ref))
+	}
+	return valueText(v)
+}
+
+// collisionText says what a definition of an object of type typ collides
+// with in NetBox: references NetBox has several objects for, NetBox's
+// objects that share another unique value, and NetBox's children that share
+// a key.
+func collisionText(typ string, r compare.Result) []string {
+	var parts []string
+	for _, u := range r.Unresolved {
+		if len(u.Candidates) == 0 {
+			continue
+		}
+		ids := make([]string, len(u.Candidates))
+		for i, id := range u.Candidates {
+			ids[i] = "#" + strconv.FormatInt(id, 10)
+		}
+		parts = append(parts, fmt.Sprintf("its %s, %s, could be any of NetBox's %ss %s, which NetBox should keep unique",
+			u.Field, strconv.Quote(text(u.Ref)), typeName(u.Ref.Type), strings.Join(ids, ", ")))
+	}
+	twice := map[string][]string{}
+	var where []string
+	for _, c := range r.Collisions {
+		if len(c.Path) > 0 {
+			p := c.Path.String()
+			if twice[p] == nil {
+				where = append(where, p)
+			}
+			// A nested child, such as a front port's mapping, has no
+			// NetBox ID.
+			id := ""
+			if c.ID != 0 {
+				id = "#" + strconv.FormatInt(c.ID, 10)
+			}
+			twice[p] = append(twice[p], id)
+			continue
+		}
+		verb := "matches"
+		if len(c.Rule) > 1 {
+			verb = "match"
+		}
+		parts = append(parts, fmt.Sprintf("its %s %s NetBox's %s #%d, %s",
+			strings.Join(c.Rule, " and "), verb, typeName(typ), c.ID, identityText(typ, c.Identity)))
+	}
+	for _, p := range where {
+		times, none := "twice", "neither"
+		if n := len(twice[p]); n > 2 {
+			times, none = strconv.Itoa(n)+" times", "none"
+		}
+		as := ""
+		if ids := slices.DeleteFunc(twice[p], func(id string) bool { return id == "" }); len(ids) > 0 {
+			as = ", as " + strings.Join(ids, ", ")
+		}
+		parts = append(parts, fmt.Sprintf("NetBox's #%d has %s %s%s, which NetBox should keep unique, so %s is compared",
+			r.NetBoxID, p, times, as, none))
+	}
+	return parts
 }
 
 // notComparedText says how many definitions NetBox hasn't got weren't
@@ -1277,11 +1712,16 @@ func identityText(typ string, identity map[string]model.Value) string {
 	return manufacturer + " " + strconv.Quote(modelName)
 }
 
-// objectText names a compared definition: its source, type, identity and
-// file.
-func objectText(o compare.Result) string {
-	def := o.Columns[0]
-	return fmt.Sprintf("%s: %s %s (%s)", def.Source, typeName(o.Type), identityText(o.Type, o.Identity), fromText(def))
+// objectName names an object by its type and identity, such as device type
+// Dell "PowerEdge R640".
+func objectName(typ string, identity map[string]model.Value) string {
+	return typeName(typ) + " " + identityText(typ, identity)
+}
+
+// definitionText names a definition by its source and where it comes from,
+// such as devicetype-library (device-types/Dell/PowerEdge-R640.yaml).
+func definitionText(c compare.Column) string {
+	return c.Source + " (" + fromText(c) + ")"
 }
 
 // fromText says where a definition comes from: its file, or how many files
@@ -1327,8 +1767,11 @@ func isChildRow(row compare.Row) bool {
 }
 
 // presenceText writes a child row's cell: whether that version has the
-// child.
+// child, or "-" where it hasn't the child's parent either.
 func presenceText(v model.Value) string {
+	if v == nil {
+		return "-"
+	}
 	if b, ok := v.(model.Boolean); ok && bool(b) {
 		return "present"
 	}
@@ -1343,10 +1786,18 @@ func presenceText(v model.Value) string {
 // from what writeJSON writes, as a new field would.
 func writeCompareJSON(w io.Writer, r compareJSON) error {
 	bw := bufio.NewWriterSize(w, 1<<16)
-	var indented bytes.Buffer
+	var indented, whole bytes.Buffer
 	// value writes v's JSON as writeJSON would, at an indent of prefix.
 	value := func(v any, prefix string) error {
 		raw, ok := v.(json.RawMessage)
+		if o, isObject := v.(objectOut); isObject {
+			// Whole, in a buffer used again for each object.
+			whole.Reset()
+			whole.Write(o.head)
+			whole.Write(o.rows)
+			whole.WriteByte('}')
+			raw, ok = whole.Bytes(), true
+		}
 		if !ok {
 			var b bytes.Buffer
 			enc := json.NewEncoder(&b)
@@ -1374,7 +1825,7 @@ func writeCompareJSON(w io.Writer, r compareJSON) error {
 		for _, f := range []struct {
 			name  string
 			value any
-		}{{"ok", r.OK}, {"scope", r.Scope}, {"netbox", r.NetBox}, {"compared_at", r.ComparedAt}, {"sources", r.Sources}} {
+		}{{"ok", r.OK}, {"scope", r.Scope}, {"netbox", r.NetBox}, {"compared_at", r.ComparedAt}, {"sources", r.Sources}, {"counts", r.Counts}} {
 			if err := text("  " + strconv.Quote(f.name) + ": "); err != nil {
 				return err
 			}

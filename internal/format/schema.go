@@ -442,11 +442,16 @@ func ListQuoted(names []string) string {
 	for i, name := range names {
 		quoted[i] = Quote(name)
 	}
-	switch len(quoted) {
+	return List(quoted)
+}
+
+// List joins items as a list in a sentence: a, b and c; or "nothing".
+func List(items []string) string {
+	switch len(items) {
 	case 0:
 		return "nothing"
 	case 1:
-		return quoted[0]
+		return items[0]
 	}
-	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }

@@ -30,13 +30,14 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0022](0022-postgresql-schema-and-advisory-locks.md) | Keep TrueUp's PostgreSQL tables in a schema of their own, and order processes with advisory locks | Accepted |
 | [0023](0023-check-specs-against-the-schema-with-plain-json.md) | Check specs against a snapshot of NetBox's OpenAPI schema, read with plain JSON decoding | Accepted |
 | [0024](0024-read-source-files-as-pyyaml-does.md) | Read source files as PyYAML does, within fixed limits, and validate them with santhosh-tekuri/jsonschema | Accepted |
-| [0025](0025-match-by-netbox-uniqueness-rules.md) | Match definitions to NetBox by its uniqueness rules, compare them side by side, and record each comparison as compare prints it | Accepted |
+| [0025](0025-match-by-netbox-uniqueness-rules.md) | Match definitions to NetBox by its uniqueness rules, compare them side by side, and record each comparison as compare prints it | Accepted; compare prints objects merged from the comparisons it records since [0032](0032-compare-definitions-across-sources-as-objects.md) |
 | [0026](0026-compare-children-by-their-key.md) | Compare a device type's component templates by their key, with a row for each child, and leave children only NetBox has unmanaged | Accepted |
 | [0027](0027-nest-port-mappings-in-their-front-port.md) | Compare port mappings as children of their front port, keyed by position | Accepted |
 | [0028](0028-no-inventory-item-templates.md) | Don't support inventory item templates | Accepted |
 | [0029](0029-keep-a-lookup-table-of-definitions.md) | Keep each source's definitions in the database, and read them from there | Accepted |
 | [0030](0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first | Accepted |
 | [0031](0031-merge-routine-dependabot-updates-automatically.md) | Merge Dependabot's patch and minor updates of Go modules and test databases automatically, once every required check passes | Accepted |
+| [0032](0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison | Accepted |
 
 ## When to write one
 

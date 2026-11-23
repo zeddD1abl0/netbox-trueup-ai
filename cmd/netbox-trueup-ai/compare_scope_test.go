@@ -357,8 +357,13 @@ func TestCompareSelectionAcrossSources(t *testing.T) {
 	if r.code != exitOK {
 		t.Fatalf("compare --model GS999: exit code %d\nstderr: %s", r.code, r.stderr)
 	}
-	if diff := cmp.Diff([]string{"candidate Netgear 0", "candidate Netgear 0", "absent GS999 0"}, outcomes(decodeCompare(t, r.stdout))); diff != "" {
+	// Netgear, which both sources derive, is one object.
+	selected := decodeCompare(t, r.stdout)
+	if diff := cmp.Diff([]string{"candidate Netgear 0", "absent GS999 0"}, outcomes(selected)); diff != "" {
 		t.Errorf("compare --model GS999 (-want +got):\n%s", diff)
+	}
+	if c := selected.Objects[0].Columns; len(c) != 3 || c[0].Source != "lib" || c[1].Source != "extra" || c[2].Kind != "netbox" {
+		t.Errorf("Netgear's columns = %+v, want lib's, extra's and NetBox's", c)
 	}
 
 	var once sync.Once

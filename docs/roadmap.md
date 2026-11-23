@@ -162,10 +162,13 @@ Steps not connected in the graph can run in parallel. Each step updates the docs
     - Measured against the whole library: by default 0.4 seconds and 100 MB with an empty NetBox, 0.5 seconds with 15 manufacturers and 33 device types, and 1.3 seconds with 400 device types, against 3.7 to 4.7 seconds and 680 to 700 MB for comparing everything, which `--all` still takes.
     - No new dependency.
 
-15. **`feat(compare): compare definitions across sources`.**
-    - Definitions from every configured source grouped into objects by type and identity; an object is in scope if any of its definitions is. A source that defines an object twice, and objects that would share another unique value NetBox keeps unique, are conflicts.
-    - Each definition keeps its outcome against NetBox; an object gets one of its own, and is in step when NetBox and every source agree. `compare` shows a column for each definition, plus NetBox, in text and JSON. Each definition's comparison is recorded alone, and an object is built by merging its definitions' comparisons.
-    - Tests with two Git sources that agree on some fields and disagree on others, fuzzing with up to three sources, and a second source in the parity test.
+15. **`feat(compare): compare definitions across sources`.** Done in #33.
+    - Definitions from every source compared are grouped into objects by type and identity as NetBox would store them, from their unique values; by default an object is compared if any of its definitions matches or collides with NetBox, with all of its definitions ([ADR 0032](adr/0032-compare-definitions-across-sources-as-objects.md)).
+    - Each definition keeps its outcome against NetBox; an object is a conflict if one of its definitions is, if a source defines it more than once, or if it clashes with another object, which two do when importing both would leave NetBox holding the same name or slug; otherwise it has its definitions' outcome, and is in step when NetBox and every definition agree. `--exit-code` counts objects.
+    - `compare` shows each object with a column for each definition, plus NetBox, in text and JSON, which gains `counts`, `duplicated_in`, `clashes`, and each definition's own outcome in its column. Each definition's comparison is recorded alone, as before, and an object is built by merging them (`compare.Objects`), so the web UI can build it from records.
+    - Tests with two Git sources that agree on some fields and disagree on others, a source defining a device type twice, a clash between sources, and a source loaded again mid-run; `FuzzCompare` with up to three sources, held to plain oracles for grouping, clashes, outcomes and merged rows; and a second source in the parity test, whose changed slug and added console port are exactly the differences.
+    - Measured against the whole library: with one copy, as step 14 within 10%; with two copies, by default 0.7 seconds against an empty NetBox and 0.9 with 15 manufacturers and 33 device types, and `--all` 9 to 9.7 seconds and 1.5 GB, against 7.3 to 8.7 seconds and 1.3 GB, its JSON 265 MB instead of 439 MB. The library beside a source of the 33 device types a NetBox has takes 0.55 seconds.
+    - No new dependency.
 
 ## Milestone 2: import and sync manufacturers and device types
 

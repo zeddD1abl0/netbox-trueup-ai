@@ -247,23 +247,25 @@ func TestCompareText(t *testing.T) {
 SOURCE  REF     VERSION                                   COMPARED  IN STEP  DIFFERING  ABSENT  CONFLICTS  INVALID  WARNINGS
 lib     master  ` + commit + `  5         3        1          0       1          0        1
 
+5 objects compared: 3 in step, 1 differing, 0 absent, 1 in conflict.
+
 1 definition NetBox hasn't got wasn't compared: --all compares every definition, and --manufacturer or --model those named.
 
-SOURCE  OUTCOME    TYPE          MANUFACTURER  MODEL      NETBOX  DIFFERENCES  FROM
-lib     conflict   manufacturer  NETGEAR       -          -       -            1 file
-lib     candidate  device type   Huawei        NE8000-X8  #11     2            device-types/Huawei/NE8000-X8.yaml
+OUTCOME    TYPE          MANUFACTURER  MODEL      NETBOX  DIFFERENCES  SOURCE  FROM
+conflict   manufacturer  NETGEAR       -          -       -            lib     1 file
+candidate  device type   Huawei        NE8000-X8  #11     2            lib     device-types/Huawei/NE8000-X8.yaml
 
 Conflicts:
-  lib: manufacturer "NETGEAR" (1 file): its slug matches NetBox's manufacturer #1, "Netgear"
+  manufacturer "NETGEAR": lib (1 file): its slug matches NetBox's manufacturer #1, "Netgear"
 
 Differences:
-  lib: device type Huawei "NE8000-X8" (device-types/Huawei/NE8000-X8.yaml), NetBox #11:
-    FIELD                 DEFINITION  NETBOX
-    u_height              16          15.5
-    module_bays["LPU 8"]  present     missing
+  device type Huawei "NE8000-X8", NetBox #11, in lib (device-types/Huawei/NE8000-X8.yaml):
+    FIELD                 lib      NETBOX
+    u_height              16       15.5
+    module_bays["LPU 8"]  present  missing
 
 Only in NetBox, which TrueUp leaves as they are:
-  lib: device type Huawei "NE8000-X8" (device-types/Huawei/NE8000-X8.yaml), NetBox #11: module_bays["Fan 1"] (#217)
+  device type Huawei "NE8000-X8", NetBox #11: module_bays["Fan 1"] (#217)
 
 Warnings:
   lib: manufacturers "NETGEAR" and "Netgear" would both get the slug "netgear", which NetBox gives to one manufacturer only: create one of them in NetBox with another slug, or spell them alike in the source
@@ -347,7 +349,10 @@ type objectJSON struct {
 		Outcome *string `json:"outcome"`
 	} `json:"unresolved"`
 	Columns []struct {
-		Path *string `json:"path"`
+		Kind    string  `json:"kind"`
+		Source  string  `json:"source"`
+		Path    *string `json:"path"`
+		Outcome string  `json:"outcome"`
 	} `json:"columns"`
 	Rows []struct {
 		// Path's steps are a field's name, or a child's key as an object.
@@ -397,6 +402,41 @@ func outcomes(r compareResult) []string {
 		out = append(out, o.Outcome+" "+o.name()+" "+strconv.Itoa(o.Differences))
 	}
 	return out
+}
+
+// recordOf returns what the database records of an object compare printed
+// as JSON, which has one definition: the object without what only an
+// object has, its sources defining it more than once, its clashes, and its
+// definition column's own comparison, which is the record's.
+func recordOf(t *testing.T, object any) any {
+	t.Helper()
+	data, err := json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o map[string]any
+	if err := json.Unmarshal(data, &o); err != nil {
+		t.Fatal(err)
+	}
+	columns, _ := o["columns"].([]any)
+	if len(columns) == 0 {
+		t.Fatalf("an object without columns: %s", data)
+	}
+	for i, c := range columns {
+		column, _ := c.(map[string]any)
+		if column["kind"] != "definition" {
+			continue
+		}
+		if i > 0 {
+			t.Fatalf("an object of more than one definition: %s", data)
+		}
+		for _, f := range []string{"outcome", "in_step", "differences", "collisions"} {
+			delete(column, f)
+		}
+	}
+	delete(o, "duplicated_in")
+	delete(o, "clashes")
+	return o
 }
 
 // recordedResults returns the comparisons recorded of the source lib, each
@@ -505,7 +545,7 @@ func TestCompareJSON(t *testing.T) {
 	}
 	for i, o := range got.Objects {
 		k := o.key(t)
-		if diff := cmp.Diff(printed.Objects[i], recorded[k]); diff != "" {
+		if diff := cmp.Diff(recordOf(t, printed.Objects[i]), recorded[k]); diff != "" {
 			t.Errorf("the comparison recorded of %s (-printed +recorded):\n%s", k, diff)
 		}
 	}
@@ -513,7 +553,7 @@ func TestCompareJSON(t *testing.T) {
 	// --exit-code counts only what was compared: by default, not the
 	// definition NetBox hasn't got.
 	r = runCLIApp(t, nil, configure, env, "compare", "-o", "json", "--exit-code")
-	if r.code != exitNotInStep || !strings.Contains(r.stderr, "2 of the 5 definitions compared aren't in step with NetBox") {
+	if r.code != exitNotInStep || !strings.Contains(r.stderr, "2 of the 5 objects compared aren't in step with NetBox") {
 		t.Errorf("compare --exit-code: exit code %d, stderr %q", r.code, r.stderr)
 	}
 	if decodeCompare(t, r.stdout).Sources == nil {
@@ -841,8 +881,8 @@ func TestCompareAManufacturerNetBoxHoldsTwice(t *testing.T) {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
 	for _, want := range []string{
-		`lib: manufacturer "Netgear" (1 file): its name matches NetBox's manufacturer #1, "Netgear"; its name matches NetBox's manufacturer #3, "Netgear"`,
-		`lib: device type Netgear "GS105" (device-types/Netgear/GS105.yaml): its manufacturer, "Netgear", could be any of NetBox's manufacturers #1, #3, which NetBox should keep unique; ` +
+		`manufacturer "Netgear": lib (1 file): its name matches NetBox's manufacturer #1, "Netgear"; its name matches NetBox's manufacturer #3, "Netgear"`,
+		`device type Netgear "GS105": lib (device-types/Netgear/GS105.yaml): its manufacturer, "Netgear", could be any of NetBox's manufacturers #1, #3, which NetBox should keep unique; ` +
 			`its manufacturer and model match NetBox's device type #10, Netgear "GS105"`,
 	} {
 		if !strings.Contains(r.stdout, want) {
@@ -904,15 +944,16 @@ func TestCompareJSONIsWrittenAsWriteJSONWould(t *testing.T) {
 	msg := "a <warning> & more"
 	for _, r := range []compareJSON{
 		{},
-		{Sources: []compareSourceJSON{}, Objects: []json.RawMessage{}, Warnings: []warningJSON{}},
+		{Sources: []compareSourceJSON{}, Objects: []objectOut{}, Warnings: []warningJSON{}},
 		{
 			OK:         true,
 			NetBox:     compareNetBoxJSON{URL: "https://netbox.example.com", Version: "4.7.2"},
 			ComparedAt: time.Date(2026, 11, 16, 1, 2, 3, 456000, time.UTC),
 			Sources:    []compareSourceJSON{{Name: "lib", Error: &msg, Problems: []problemJSON{{Severity: "warning", Reason: "<x>"}}}},
-			Objects: []json.RawMessage{
-				json.RawMessage(`{"type":"dcim.devicetype","rows":[{"path":["interfaces",{"name":"a\u003cb"}],"cells":[{},{"value":true}]}],"empty":{},"list":[]}`),
-				json.RawMessage(`{"b":1}`),
+			Counts:     compareCountsJSON{Compared: 2, Conflicts: 2},
+			Objects: []objectOut{
+				{head: json.RawMessage(`{"type":"dcim.devicetype","empty":{},"list":[],"rows":`), rows: json.RawMessage(`[{"path":["interfaces",{"name":"a\u003cb"}],"cells":[{},{"value":true}]}]`)},
+				{head: json.RawMessage(`{"b":1,"rows":`), rows: json.RawMessage(`[]`)},
 			},
 			Warnings: []warningJSON{{Message: msg}},
 		},
@@ -943,7 +984,7 @@ func TestCompareTemplatesNetBoxHoldsMoreThanOnce(t *testing.T) {
 		nbTemplate(bays, 301, ne8000, "LPU 1", map[string]any{"position": "1"}))
 	env, _, _, configure := compareEnv(t, nb)
 	r := runCLIApp(t, nil, configure, env, "compare", "--manufacturer", "Huawei")
-	want := `lib: device type Huawei "NE8000-X8" (device-types/Huawei/NE8000-X8.yaml): NetBox's #11 has module_bays["LPU 1"] 3 times, as #200, #300, #301, which NetBox should keep unique, so none is compared`
+	want := `device type Huawei "NE8000-X8": lib (device-types/Huawei/NE8000-X8.yaml): NetBox's #11 has module_bays["LPU 1"] 3 times, as #200, #300, #301, which NetBox should keep unique, so none is compared`
 	if r.code != exitOK || !strings.Contains(r.stdout, want) {
 		t.Errorf("exit code %d, stdout:\n%s\nwant it to hold %s", r.code, r.stdout, want)
 	}
@@ -1039,12 +1080,31 @@ func TestCheckResults(t *testing.T) {
 		})
 	}
 
-	// By default, every definition compared matched NetBox by its unique
-	// values, so none can be absent.
+	// By default, a definition is absent exactly where its unique values
+	// matched nothing in NetBox, as another definition of an object NetBox
+	// has.
 	results := []compare.Result{res("a", "a.yaml", compare.Candidate), res("b", "b1.yaml", compare.Absent), res("b", "b2.yaml", compare.Conflict)}
-	want := `compare with NetBox: dcim.devicetype "b1.yaml" is absent, though its unique values matched NetBox; please report it`
-	if err := checkResults(two, results, scopeNetBox); err == nil || err.Error() != want {
-		t.Errorf("checkResults by default = %v, want %q", err, want)
+	for _, tt := range []struct {
+		matched [][]bool
+		want    string
+	}{
+		{[][]bool{{true}, nil, {false, true}}, ""},
+		{[][]bool{{true}, nil, {true, true}}, `compare with NetBox: dcim.devicetype "b1.yaml" is absent, though its unique values matched NetBox; please report it`},
+		{[][]bool{{false}, nil, {false, true}}, `compare with NetBox: dcim.devicetype "a.yaml" is candidate, though its unique values matched nothing in NetBox; please report it`},
+		{[][]bool{{true}, nil, {false, false}}, `compare with NetBox: dcim.devicetype "b2.yaml" is conflict, though its unique values matched nothing in NetBox; please report it`},
+		{[][]bool{{true}, nil, {false}}, `compare with NetBox: source b has 2 definitions chosen, 2 read and 1 matched; please report it`},
+	} {
+		sources := slices.Clone(two)
+		for j := range sources {
+			sources[j].matched = tt.matched[j]
+		}
+		got := ""
+		if err := checkResults(sources, results, scopeNetBox); err != nil {
+			got = err.Error()
+		}
+		if got != tt.want {
+			t.Errorf("checkResults by default, matched %v = %q, want %q", tt.matched, got, tt.want)
+		}
 	}
 	if err := checkResults(two, results, scopeAll); err != nil {
 		t.Errorf("checkResults of every definition = %v, want nil", err)
@@ -1089,9 +1149,9 @@ func TestComparePortMappings(t *testing.T) {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
 	for _, want := range []string{
-		"\n    FIELD                                                   DEFINITION  NETBOX\n" +
-			"    rear_ports[\"Port 1\"].positions                          1           2\n" +
-			"    front_ports[\"Port 1\"].rear_ports[1].rear_port_position  1           2\n",
+		"\n    FIELD                                                   lib  NETBOX\n" +
+			"    rear_ports[\"Port 1\"].positions                          1    2\n" +
+			"    front_ports[\"Port 1\"].rear_ports[1].rear_port_position  1    2\n",
 		// No NetBox ID: NetBox gives a mapping none.
 		`NetBox #12: front_ports["Port 1"].rear_ports[2]` + "\n",
 	} {
