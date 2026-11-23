@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0033
 date: 2026-10-23
 decision-makers: "@zeddD1abl0"
 ---

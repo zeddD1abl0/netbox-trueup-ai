@@ -21,8 +21,8 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0013](0013-compose-objects-across-sources.md) | Compare objects across sources side by side, and compose them field by field | Accepted |
 | [0014](0014-audit-every-action.md) | Record every action in an append-only audit log, and stream it out | Accepted |
 | [0015](0015-sign-in-and-provisioning.md) | Sign in with OpenID Connect, SAML or local accounts, provision with SCIM, and never trust proxy headers | Accepted |
-| [0016](0016-permissions-and-approval-policies.md) | Scoped permissions, and approval policies and change references that can be turned on | Accepted |
-| [0017](0017-netbox-branches.md) | Write plans through NetBox branches where teams want them | Accepted |
+| [0016](0016-permissions-and-approval-policies.md) | Scoped permissions, and approval policies and change references that can be turned on | Accepted; NetBox decides merges without a change request integration since [0033](0033-runs-against-main-or-a-chosen-branch.md) |
+| [0017](0017-netbox-branches.md) | Write plans through NetBox branches where teams want them | Superseded by [0033](0033-runs-against-main-or-a-chosen-branch.md) |
 | [0018](0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output | Accepted |
 | [0019](0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http | Accepted |
 | [0020](0020-git-sources-with-go-git.md) | Fetch Git sources with go-git v6, leaving out files larger than the limit | Accepted |
@@ -38,6 +38,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0030](0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first | Accepted |
 | [0031](0031-merge-routine-dependabot-updates-automatically.md) | Merge Dependabot's patch and minor updates of Go modules and test databases automatically, once every required check passes | Accepted |
 | [0032](0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison | Accepted |
+| [0033](0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people | Accepted |
 
 ## When to write one
 

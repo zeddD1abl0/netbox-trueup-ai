@@ -9,7 +9,7 @@ This document describes how NetBox TrueUp AI is designed: its components, how da
 1. **TrueUp manages only what it is told to.** A NetBox object is managed only after a person imports a definition and TrueUp links the two. Unlinked objects, and fields a definition doesn't set, are left alone. TrueUp never deletes anything on its own. ([ADR 0006](adr/0006-manage-only-linked-objects.md))
 2. **Only the latest version counts.** TrueUp reads the latest content of each source (for Git, the latest commit on the configured branch or tag) and never goes back to an older version. It records which version it read, so you can see what each comparison and sync was based on. ([ADR 0009](adr/0009-source-kinds-and-format-adapters.md))
 3. **NetBox's rules, not ours.** Matching, defaults and field comparison follow what NetBox 4.7 does, taken from its source code and API schema. Each rule cites where it came from. ([ADR 0003](adr/0003-initial-netbox-target.md), [ADR 0008](adr/0008-describe-object-types-with-specs.md))
-4. **Compare, plan, then write.** Nothing reaches NetBox's main data except from a stored plan that a person approved; a plan can be written into a NetBox branch first, for review. Teams that need change management can require approval by others, tie each plan to an external change, and send plans through NetBox branches; a single user isn't slowed down by any of it. ([ADR 0010](adr/0010-write-through-reviewed-plans.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md), [ADR 0017](adr/0017-netbox-branches.md))
+4. **Compare, plan, then write.** Nothing reaches NetBox except from a stored plan that a person approved, written to main, or into a NetBox branch that a person then merges in NetBox. Teams that need change management can require approval by others, tie each plan to an external change, and send every plan through a branch; a single user isn't slowed down by any of it. ([ADR 0010](adr/0010-write-through-reviewed-plans.md), [ADR 0016](adr/0016-permissions-and-approval-policies.md), [ADR 0033](adr/0033-runs-against-main-or-a-chosen-branch.md))
 5. **Every change has a name on it.** Every action in TrueUp, and every write to NetBox, is recorded with who did it, when, how and with what result, and can be streamed to other systems. ([ADR 0014](adr/0014-audit-every-action.md))
 6. **Everything from outside is untrusted.** Source files, NetBox responses and browser input are validated before they are used. See [Trust boundaries](#trust-boundaries).
 7. **One binary at any scale.** The same binary runs as a CLI, as a single-node server on SQLite, or as a cluster of replicas on PostgreSQL.
@@ -47,7 +47,8 @@ devicetype-library itself already spans several object types: about 13,200 devic
 | Plan | A stored, ordered list of writes that would bring linked NetBox objects in line with their desired objects. |
 | Approval policy | An optional rule, for some scope of objects, that a plan needs approval from particular people before it reaches NetBox. Off by default. |
 | Change reference | The ticket for the external change a plan belongs to, by URL or by ticket number. |
-| Branch | A NetBox branch, from the netbox-branching plugin, that a plan can be written into and reviewed in before it is merged. |
+| Run | A person's work to true-up one target of a NetBox: main, or a branch. The target is chosen first; the run holds its plans, and ends when the person finishes or abandons it. |
+| Branch | A NetBox branch, from the netbox-branching plugin, that a run writes into, and a person reviews and merges in NetBox. |
 | Audit event | The record of one action: who did it, what, when, how and with what result. |
 
 ## System context
@@ -182,18 +183,24 @@ sequenceDiagram
 
     Op->>TU: import a selection of definitions
     TU->>DB: store links for matched objects, and import requests
-    Op->>TU: plan
-    TU->>NB: read linked objects with their ETags
-    TU->>DB: store plan
+    Op->>TU: plan, against main or a branch
+    TU->>NB: read linked objects with their ETags, in the run's target
+    TU->>DB: store the run and its plan
     TU-->>Op: plan for review
     Op->>TU: apply plan
-    TU->>DB: take the apply lock
+    TU->>DB: take the apply lock for the target
     loop each operation, in dependency order
         TU->>NB: POST or PATCH, with If-Match and changelog_message
         NB-->>TU: result, or 412 if the object changed
         TU->>DB: record result, link created objects
     end
     TU->>DB: update links, release the lock
+    opt the run's target is a branch
+        Op->>NB: merge the branch, after a change request where one is required
+        TU->>NB: read the branch's status
+        TU->>DB: record the merge
+    end
+    Op->>TU: finish the run
 ```
 
 ## Sources
@@ -311,8 +318,8 @@ TrueUp uses its own thin REST client, `internal/netbox`, built on `net/http` alo
 - **Authentication.** v2 tokens (`Authorization: Bearer nbt_…`). v1 tokens still work on 4.7 but are deprecated and removed in NetBox 5.0, so TrueUp warns when one is used. On connect, `/api/authentication-check/` confirms the token: NetBox refuses a bad token everywhere, but a proxy that drops the `Authorization` header leaves a request without one, which `/api/status/` answers when `LOGIN_REQUIRED` is off. The token is never logged, request logging redacts the `Authorization` header, and the token is removed from any text NetBox sends back before it reaches an error.
 - **Reads.** Cursor pagination (`?start=`) for full listings, following NetBox's next link rather than page sizes, since NetBox quietly caps pages at its own `MAX_PAGE_SIZE`. Children are read with filters covering many parents per request, not one request per object, so read cost scales with the selection, not the library. NetBox ignores filters it doesn't know, so the client checks that each child belongs to a parent it asked for. `compare` lists every manufacturer, and the device types of the manufacturers the definitions name, by `manufacturer_id`, since both device type rules include the manufacturer, and then the component templates of the device types the definitions match, by `device_type_id`, one listing for each collection; it asks for `fields=` the spec's fields and nested collections alone, such as a front port template's mappings in `rear_ports`, and an answer that doesn't decode through the spec fails the command rather than leaving an object out.
 - **Permissions.** NetBox answers 403 for a list the token's user may not view, so the client can tell which object types a token can read. Only a 403 with NetBox's `API-Version` header counts; one from a proxy or firewall is an error.
-- **Writes (M2).** `POST` and `PATCH` with a `changelog_message`, and `If-Match` on updates. Bulk creates send JSON arrays, which NetBox applies atomically, and NetBox 4.7's per-object bulk errors are mapped back to the operations that caused them. TrueUp never uses `?background=true`: NetBox runs those writes without the branch header, so they would land in main ([Change management](#change-management)).
-- **Branches (M2).** Where the netbox-branching plugin (1.2.x for NetBox 4.7) is installed: creating a branch and waiting until it is ready, reading and writing in it with the `X-NetBox-Branch` header, merging it, and following the asynchronous jobs that sync and merge run as. TrueUp checks for the plugin when it connects.
+- **Writes (M2).** `POST` and `PATCH` with a `changelog_message`, and `If-Match` on updates. NetBox checks `If-Match` only when a request changes one object (`NetBoxModelViewSet.update` in `netbox/netbox/api/viewsets/__init__.py`; `BulkUpdateModelMixin` in `mixins.py` beside it doesn't), so updates go one object at a time. Bulk creates send JSON arrays, which NetBox applies atomically, and NetBox 4.7's per-object bulk errors are mapped back to the operations that caused them. TrueUp never uses `?background=true`: NetBox runs those writes without the branch header, so they would land in main ([Change management](#change-management)).
+- **Branches (M2).** Where the netbox-branching plugin (1.2.x for NetBox 4.7) is installed and branches are turned on: listing branches, and reading and writing in one with the `X-NetBox-Branch` header; where TrueUp may manage branches, creating one and waiting until it is ready, and deleting it. TrueUp never merges a branch ([ADR 0033](adr/0033-runs-against-main-or-a-chosen-branch.md)). It reads NetBox's installed plugins from `/api/status/` when it connects.
 - **Resilience.** A timeout on every request, a cap on concurrent requests, and a response size limit (`netbox.timeout`, `netbox.max_requests` and `netbox.max_response_size`). Reads are retried (`netbox.retries`) after connection failures, timeouts and 429, 500, 502, 503 and 504 answers, with backoff and jitter, honouring `Retry-After` on 429 and 503 up to a minute. Failures that would only repeat, such as a certificate that doesn't verify, aren't retried. Writes are never retried automatically: a failed or uncertain write ends its operation, and the executor decides what happens next.
 - **TLS.** The system trust store, plus an optional CA bundle for private CAs (`netbox.ca_bundle`). Verification can't be turned off. Redirects are never followed, so the token goes only to `netbox.url`. Proxies come from `HTTPS_PROXY` and `NO_PROXY`, for `https` only, since a proxy would see a plain `http` request's token.
 
@@ -338,6 +345,7 @@ erDiagram
     SOURCE ||--o{ LINK : "defines"
     LINK ||--o{ OVERRIDE : "adjusted by"
     SOURCE |o--o{ OVERRIDE : "supplies fields to"
+    RUN ||--o{ PLAN : "holds"
     PLAN ||--|{ OPERATION : "contains"
     LINK |o--o{ OPERATION : "changed by"
 ```
@@ -349,7 +357,7 @@ erDiagram
 | Comparisons | The latest comparison of each definition with NetBox, alone, by its ID: when, against which source version and NetBox, and the result, as `compare --output json` prints an object of that definition alone. An object across sources is built by merging its definitions' comparisons ([ADR 0032](adr/0032-compare-definitions-across-sources-as-objects.md)). A run of what NetBox has, or of everything, replaces all of a source's; a selection only those it compared; a load removes those of the definitions it removes | M1 (exists) |
 | Links | Provenance: the primary definition (source and file) each managed NetBox object follows, who linked it and when, and the source version and time of its last sync | M2 |
 | Import requests | Definitions a person asked to import that NetBox doesn't have yet | M2 |
-| Plans and operations | Sync history: each plan, its change reference and NetBox branch, who approved and applied it, and each write with before and after values | M2 |
+| Runs, plans and operations | Sync history: each run, its target (main or a branch) and how it ended; each plan, its change reference, who approved and applied it, and each write with before and after values | M2 |
 | Audit events | Every action: who, what, when, how and the result. Append-only | M2, with UI actions from M3 |
 | Users and sessions | Local accounts, single sign-on identities, users and groups provisioned through SCIM, and sessions shared across replicas | M3, M4 |
 | Permissions and approval policies | Role grants on scopes, approval policies, and each approval or rejection | M3, M4 |
@@ -395,7 +403,7 @@ The loader (`internal/config`) reads each layer into its own koanf instance and 
 **Importing and linking.** A link records that a NetBox object (object type and ID) is managed from its primary definition (source and path). Links are created only when a person imports an object ([ADR 0006](adr/0006-manage-only-linked-objects.md)). Importing from a source makes that source's definition primary. A person can later switch the primary to another source's definition, or to NetBox, which leaves the object as it is apart from its overrides ([ADR 0013](adr/0013-compose-objects-across-sources.md)).
 
 - If the object is a candidate, TrueUp links it to the matching NetBox object, and the next plan updates that object.
-- If it is absent, the next plan creates the object, and TrueUp links it once the create succeeds. If a matching object has appeared by the time a plan is built, TrueUp links to it instead of creating a duplicate.
+- If it is absent, the next plan creates the object, and TrueUp links it once the create succeeds. If a matching object has appeared by the time a plan is built, TrueUp links to it instead of creating a duplicate. An object created in a run's branch is linked for that branch until the branch is merged, and keeps its ID in main, since netbox-branching shares main's ID sequences and merges each create with its ID.
 - A conflict needs a person to pick the NetBox object, or resolve the clash in NetBox first.
 
 People can import in bulk by selection, for example every definition under `device-types/Juniper/`. This is how users choose what syncs. Unlinking stops management and leaves the NetBox object as it is.
@@ -409,9 +417,9 @@ Prerequisites, such as the manufacturer a device type refers to, are looked up b
 - Operations run in dependency order, worked out from the references the specs declare: manufacturers, then device types, then component templates, each after the templates it refers to. Rear ports come before the front ports mapped to them, power ports before the power outlets that refer to them, and an interface after its parent and bridge interfaces. A front port's mappings are written with it, in its `rear_ports`, which replaces the front port's set: the mappings only NetBox has are sent back with the definition's, so TrueUp leaves them as they are.
 - Creates send the fields the definition sets. Updates `PATCH` only the fields that differ.
 - Deletes appear only when a person selects an orphaned object or component for removal.
-- The plan records the version of each source it used, the digest of every file it used, and the ETag of every NetBox object it read.
+- The plan records its run, and so its target, the version of each source it used, the digest of every file it used, the load that read them, and the ETag of every NetBox object it changes.
 
-Plans are stored, and nothing reaches NetBox's main data until the plan is approved. With approval policies off, the default, the person who applies a plan is its approver. With them on, the plan needs the approvals its policy asks for, and it may first be written into a NetBox branch so reviewers can see it there ([Change management](#change-management)).
+Plans are stored, and nothing reaches NetBox until the plan is approved. With approval policies off, the default, the person who applies a plan is its approver; for a branch, the person who merges it in NetBox confirms it again. With policies on, the plan needs the approvals its policy asks for ([Change management](#change-management)).
 
 **Applying.** The executor runs an approved plan:
 
@@ -420,25 +428,27 @@ Plans are stored, and nothing reaches NetBox's main data until the plan is appro
 - Every write carries a `changelog_message` identifying TrueUp, the source, the file, the source version, the plan, its change reference and the person who approved it ([ADR 0007](adr/0007-provenance-and-changelog-messages.md)). NetBox records TrueUp's service account as the user for every write, so the message is how NetBox's own history shows the person behind a change. NetBox stores at most 200 characters (`ObjectChange.message` in `core/models/change_logging.py`), and its API doesn't check the length (`ChangeLogMessageSerializer` in `netbox/api/serializers/features.py`), so TrueUp keeps every message within that limit itself. The fixed parts come first: TrueUp's marker, the plan number, the approver and a 12-character commit. The ticket and the file path share what is left, shortened if needed. The plan number leads to the full record in TrueUp.
 - A write that fails, or whose outcome is unknown, such as a `POST` that timed out, is never retried blindly. The executor stops, re-reads NetBox and re-plans. Comparison is idempotent, so finished work shows up as in sync. A create that did go through shows up as a matching object, which the new plan links, and a prerequisite is found by its natural key.
 - Each operation's result, with before and after values, is stored as history and in the audit log. Links record the source version and time of their last successful sync.
-- Only one plan applies at a time per NetBox instance, enforced by a lock in the database, whether the plan was started from the CLI, the UI or a schedule.
+- Only one plan applies at a time to each target of a NetBox instance, main or a branch, enforced by a lock in the database, whether the plan was started from the CLI, the UI or a schedule.
+- A write to main that NetBox refuses because main is protected, which TrueUp can't tell in advance, ends the apply with an error that says so and names the settings that send runs through branches.
 
 **Permission set.** Specs know each object type's endpoint and the operations a plan can perform. From them TrueUp generates the NetBox permissions its token needs, as a file ready to import: view on everything it reads, add and change on what it writes, and the branching plugin's permissions when branches are used.
 
 ## Change management
 
-A single user running TrueUp against their own NetBox wants to build a plan and apply it. A large organization with several teams wants every change approved by the right people, tied to a change in its own process, and reviewable in NetBox before it lands. TrueUp supports both: the controls below are off by default and turned on where they are needed ([ADR 0016](adr/0016-permissions-and-approval-policies.md), [ADR 0017](adr/0017-netbox-branches.md)).
+A single user running TrueUp against their own NetBox wants to build a plan and apply it to main. A large organization with several teams wants every change approved by the right people, tied to a change in its own process, and reviewed in NetBox before it lands, often with main protected so that every change goes through a branch. TrueUp supports both: the controls below are off by default and turned on where they are needed ([ADR 0016](adr/0016-permissions-and-approval-policies.md), [ADR 0033](adr/0033-runs-against-main-or-a-chosen-branch.md)).
 
 ```mermaid
 flowchart LR
-    build["Build plan"] --> target{"Target"}
-    target -->|"main"| approve1["Approval,<br/>if a policy applies"]
-    approve1 --> apply["Apply to main"]
-    target -->|"branch"| write["Write into a new<br/>NetBox branch"]
-    write --> approve2["Approval: a NetBox change request<br/>where installed, else TrueUp"]
-    approve2 --> merge["Merge the branch"]
+    run["Start a run:<br/>main or a branch"] --> build["Build plan"]
+    build --> approve["Approval,<br/>if a policy applies"]
+    approve --> target{"Target"}
+    target -->|"main"| apply["Apply to main"]
+    target -->|"branch"| write["Apply into the branch"]
+    write --> merge["A person merges the branch in NetBox,<br/>after a change request where one is required"]
+    merge --> record["TrueUp records the merge"]
 ```
 
-**Change references (M2).** A plan can carry a change reference: the ticket for the change in the organization's own process, by URL or by ticket number. It is recorded with the plan, in every audit event and outbound event about it, in the changelog message of each write, and in the name and description of the plan's branch. An approval policy can require one, and can require it to match a pattern, such as a URL on the organization's ticketing system or `CHG` followed by digits.
+**Change references (M2).** A plan can carry a change reference: the ticket for the change in the organization's own process, by URL or by ticket number. It is recorded with the plan, in every audit event and outbound event about it, in the changelog message of each write, and in the description of a branch TrueUp creates for the plan's run. An approval policy can require one, and can require it to match a pattern, such as a URL on the organization's ticketing system or `CHG` followed by digits.
 
 **Approval policies (M4).** Off by default. When an administrator turns them on:
 
@@ -447,21 +457,16 @@ flowchart LR
 - The person who built a plan can't approve it.
 - An approval is bound to the plan's exact content. A plan that is rebuilt, for example because it went stale, needs fresh approvals.
 - Approvals, rejections and their comments are recorded in the audit log.
-- Applying, or merging the plan's branch, waits until the policy is satisfied.
+- Applying waits until the policy is satisfied, to main or into a branch. Merging a branch is NetBox's to decide.
 
-**NetBox branches (M2).** Where the netbox-branching plugin is installed, a plan can target a branch instead of main, chosen for each plan or required by a policy:
+**NetBox branches (M2).** Where the netbox-branching plugin is installed, runs can go through branches instead of main ([ADR 0033](adr/0033-runs-against-main-or-a-chosen-branch.md)):
 
-- TrueUp creates a branch for the plan, named after the plan and its change reference, waits for it to be ready, and writes the plan into it with the same `If-Match` checks as on main. A fresh branch is a copy of main, so an object changed since planning still fails its check and the plan goes stale.
+- Three settings for the NetBox connection decide it. `netbox.branching`, off by default, sends every run to main, and nothing asks about branches. With it on, `netbox.protect_main`, on by default, keeps every run in a branch, and main isn't offered; with that off, a run may target main or a branch. `netbox.manage_branches`, off by default, lets TrueUp create a branch for a run and delete the branches it created; never another.
+- TrueUp reads NetBox's installed plugins when it connects. Branching turned on without netbox-branching is an error, and netbox-branching installed with branching off a warning that branching is available but not turned on.
+- A run picks its branch first, from NetBox's list of ready branches, and compares, plans and writes in it, with the same `If-Match` checks as on main: a branch is a copy of main, so an object changed since planning still fails its check and the plan goes stale.
 - Reviewers see the change in NetBox itself, in the branch's diff, as well as in TrueUp.
-- Approval gates the merge, not the write into the branch: a branch is isolated, so writing to it changes nothing in main.
-- TrueUp merges the branch once the plan is approved, and follows the merge job to its end. Before merging, the same checks as for applying run again: a changed file the plan used, or a stale branch, makes the plan stale.
-- If the merge finds conflicts with changes made in main since, TrueUp reports them and never acknowledges them on anyone's behalf. Acknowledging a conflict makes the branch's values win, so it is a decision for a person.
-- Where the netbox-changes plugin is also installed, NetBox's change management is the final arbiter for plans written into branches. TrueUp checks for the plugin when it connects, and then:
-  - opens a NetBox change request for every such branch, with the plan and its ticket in the summary, under the NetBox review policy configured for that scope;
-  - checks its own approval policy, if one applies, before opening the change request, so the policy can add requirements such as a ticket or a TrueUp reviewer, but never approves a merge NetBox hasn't approved;
-  - merges once NetBox approves the change request, or records the merge if someone merges the branch in NetBox, and closes the plan as rejected if NetBox rejects it;
-  - never holds the plugin's bypass permission: the permission set TrueUp generates leaves it out.
-- With that plugin's `protect_main` setting, NetBox accepts changes only through branches, and TrueUp writes every plan into one.
+- TrueUp never merges. A person merges the branch in NetBox, and so confirms what reaches main; if NetBox finds conflicts with changes made in main since, the person resolves them there. TrueUp follows the branch's status and records the merge, and the objects it created in the branch stay managed in main, with the same IDs. A branch archived or deleted without being merged abandons its run.
+- TrueUp doesn't integrate with NetBox Changes, NetBox Labs' change request plugin, which open-source NetBox doesn't have: its change requests work on TrueUp's branches as on any other, as a diff against main, and the merge waits for their approval in NetBox. Whether that plugin protects main isn't visible through the API, so TrueUp doesn't guess: a write to main that NetBox refuses ends the apply with an error that says main may be protected, and names the settings. The permission set TrueUp generates never includes the plugin's bypass right; an operator who gives TrueUp a superuser token and turns `netbox.protect_main` off chooses to write to main anyway.
 
 ## Identity, access and audit
 
@@ -645,7 +650,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | B1 | Source to TrueUp | Content and metadata from Git repositories, URLs or directories, written by people TrueUp doesn't control | Oversized files, YAML bombs and deep nesting; archive bombs, and archive entries that escape their directory; symlinks and path tricks; hostile JSON schemas; values that become XSS in the UI or junk in NetBox; credentials leaking through source URLs | For every kind: only administrators add sources; limits on size, count, depth and nodes, with sizes and counts checked from a snapshot's list before a file is read, since Git stores a file once however many names list it; paths confined to the snapshot; strict YAML, read as PyYAML reads it, with aliases, tags and duplicate keys refused; JSON Schema with every reference outside the source's own schemas refused, and the validator's input kept to numbers it can hold; spec validation; values quoted, cut short and escaped in errors and output; templ escaping; credentials by reference, with user info stripped from logged URLs. Git: read from Git objects, never a checkout; `https` and `ssh` URLs only, and `https` alone until credentials are supported; TLS verification and no redirects; limits on fetch time, disk written and objects fetched. HTTP: TLS verification, few redirects, limits on response size and decompression. Local files: only under directories the configuration allows |
 | B2 | NetBox to TrueUp | API responses | A compromised or impersonated NetBox sending hostile values or huge responses, or leading the token elsewhere | TLS verification, with a custom CA allowed but no way to turn it off; redirects never followed; version check, and the API version checked on every answer, so that a proxy's 403 isn't taken for NetBox's; response size limits; JSON only; listings checked for rising IDs and the parents asked for; NetBox's text quoted, cut short and stripped of the token in errors; decoding through specs, with an answer that doesn't decode failing the command rather than leaving an object out; two objects that break NetBox's own uniqueness rules reported as a conflict; escaping in the CLI and the UI |
-| B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a merge that overrides someone else's change | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them; merge conflicts never acknowledged automatically; changelog messages for audit |
+| B3 | TrueUp to NetBox | Writes made with TrueUp's API token, to main or into a branch | Wrong writes from a bug, a bad upstream change or a stale plan; a write to main where every change should go through a branch | A least-privilege token from the generated permission set; writes only to linked objects, from approved plans; only changed fields sent; `If-Match`; no deletes unless a person selects them; approval policies and branches where teams need them, with main kept out of runs where it is protected; TrueUp never merges a branch, so a person confirms what reaches main through one; changelog messages for audit |
 | B4 | Browser to TrueUp | Logins, form posts, override choices, live YAML edits | Credential stuffing, CSRF, XSS, privilege escalation; hostile or oversized YAML, and floods of live-edit requests | argon2id hashes and login rate limits; hardened session cookies; cross-origin protection; Content Security Policy; role checks in every handler; identity never taken from proxy-set headers; live edits parsed and validated like source files, with limits on request size and rate; audit log |
 | B5 | Operator to TrueUp | Config file, environment, secret files | Secrets leaking through logs, `config show`, error messages or the UI | Secrets only from the environment or files, never from command-line flags; redaction everywhere, error messages included; a warning when a file holding secrets is readable by every user; no config file read from the working directory |
 | B6 | TrueUp and its database | All of TrueUp's state | Leaked database credentials; tampering by anyone with database access | The database is inside the trust boundary; its credentials are secrets, never printed, and neither is the URL; TLS to PostgreSQL as `sslmode` sets it, by default libpq's `prefer`, which verifies nothing, so `verify-full` is recommended; TrueUp's PostgreSQL tables in a schema of their own, with `search_path` pinned to it, which only TrueUp's role may own or create objects in, checked with `search_path` set to `pg_catalog` alone before anything trusts it; the SQLite file is created readable by its owner only (on Windows, for now, it takes its directory's permissions) |
@@ -715,7 +720,7 @@ ADRs that record this design:
 | [0014](adr/0014-audit-every-action.md) | Record every action in an append-only audit log, and stream it out |
 | [0015](adr/0015-sign-in-and-provisioning.md) | Sign in with OpenID Connect, SAML or local accounts, provision with SCIM, and never trust proxy headers |
 | [0016](adr/0016-permissions-and-approval-policies.md) | Scoped permissions, and approval policies and change references that can be turned on |
-| [0017](adr/0017-netbox-branches.md) | Write plans through NetBox branches where teams want them |
+| [0017](adr/0017-netbox-branches.md) | Write plans through NetBox branches where teams want them (superseded by 0033) |
 | [0018](adr/0018-cli-conventions.md) | CLI conventions: command names, exit codes and machine-readable output |
 | [0019](adr/0019-own-netbox-rest-client.md) | Read and write NetBox through our own REST client on net/http |
 | [0020](adr/0020-git-sources-with-go-git.md) | Fetch Git sources with go-git v6, leaving out files larger than the limit |
@@ -730,6 +735,7 @@ ADRs that record this design:
 | [0029](adr/0029-keep-a-lookup-table-of-definitions.md) | Keep each source's definitions in the database, and read them from there |
 | [0030](adr/0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first |
 | [0032](adr/0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison |
+| [0033](adr/0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people |
 
 ADRs still to write, with the work that needs each one:
 
@@ -771,7 +777,6 @@ Today every write uses TrueUp's own token, so NetBox attributes every change to 
 
 - storing tokens encrypted at rest, or asking for one at apply time and never storing it;
 - what writes for schedules and automatic apply, where no person is present;
-- which token merges a branch, since a merge replays each change under its original author;
 - deleting a user's stored token when they are deprovisioned through SCIM.
 
 ### Checking change references
