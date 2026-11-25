@@ -83,5 +83,5 @@ Chosen options: "actions that change what TrueUp manages, NetBox holds or TrueUp
 ## More information
 
 - Roadmap, milestone 2, step 16.
-- Finding the actor takes no context, though AGENTS.md asks it of functions that do I/O: the user database's lookup, the host's name and, on Windows, an account's name, which can ask a domain controller, are system calls a context can't interrupt.
+- Finding the actor takes the command's context, as AGENTS.md asks of functions that do I/O, though the lookups are system calls a context can't interrupt: the user database's, the host's name and, on Windows, an account's name, which can ask a domain controller. They run on a goroutine of their own, which the command stops waiting for when its context ends, so one interrupt stops it; a lookup still blocked finishes on its own, its result unread. Only commands find their actor this way, and they exit soon after.
 - Go's `os/user` (1.26 and 1.27), `lookup_stubs.go`: without cgo, `current()` returns `$USER` as the name when the user ID isn't in `/etc/passwd`; `lookup_unix.go` reads `/etc/passwd` alone.

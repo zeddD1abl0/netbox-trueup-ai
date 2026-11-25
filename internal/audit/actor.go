@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -32,10 +33,41 @@ import (
 // It fails where it can't tell who runs the process, or on which host: on
 // Windows without the process's token, where the user database can't be
 // read, or where the host's name can't be. An action nobody can be named
-// for isn't taken. It takes no context: neither the user database's lookup nor
-// the host's name can be interrupted, and both are local reads.
-func CommandLineActor(getenv func(string) string) (Actor, error) {
-	return commandLineActor(thisProcess(), getenv)
+// for isn't taken.
+//
+// It returns ctx's error if ctx ends first. The lookups are system calls
+// that can't be interrupted, and can wait on the network: a Windows
+// account's name can ask a domain controller, and with cgo the user
+// database can ask a directory. So they run on a goroutine of their own,
+// which CommandLineActor stops waiting for; a lookup still blocked then
+// finishes on its own, its result unread. Only a command finds its actor
+// this way, and it exits soon after.
+func CommandLineActor(ctx context.Context, getenv func(string) string) (Actor, error) {
+	return lookUpActor(ctx, thisProcess(), getenv)
+}
+
+// lookUpActor finds p's actor, as commandLineActor does, on a goroutine of
+// its own, and returns ctx's error if ctx ends first.
+func lookUpActor(ctx context.Context, p process, getenv func(string) string) (Actor, error) {
+	if err := ctx.Err(); err != nil {
+		return Actor{}, err
+	}
+	type result struct {
+		actor Actor
+		err   error
+	}
+	// Buffered, so that a lookup nobody waits for any more can finish.
+	done := make(chan result, 1)
+	go func() {
+		a, err := commandLineActor(p, getenv)
+		done <- result{a, err}
+	}()
+	select {
+	case r := <-done:
+		return r.actor, r.err
+	case <-ctx.Done():
+		return Actor{}, ctx.Err()
+	}
 }
 
 // process is what CommandLineActor reads of the process, so that tests can

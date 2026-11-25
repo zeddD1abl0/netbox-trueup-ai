@@ -9,6 +9,7 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -100,8 +101,8 @@ type By struct {
 
 // CommandLineBy returns where an action run at the command line comes from:
 // the operating system user running this process (CommandLineActor).
-func CommandLineBy(getenv func(string) string) (By, error) {
-	actor, err := CommandLineActor(getenv)
+func CommandLineBy(ctx context.Context, getenv func(string) string) (By, error) {
+	actor, err := CommandLineActor(ctx, getenv)
 	if err != nil {
 		return By{}, err
 	}

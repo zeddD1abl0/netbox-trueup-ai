@@ -225,7 +225,7 @@ func cacheRoot(cfg *config.Config) (string, error) {
 // which cacheRoot made, recording the fetches in db, which is open.
 func (a *app) fetchInto(ctx context.Context, db store.Store, cfg *config.Config, root string, sources []config.Source) (fetchJSON, error) {
 	// Who fetches, before anything is fetched.
-	by, err := a.by()
+	by, err := a.by(ctx)
 	if err != nil {
 		return fetchJSON{}, err
 	}

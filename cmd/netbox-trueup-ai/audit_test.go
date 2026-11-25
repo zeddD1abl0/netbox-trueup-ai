@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -279,6 +280,19 @@ func TestAuditFilter(t *testing.T) {
 // TestAuditActsAsTheProcessUser checks that a command acts as the
 // operating system user running it, and records sudo's user from the
 // command's environment.
+// TestByInterrupted checks that a command interrupted while it finds who
+// runs it says so, rather than that it can't tell.
+func TestByInterrupted(t *testing.T) {
+	t.Parallel()
+	a := &app{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := a.by(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "interrupted while finding who runs this command") {
+		t.Errorf("by with ctx ended = %v, want it interrupted", err)
+	}
+}
+
 func TestAuditActsAsTheProcessUser(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

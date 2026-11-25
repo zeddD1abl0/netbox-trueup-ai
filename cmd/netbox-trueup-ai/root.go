@@ -38,12 +38,13 @@ type app struct {
 
 // by returns who runs this command, for the audit log: the operating system
 // user, with the process's environment for sudo's variables. It fails where
-// it can't tell, and a command that changes what is audited stops then.
-func (a *app) by() (audit.By, error) {
+// it can't tell, or ctx ends first, and a command that changes what is
+// audited stops then.
+func (a *app) by(ctx context.Context) (audit.By, error) {
 	if a.whoami != nil {
 		return a.whoami()
 	}
-	by, err := audit.CommandLineBy(func(name string) string {
+	by, err := audit.CommandLineBy(ctx, func(name string) string {
 		// The first value wins, as Go's and C's getenv take it.
 		for _, kv := range a.environ {
 			if v, ok := strings.CutPrefix(kv, name+"="); ok {
@@ -52,7 +53,10 @@ func (a *app) by() (audit.By, error) {
 		}
 		return ""
 	})
-	if err != nil {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return audit.By{}, fmt.Errorf("interrupted while finding who runs this command, for the audit log: %w", ctx.Err())
+	case err != nil:
 		return audit.By{}, fmt.Errorf("can't tell who runs this command, for the audit log: %w", err)
 	}
 	return by, nil

@@ -1,10 +1,12 @@
 package audit
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os/user"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,7 +170,7 @@ func TestCommandLineActorOnWindows(t *testing.T) {
 
 func TestCommandLineActorOfThisProcess(t *testing.T) {
 	t.Parallel()
-	got, err := CommandLineActor(env("USER", "mallory"))
+	got, err := CommandLineActor(t.Context(), env("USER", "mallory"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +179,56 @@ func TestCommandLineActorOfThisProcess(t *testing.T) {
 	}
 	if got.Name == "mallory" {
 		t.Error("CommandLineActor took the user's name from $USER")
+	}
+}
+
+func TestCommandLineActorStopsWaitingWhenCtxEnds(t *testing.T) {
+	t.Parallel()
+	users := map[string]string{"1000": "carol"}
+	// A lookup that blocks, as one asking an unreachable directory does.
+	started, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	p := fakeProcess(1000, users, "build")
+	p.lookupID = func(id string) (*user.User, error) {
+		close(started)
+		<-release
+		return &user.User{Uid: id, Username: "carol"}, nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	got := make(chan error, 1)
+	go func() {
+		_, err := lookUpActor(ctx, p, env())
+		got <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-got:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("lookUpActor after ctx ended = %v, want ctx's error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("lookUpActor kept waiting for a blocked lookup after ctx ended")
+	}
+
+	// A context that has ended looks nothing up.
+	var looked atomic.Bool
+	q := fakeProcess(1000, users, "build")
+	q.lookupID = func(id string) (*user.User, error) {
+		looked.Store(true)
+		return &user.User{Uid: id, Username: "carol"}, nil
+	}
+	if _, err := lookUpActor(ctx, q, env()); !errors.Is(err, context.Canceled) {
+		t.Errorf("lookUpActor with ctx ended = %v, want ctx's error", err)
+	}
+	// Give a lookup started anyway the time to show.
+	time.Sleep(50 * time.Millisecond)
+	if looked.Load() {
+		t.Error("lookUpActor looked the user up though ctx had ended")
+	}
+	// Otherwise it returns the lookup's result.
+	if got, err := lookUpActor(t.Context(), q, env()); err != nil || got.Name != "carol" {
+		t.Errorf("lookUpActor = %+v, %v; want carol", got, err)
 	}
 }
 
