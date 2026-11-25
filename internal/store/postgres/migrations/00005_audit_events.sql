@@ -7,12 +7,13 @@
 -- by a foreign key, and an event refers to nothing so, since events outlive
 -- what they describe.
 CREATE TABLE audit_events (
-    -- Orders events: each is greater than those recorded before it. A
-    -- sequence never hands out a value twice; a transaction that rolls back
-    -- leaves a gap.
+    -- Orders events as they were inserted: each is greater than those
+    -- inserted before it, though a transaction that inserted first can
+    -- commit after one that inserted later. A sequence never hands out a
+    -- value twice; a transaction that rolls back leaves a gap.
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    -- When it was recorded.
-    occurred_at timestamptz NOT NULL,
+    -- When it was recorded: never infinity, which nothing can read.
+    occurred_at timestamptz NOT NULL CHECK (pg_catalog.isfinite(occurred_at)),
     -- Who acted: how they were identified, their name ('' where it isn't
     -- known), their ID, the host, and the user who ran sudo, if any, by
     -- name ('' where sudo gives none) and ID.
@@ -38,8 +39,9 @@ CREATE TABLE audit_events (
     netbox_url text,
     netbox_branch text,
     netbox_id bigint CHECK (netbox_id > 0),
-    -- The rest, as a JSON object.
-    details text NOT NULL,
+    -- The rest, as a JSON object, so that one row written past the store
+    -- can't stop the log being read. A cast that fails refuses the row too.
+    details text NOT NULL CHECK (pg_catalog.json_typeof(details::pg_catalog.json) = 'object'),
     CHECK ((result = 'failed') = (error IS NOT NULL)),
     CHECK (completes IS NULL OR result != 'started')
 );

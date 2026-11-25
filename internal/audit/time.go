@@ -24,7 +24,8 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, errors.New("is empty")
 	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+	t, timeErr := time.Parse(time.RFC3339Nano, s)
+	if timeErr == nil {
 		if t.IsZero() {
 			// A Filter takes the zero time for no bound.
 			return time.Time{}, fmt.Errorf("%s is the zero time, which stands for no bound: give a later time", strconv.Quote(s))
@@ -35,10 +36,33 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	ago, err := parseAgo(s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%s is neither an RFC 3339 time, such as 2026-11-23T09:30:00Z, nor a duration back from now, such as 90m, 24h or 7d", strconv.Quote(s))
+	switch {
+	case err == nil:
+		return now.Add(-ago).UTC(), nil
+	case errors.Is(err, errOutOfRange):
+		return time.Time{}, fmt.Errorf("%s %w", strconv.Quote(s), err)
+	case looksLikeTime(s):
+		return time.Time{}, fmt.Errorf("%s isn't an RFC 3339 time, such as 2026-11-23T09:30:00Z: %w", strconv.Quote(s), timeErr)
 	}
-	return now.Add(-ago).UTC(), nil
+	return time.Time{}, fmt.Errorf("%s is neither an RFC 3339 time, such as 2026-11-23T09:30:00Z, nor a duration back from now, such as 90m, 24h or 7d", strconv.Quote(s))
+}
+
+// errOutOfRange is parseAgo's error for a duration that is one, but reaches
+// back too far, or forward.
+var errOutOfRange = errors.New("is a duration back from now that is negative, or reaches back more than 100 years")
+
+// looksLikeTime says whether s starts as an RFC 3339 time does, with a
+// date, so that an error can say why it isn't one.
+func looksLikeTime(s string) bool {
+	if len(s) < 10 || s[4] != '-' || s[7] != '-' {
+		return false
+	}
+	for _, i := range []int{0, 1, 2, 3, 5, 6, 8, 9} {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // parseAgo reads a duration that isn't negative and reaches back no further
@@ -48,11 +72,13 @@ func parseAgo(s string) (time.Duration, error) {
 	if days, ok := strings.CutSuffix(s, "d"); ok {
 		// ParseUint refuses a sign.
 		n, err := strconv.ParseUint(days, 10, 32)
-		if err != nil {
+		switch {
+		case errors.Is(err, strconv.ErrRange):
+			return 0, errOutOfRange
+		case err != nil:
 			return 0, errors.New("not a number of days")
-		}
-		if n > uint64(maxAgo/(24*time.Hour)) {
-			return 0, errors.New("too far back")
+		case n > uint64(maxAgo/(24*time.Hour)):
+			return 0, errOutOfRange
 		}
 		d = time.Duration(n) * 24 * time.Hour
 	} else {
@@ -62,7 +88,7 @@ func parseAgo(s string) (time.Duration, error) {
 		}
 	}
 	if d < 0 || d > maxAgo {
-		return 0, errors.New("negative, or too far back")
+		return 0, errOutOfRange
 	}
 	return d, nil
 }

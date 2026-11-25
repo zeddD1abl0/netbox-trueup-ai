@@ -39,8 +39,9 @@ CREATE TABLE audit_events (
     netbox_url TEXT,
     netbox_branch TEXT,
     netbox_id INTEGER CHECK (netbox_id > 0),
-    -- The rest, as a JSON object.
-    details TEXT NOT NULL,
+    -- The rest, as a JSON object, so that one row written past the store
+    -- can't stop the log being read.
+    details TEXT NOT NULL CHECK (json_valid(details) AND json_type(details) = 'object'),
     CHECK ((result = 'failed') = (error IS NOT NULL)),
     CHECK (completes IS NULL OR result != 'started')
 ) STRICT;

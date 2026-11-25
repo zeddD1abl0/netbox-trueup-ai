@@ -71,10 +71,15 @@ func testFetchEvents(t *testing.T, s store.Store) {
 	record(t, s, failed)
 	record(t, s, failure("down", t0, "unreachable"))
 	record(t, s, success("down", "v1", t0.Add(time.Minute), "a.yaml"))
+	// A first fetch says which ref its version came from, where the
+	// configuration names none.
+	fresh := success("fresh", "v1", t0, "a.yaml")
+	fresh.Source.Ref, fresh.Ref = "", "master"
+	record(t, s, fresh)
 
 	checkEvents(t, listEvents(t, s, audit.Filter{}).Events, from, time.Now(),
 		// Fetching a version already held, or failing, changes nothing.
-		sourceEvent(audit.SourceAdded, "lib", `{"kind":"git","url":"https://git.example.com/lib.git","ref":"main","version":"v1"}`),
+		sourceEvent(audit.SourceAdded, "lib", `{"kind":"git","url":"https://git.example.com/lib.git","ref":"main","version":"v1","resolved_ref":"main"}`),
 		sourceEvent(audit.SourceNewVersion, "lib", `{"before":"v1","after":"v2","ref":"main"}`),
 		sourceEvent(audit.SourceReconfigured, "lib",
 			`{"before":{"kind":"git","url":"https://git.example.com/lib.git","ref":"main"},"after":{"kind":"git","url":"https://git.example.com/moved.git","ref":""}}`),
@@ -86,6 +91,7 @@ func testFetchEvents(t *testing.T, s store.Store) {
 		// and its first snapshot is a new version.
 		sourceEvent(audit.SourceAdded, "down", `{"kind":"git","url":"https://git.example.com/down.git","ref":"main"}`),
 		sourceEvent(audit.SourceNewVersion, "down", `{"before":null,"after":"v1","ref":"main"}`),
+		sourceEvent(audit.SourceAdded, "fresh", `{"kind":"git","url":"https://git.example.com/fresh.git","ref":"","version":"v1","resolved_ref":"master"}`),
 	)
 }
 

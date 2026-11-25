@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
@@ -28,6 +29,8 @@ func TestPrepareEventRefusesWhatTheSchemaRefuses(t *testing.T) {
 		{"a started event completing another", func(e *audit.Event) { e.Result, e.Error = audit.Started, "" }},
 		{"a negative completion", func(e *audit.Event) { e.Completes = -1 }},
 		{"a negative NetBox ID", func(e *audit.Event) { e.NetBoxID = -1 }},
+		{"details that aren't JSON", func(e *audit.Event) { e.Details = json.RawMessage(`{"a":`) }},
+		{"details that aren't an object", func(e *audit.Event) { e.Details = json.RawMessage(`[1]`) }},
 	}
 	for _, tt := range tests {
 		e := valid

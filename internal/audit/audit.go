@@ -29,13 +29,14 @@ const (
 type Actor struct {
 	Kind ActorKind
 	// Name is the user's name, such as carol or CORP\carol, or "" where
-	// the system's user database has no entry for the user's ID.
+	// the system's user database has no entry for the user's ID, or the
+	// host has none.
 	Name string
 	// ID is the user's ID: a Unix user ID, such as 1000, or a Windows
 	// security identifier.
 	ID string
-	// Host is the name of the host the actor acted on, or "" where it
-	// couldn't be read.
+	// Host is the name of the host the actor acted on. At the command line
+	// it is always known: CommandLineActor fails where it isn't.
 	Host string
 	// SudoUser and SudoUserID are, for a command run through sudo, the user
 	// who ran sudo, as sudo's environment reports them: a name, or "" where

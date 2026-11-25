@@ -85,9 +85,9 @@ func TestAuditRecordsSourceChanges(t *testing.T) {
 		return `{"kind":"git","url":"` + repoURL + `","ref":"` + ref + `"}`
 	}
 	want := []eventSummary{
-		{"source.added", "lib", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"","version":"` + commit + `"}`},
+		{"source.added", "lib", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"","version":"` + commit + `","resolved_ref":"master"}`},
 		{"source.reconfigured", "lib", "tester", `{"before":` + conf("") + `,"after":` + conf("master") + `}`},
-		{"source.added", "other", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"","version":"` + commit + `"}`},
+		{"source.added", "other", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"","version":"` + commit + `","resolved_ref":"master"}`},
 		{"source.removed", "lib", "tester", `{"kind":"git","url":"` + repoURL + `","ref":"master","snapshot":{"url":"` + repoURL + `","ref":"master","version":"` + commit + `"}}`},
 	}
 	if diff := cmp.Diff(want, summarize(t, got.Events)); diff != "" {
@@ -238,12 +238,14 @@ func TestAuditFlags(t *testing.T) {
 		want string
 	}{
 		{[]string{"--since", "yesterday"}, `--since "yesterday" is neither an RFC 3339 time`},
-		{[]string{"--until", "-5m"}, `--until "-5m" is neither`},
+		{[]string{"--until", "-5m"}, `--until "-5m" is a duration back from now that is negative`},
 		{[]string{"--action", "source.deleted"}, "--action source.deleted isn't an action TrueUp records; it records source.added, source.new_version, source.reconfigured, source.removed"},
 		{[]string{"--limit", "-1"}, "--limit must be 0, for all, or more, not -1"},
 		{[]string{"extra"}, `takes no arguments, but got "extra"`},
 		{[]string{"--since="}, "--since needs a time"},
 		{[]string{"--until", ""}, "--until needs a time"},
+		{[]string{"--actor", ""}, "--actor needs a user's name or ID"},
+		{[]string{"--source="}, "--source needs a source's name"},
 		{[]string{"--actor", "a\xffb"}, `--actor "a\xffb" isn't UTF-8 text`},
 		{[]string{"--source", "a\x00b"}, `--source "a\x00b" isn't UTF-8 text`},
 		{[]string{"--since", "1h", "--until", "7d"}, `--since "1h" isn't before --until "7d", so no event could match`},
@@ -356,13 +358,37 @@ func FuzzAuditText(f *testing.F) {
 	})
 }
 
+func TestAuditTextHeading(t *testing.T) {
+	t.Parallel()
+	e := audit.Recorded{ID: 2, OccurredAt: time.Unix(0, 0).UTC(), Event: audit.Event{By: testBy, Action: audit.SourceAdded, Result: audit.Succeeded}}
+	for _, tt := range []struct {
+		limit int
+		want  string
+	}{
+		{1, "The latest event that matches; --limit 0 lists them all.\n\n#2 "},
+		{2, "The latest 2 events that match; --limit 0 lists them all.\n\n#2 "},
+	} {
+		var b strings.Builder
+		if err := writeAuditText(&b, audit.Page{Events: []audit.Recorded{e}, More: true}, tt.limit); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(b.String(), tt.want) {
+			t.Errorf("with --limit %d: %q, want it to start %q", tt.limit, b.String(), tt.want)
+		}
+	}
+}
+
 func TestDetailLines(t *testing.T) {
 	t.Parallel()
-	got, err := detailLines(json.RawMessage(`{"before":null,"after":"v1","n":1,"o":{"a":[1,2]},"s":"a\u202eb","":""}`))
+	got, err := detailLines(json.RawMessage(`{"before":null,"after":"v1","n":1,"o":{"a":[1,2]},"s":"a\u202eb","":"","ref":"null","one":"1","q":"\"a\""}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"before: null", "after: v1", "n: 1", `o: {"a":[1,2]}`, `s: "a\u202eb"`, ": "}
+	want := []string{
+		"before: null", "after: v1", "n: 1", `o: {"a":[1,2]}`, `s: "a\u202eb"`, ": ",
+		// Strings that read as other JSON values, quoted.
+		`ref: "null"`, `one: "1"`, `q: "\"a\""`,
+	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("detailLines (-want +got):\n%s", diff)
 	}

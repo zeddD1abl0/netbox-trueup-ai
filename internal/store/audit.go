@@ -24,12 +24,14 @@ type SourceState struct {
 }
 
 // sourceDetails is the details of a source added: its configuration, and
-// the version its fetch found, if it succeeded.
+// the version its fetch found, with the ref it was resolved from, if it
+// succeeded.
 type sourceDetails struct {
-	Kind    string  `json:"kind"`
-	URL     string  `json:"url"`
-	Ref     string  `json:"ref"`
-	Version *string `json:"version,omitempty"`
+	Kind        string  `json:"kind"`
+	URL         string  `json:"url"`
+	Ref         string  `json:"ref"`
+	Version     *string `json:"version,omitempty"`
+	ResolvedRef *string `json:"resolved_ref,omitempty"`
 }
 
 // configDetails is a source's configuration, before or after a change.
@@ -44,7 +46,8 @@ type configDetails struct {
 // no record of the source. f is a fetch as Prepare returns it.
 //
 //   - A source with no record is added, with its configuration, and the
-//     version its fetch found, if it succeeded.
+//     version its fetch found, with the ref it was resolved from, if it
+//     succeeded.
 //   - A source whose kind, URL or ref differ from its record is
 //     reconfigured, with the configuration before and after. A failed fetch
 //     records them too, since the record takes them.
@@ -65,7 +68,7 @@ func FetchEvents(by audit.By, before *SourceState, f Fetch) ([]audit.Event, erro
 	if before == nil {
 		d := sourceDetails{Kind: f.Source.Kind, URL: f.Source.URL, Ref: f.Source.Ref}
 		if succeeded {
-			d.Version = &f.Version
+			d.Version, d.ResolvedRef = &f.Version, &f.Ref
 		}
 		e, err := event(audit.SourceAdded, d)
 		if err != nil {
@@ -163,7 +166,10 @@ func PrepareEvent(e audit.Event) (audit.Event, error) {
 	details := []byte("{}")
 	if e.Details != nil {
 		var b bytes.Buffer
-		if err := json.Compact(&b, e.Details); err != nil || b.Len() == 0 || b.Bytes()[0] != '{' || !utf8.Valid(b.Bytes()) {
+		if err := json.Compact(&b, e.Details); err != nil {
+			return audit.Event{}, fmt.Errorf("audit event %s's details aren't JSON: %w", e.Action, err)
+		}
+		if b.Len() == 0 || b.Bytes()[0] != '{' || !utf8.Valid(b.Bytes()) {
 			return audit.Event{}, fmt.Errorf("audit event %s's details aren't a JSON object in UTF-8", e.Action)
 		}
 		details = b.Bytes()

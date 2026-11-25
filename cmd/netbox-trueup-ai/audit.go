@@ -49,7 +49,8 @@ Actions recorded so far:
 These are recorded by source fetch, and by list and compare with --fetch,
 which fetch the same way. Fetches that find the version TrueUp holds, loads,
 comparisons and lists change nothing that is audited. A command that can't
-tell who runs it fetches nothing. Events are never changed or deleted.
+tell who runs it, or on which host, fetches nothing. Events are never changed
+or deleted.
 
 The latest events that match are listed, oldest first: by default the latest
 100, or as many as --limit says, or all with --limit 0. --since and --until
@@ -71,9 +72,16 @@ Exit codes:
      release can't use.`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			for _, flag := range []string{"since", "until"} {
-				if cmd.Flags().Changed(flag) && cmd.Flags().Lookup(flag).Value.String() == "" {
-					return usageError{fmt.Errorf("--%s needs a time: RFC 3339, or a duration back from now, such as 24h", flag)}
+			// A flag given empty, as by a script's unset variable, would
+			// otherwise widen the list rather than narrow it.
+			for _, flag := range []struct{ name, needs string }{
+				{"since", "a time: RFC 3339, or a duration back from now, such as 24h"},
+				{"until", "a time: RFC 3339, or a duration back from now, such as 24h"},
+				{"actor", "a user's name or ID"},
+				{"source", "a source's name"},
+			} {
+				if cmd.Flags().Changed(flag.name) && cmd.Flags().Lookup(flag.name).Value.String() == "" {
+					return usageError{fmt.Errorf("--%s needs %s", flag.name, flag.needs)}
 				}
 			}
 			filter, err := auditFilter(time.Now(), since, until, actor, sourceName, actions, limit)
@@ -259,7 +267,10 @@ func writeAuditText(w io.Writer, page audit.Page, limit int) error {
 	if len(page.Events) == 0 {
 		b.WriteString("No audit events match.\n")
 	}
-	if page.More {
+	switch {
+	case page.More && limit == 1:
+		b.WriteString("The latest event that matches; --limit 0 lists them all.\n\n")
+	case page.More:
 		fmt.Fprintf(&b, "The latest %d events that match; --limit 0 lists them all.\n\n", limit)
 	}
 	for i, e := range page.Events {
@@ -369,7 +380,11 @@ func detailLines(details json.RawMessage) ([]string, error) {
 		return nil, nil
 	}
 	dec := json.NewDecoder(strings.NewReader(string(details)))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("its details: %w", err)
+	}
+	if tok != json.Delim('{') {
 		return nil, errors.New("its details aren't a JSON object")
 	}
 	var lines []string
@@ -389,7 +404,13 @@ func detailLines(details json.RawMessage) ([]string, error) {
 		var s string
 		// null unmarshals into a string as "", which it isn't.
 		if err := json.Unmarshal(value, &s); err == nil && !bytes.Equal(value, []byte("null")) {
-			lines = append(lines, cell(key)+": "+cell(s))
+			// A string that reads as another JSON value, such as a ref
+			// named null, or 1, is quoted, so it can't pass for one.
+			if json.Valid([]byte(s)) {
+				lines = append(lines, cell(key)+": "+strconv.Quote(s))
+			} else {
+				lines = append(lines, cell(key)+": "+cell(s))
+			}
 			continue
 		}
 		lines = append(lines, cell(key)+": "+cell(string(value)))

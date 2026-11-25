@@ -2,6 +2,7 @@ package audit
 
 import (
 	"errors"
+	"io/fs"
 	"os/user"
 	"strings"
 	"testing"
@@ -64,9 +65,10 @@ func TestCommandLineActor(t *testing.T) {
 			Actor{Kind: OSUser, ID: "4242", Host: "build"},
 		},
 		{
-			"no host name",
-			fakeProcess(1000, users, ""), env(),
-			Actor{Kind: OSUser, Name: "carol", ID: "1000"},
+			"a host without a user database, as a container built from scratch",
+			withLookup(fakeProcess(1000, users, "build"), &fs.PathError{Op: "open", Path: "/etc/passwd", Err: fs.ErrNotExist}),
+			env("USER", "mallory"),
+			Actor{Kind: OSUser, ID: "1000", Host: "build"},
 		},
 		{
 			"root through sudo",
@@ -103,6 +105,38 @@ func TestCommandLineActor(t *testing.T) {
 		}
 		if diff := cmp.Diff(tt.want, got); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", tt.name, diff)
+		}
+	}
+}
+
+// withLookup returns p with a user database that fails with err.
+func withLookup(p process, err error) process {
+	p.lookupID = func(string) (*user.User, error) { return nil, err }
+	return p
+}
+
+func TestCommandLineActorFails(t *testing.T) {
+	t.Parallel()
+	users := map[string]string{"1000": "carol"}
+	other := fakeProcess(1000, users, "build")
+	other.lookupID = func(string) (*user.User, error) { return &user.User{Uid: "1001", Username: "dave"}, nil }
+	emptyHost := fakeProcess(1000, users, "build")
+	emptyHost.hostname = func() (string, error) { return "", nil }
+	tests := []struct {
+		name string
+		p    process
+		want string
+	}{
+		{"a user database that can't be read", withLookup(fakeProcess(1000, users, "build"), &fs.PathError{Op: "open", Path: "/etc/passwd", Err: fs.ErrPermission}), "look up user ID 1000: open /etc/passwd: permission denied"},
+		{"a user database that answers for another user", other, "looking up user ID 1000 found user ID 1001"},
+		{"no user ID", fakeProcess(-1, users, "build"), "can't tell which user runs this process on linux"},
+		{"a host name that can't be read", fakeProcess(1000, users, ""), "can't tell which host runs this process: no host name"},
+		{"an empty host name", emptyHost, "its name is empty"},
+	}
+	for _, tt := range tests {
+		got, err := commandLineActor(tt.p, env())
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: %+v, %v; want an error saying %q", tt.name, got, err, tt.want)
 		}
 	}
 }
@@ -184,9 +218,19 @@ func TestParseTime(t *testing.T) {
 			t.Errorf("ParseTime(%q) = %v, want an error", in, got)
 		}
 	}
-	_, err := ParseTime("yesterday", now)
-	if want := `"yesterday" is neither an RFC 3339 time`; err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("ParseTime's error = %v, want it to start %q", err, want)
+	// Each error says what is wrong.
+	for _, tt := range []struct{ in, want string }{
+		{"yesterday", `"yesterday" is neither an RFC 3339 time`},
+		{"-5m", `"-5m" is a duration back from now that is negative, or reaches back more than 100 years`},
+		{"36501d", `"36501d" is a duration back from now that is negative`},
+		{"999999999999d", `"999999999999d" is a duration back from now that is negative`},
+		{"2026-11-31T00:00:00Z", `"2026-11-31T00:00:00Z" isn't an RFC 3339 time, such as 2026-11-23T09:30:00Z: parsing time "2026-11-31T00:00:00Z": day out of range`},
+		{"2026-11-23", `"2026-11-23" isn't an RFC 3339 time`},
+	} {
+		_, err := ParseTime(tt.in, now)
+		if err == nil || !strings.HasPrefix(err.Error(), tt.want) {
+			t.Errorf("ParseTime(%q)'s error = %v, want it to start %q", tt.in, err, tt.want)
+		}
 	}
 }
 

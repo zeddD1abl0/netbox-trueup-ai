@@ -1424,6 +1424,37 @@ func TestAuditEventsNeverChange(t *testing.T) {
 	}
 }
 
+// TestMalformedAuditEventsRefused checks that the schema refuses rows,
+// written past the store, that would stop the log being read.
+func TestMalformedAuditEventsRefused(t *testing.T) {
+	t.Parallel()
+	s := openURL(t, srv.NewURL(t))
+	insert := func(at, details string) error {
+		_, err := s.pool.Exec(t.Context(), `INSERT INTO audit_events
+			(occurred_at, actor_kind, actor, actor_id, host, through, action, result, details)
+			VALUES ($1::timestamptz, 'os_user', 'mallory', '1001', 'h', 'cli', 'source.added', 'succeeded', $2)`, at, details)
+		return err
+	}
+	const at = "2026-11-25T01:02:03Z"
+	if err := insert(at, `{"a":1}`); err != nil {
+		t.Fatalf("a well-formed row: %v", err)
+	}
+	for _, details := range []string{"", "[1]", `{"a":`, "null", "{} x", "'{}'"} {
+		if err := insert(at, details); err == nil {
+			t.Errorf("a row with details %q was recorded", details)
+		}
+	}
+	for _, bad := range []string{"infinity", "-infinity"} {
+		if err := insert(bad, "{}"); err == nil {
+			t.Errorf("a row recorded at %s was recorded", bad)
+		}
+	}
+	page, err := s.Events(t.Context(), audit.Filter{})
+	if err != nil || len(page.Events) != 1 {
+		t.Errorf("Events = %+v, %v; want the well-formed row alone, read", page.Events, err)
+	}
+}
+
 // TestAuditEventsGoWithTheirChange checks that an event is recorded in the
 // transaction of the change it describes: a change that fails takes its
 // event with it.
