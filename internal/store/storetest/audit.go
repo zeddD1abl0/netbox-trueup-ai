@@ -255,6 +255,9 @@ func testInvalidEvents(t *testing.T, s store.Store) {
 	if err := s.RecordFetch(t.Context(), audit.By{}, success("lib", "v1", t0.Add(time.Minute), "a.yaml")); err == nil {
 		t.Error("RecordFetch without an actor succeeded")
 	}
+	if _, err := s.RemoveSources(t.Context(), audit.By{}, []string{"lib"}); err == nil {
+		t.Error("RemoveSources without an actor, removing nothing, succeeded")
+	}
 	if _, err := s.RemoveSources(t.Context(), audit.By{}, nil); err == nil {
 		t.Error("RemoveSources without an actor succeeded")
 	}
