@@ -219,8 +219,8 @@ const maxLimit = math.MaxInt32
 // reads it: its times in UTC, rounded up to the microsecond, since events
 // are recorded to the microsecond, so that "at Since or later" and "before
 // Until" choose the same events either way, and a limit beyond maxLimit as
-// none. It fails for a negative limit, and an actor or source that isn't
-// text.
+// none. It fails for a negative limit, an actor or source that isn't text,
+// and a time later than audit.Last.
 func PrepareFilter(f audit.Filter) (audit.Filter, error) {
 	if f.Limit < 0 {
 		return audit.Filter{}, fmt.Errorf("a limit of %d events isn't one", f.Limit)
@@ -243,6 +243,9 @@ func PrepareFilter(f audit.Filter) (audit.Filter, error) {
 		down := u.Truncate(time.Microsecond)
 		if down.Before(u) {
 			down = down.Add(time.Microsecond)
+		}
+		if down.After(audit.Last) {
+			return audit.Filter{}, fmt.Errorf("an audit filter's time %s is later than the last the log can be searched by, %s", u.Format(time.RFC3339Nano), audit.Last.Format(time.RFC3339Nano))
 		}
 		*t = down
 	}

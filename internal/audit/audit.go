@@ -136,8 +136,12 @@ type Event struct {
 
 // Recorded is an event as the store holds it.
 type Recorded struct {
-	// ID orders events: each is greater than those recorded before it, and
-	// never reused.
+	// ID orders events as they were inserted: each is greater than those
+	// inserted before it, and never reused. On PostgreSQL, a transaction
+	// that inserted first can commit after one that inserted later, so an
+	// event can appear with an ID below one already seen: a reader that
+	// follows the log can't take the greatest ID it has read as where to
+	// carry on from.
 	ID int64
 	// OccurredAt is when it was recorded, in UTC, to the microsecond, by
 	// the clock of the process that recorded it. Times don't order events:

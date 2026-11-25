@@ -12,6 +12,10 @@ import (
 // enough for any audit log, near enough that now minus it never overflows.
 const maxAgo = 100 * 365 * 24 * time.Hour
 
+// Last is the latest time a filter takes: RFC 3339, in which the store
+// writes times, has four-digit years, and SQLite compares them as text.
+var Last = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+
 // ParseTime reads a time the audit command takes: an RFC 3339 time, such as
 // 2026-11-23T09:30:00Z or 2026-11-23T19:30:00+10:00, or a duration back from
 // now, as Go writes one, such as 90m or 1h30m, or a whole number of days,
@@ -24,6 +28,9 @@ func ParseTime(s string, now time.Time) (time.Time, error) {
 		if t.IsZero() {
 			// A Filter takes the zero time for no bound.
 			return time.Time{}, fmt.Errorf("%s is the zero time, which stands for no bound: give a later time", strconv.Quote(s))
+		}
+		if t.After(Last) {
+			return time.Time{}, fmt.Errorf("%s is later than the last time the audit log can be searched by, %s", strconv.Quote(s), Last.Format(time.RFC3339Nano))
 		}
 		return t.UTC(), nil
 	}

@@ -100,7 +100,7 @@ type Store interface {
 	// PrepareEvent says. Events are never changed or deleted.
 	RecordEvents(ctx context.Context, events []audit.Event) error
 	// Events returns the latest audit events that a filter chooses, oldest
-	// first, in the order they were recorded.
+	// first, in their IDs' order.
 	Events(ctx context.Context, f audit.Filter) (audit.Page, error)
 	// Close closes the database.
 	Close() error

@@ -163,6 +163,8 @@ func TestParseTime(t *testing.T) {
 		{"0d", time.Date(2026, 11, 23, 2, 0, 0, 0, time.UTC)},
 		{"0", time.Date(2026, 11, 23, 2, 0, 0, 0, time.UTC)},
 		{"36500d", time.Date(1926, 12, 18, 2, 0, 0, 0, time.UTC)},
+		{"9999-12-31T23:59:59.999999Z", Last},
+		{"9999-12-31T23:59:59+10:00", time.Date(9999, 12, 31, 13, 59, 59, 0, time.UTC)},
 	}
 	for _, tt := range tests {
 		got, err := ParseTime(tt.in, now)
@@ -175,6 +177,8 @@ func TestParseTime(t *testing.T) {
 		"876001h", "2026-11-23", "2026-11-23 09:30:00", "2026-11-23T09:30:00", " 7d", "4294967295d",
 		// The zero time, which a Filter takes for no bound.
 		"0001-01-01T00:00:00Z", "0001-01-01T10:00:00+10:00",
+		// Past the year 9999 in UTC, or rounded up to it.
+		"9999-12-31T23:59:59-10:00", "9999-12-31T23:59:59.9999991Z",
 	} {
 		if got, err := ParseTime(in, now); err == nil {
 			t.Errorf("ParseTime(%q) = %v, want an error", in, got)
@@ -187,7 +191,7 @@ func TestParseTime(t *testing.T) {
 }
 
 func FuzzParseTime(f *testing.F) {
-	for _, s := range []string{"7d", "90m", "2026-11-23T09:30:00Z", "-1h", "36500d", "1e3h", "\xff"} {
+	for _, s := range []string{"7d", "90m", "2026-11-23T09:30:00Z", "-1h", "36500d", "1e3h", "\xff", "9999-12-31T23:59:59-10:00"} {
 		f.Add(s)
 	}
 	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
@@ -198,6 +202,9 @@ func FuzzParseTime(f *testing.F) {
 		}
 		if got.Location() != time.UTC {
 			t.Errorf("ParseTime(%q) = %v, not in UTC", s, got)
+		}
+		if got.After(Last) || got.IsZero() {
+			t.Errorf("ParseTime(%q) = %v, the zero time or after %v", s, got, Last)
 		}
 		if _, rfcErr := time.Parse(time.RFC3339Nano, s); rfcErr != nil {
 			// A duration: back from now, never further than maxAgo.

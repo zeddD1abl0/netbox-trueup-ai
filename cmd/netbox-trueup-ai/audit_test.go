@@ -246,6 +246,9 @@ func TestAuditFlags(t *testing.T) {
 		{[]string{"--until", ""}, "--until needs a time"},
 		{[]string{"--actor", "a\xffb"}, `--actor "a\xffb" isn't UTF-8 text`},
 		{[]string{"--source", "a\x00b"}, `--source "a\x00b" isn't UTF-8 text`},
+		{[]string{"--since", "1h", "--until", "7d"}, `--since "1h" isn't before --until "7d", so no event could match`},
+		{[]string{"--since", "2026-11-23T09:30:00Z", "--until", "2026-11-23T19:30:00+10:00"}, `isn't before --until`},
+		{[]string{"--until", "9999-12-31T23:59:59-10:00"}, `is later than the last time the audit log can be searched by, 9999-12-31T23:59:59.999999Z`},
 	} {
 		r := runCLI(t, nil, env, append([]string{"audit"}, tt.args...)...)
 		if r.code != exitUsage || !strings.Contains(r.stderr, tt.want) {

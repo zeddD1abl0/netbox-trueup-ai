@@ -201,7 +201,10 @@ func closeLock(ctx context.Context, conn *pgx.Conn, failed string) error {
 	return err
 }
 
-// RecordFetch records a fetch of a source in one transaction.
+// RecordFetch records a fetch of a source, and the audit events of what it
+// changed, in one transaction. It reads what the source was with its row
+// locked, recording a new source's row first (fetchedSourceState), so that
+// fetches of one source recorded at once each compare with the one before.
 func (s *Store) RecordFetch(ctx context.Context, by audit.By, f store.Fetch) error {
 	f, err := f.Prepare()
 	if err != nil {
@@ -361,7 +364,8 @@ func (s *Store) Snapshot(ctx context.Context, source string) (store.Snapshot, er
 }
 
 // RemoveSources removes every source not named in keep, its snapshot, its
-// definitions and its comparisons, in one transaction. Foreign keys don't cascade, so it deletes each
+// definitions and its comparisons, and records each removal as an audit
+// event, in one transaction. Foreign keys don't cascade, so it deletes each
 // source's rows from the bottom up, having locked the sources' rows first.
 func (s *Store) RemoveSources(ctx context.Context, by audit.By, keep []string) ([]string, error) {
 	by, err := store.PrepareBy(by)

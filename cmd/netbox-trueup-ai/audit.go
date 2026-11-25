@@ -130,6 +130,9 @@ func auditFilter(now time.Time, since, until, actor, sourceName string, actions 
 		}
 		*flag.into = t
 	}
+	if !f.Since.IsZero() && !f.Until.IsZero() && !f.Since.Before(f.Until) {
+		return audit.Filter{}, fmt.Errorf("--since %s isn't before --until %s, so no event could match", strconv.Quote(since), strconv.Quote(until))
+	}
 	known := audit.Actions()
 	for _, name := range actions {
 		action := audit.Action(name)

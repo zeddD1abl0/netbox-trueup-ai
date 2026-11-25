@@ -243,7 +243,14 @@ func testInvalidEvents(t *testing.T, s store.Store) {
 			t.Errorf("RecordEvents with %s succeeded", tt.name)
 		}
 	}
-	for _, f := range []audit.Filter{{Limit: -1}, {Actor: "a\xffb"}, {Source: "a\x00b"}} {
+	for _, f := range []audit.Filter{
+		{Limit: -1},
+		{Actor: "a\xffb"},
+		{Source: "a\x00b"},
+		// SQLite would compare a year of five digits wrongly.
+		{Since: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{Until: audit.Last.Add(time.Nanosecond)},
+	} {
 		if _, err := s.Events(t.Context(), f); err == nil {
 			t.Errorf("Events with %+v succeeded", f)
 		}
