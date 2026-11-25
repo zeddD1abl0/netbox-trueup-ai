@@ -28,7 +28,7 @@ const (
 // Actor is who acted.
 type Actor struct {
 	Kind ActorKind
-	// Name is the user's name, such as jordan or CORP\jordan, or "" where
+	// Name is the user's name, such as carol or CORP\carol, or "" where
 	// the system's user database has no entry for the user's ID.
 	Name string
 	// ID is the user's ID: a Unix user ID, such as 1000, or a Windows

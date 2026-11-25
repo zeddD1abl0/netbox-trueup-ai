@@ -46,7 +46,7 @@ func env(vars ...string) func(string) string {
 
 func TestCommandLineActor(t *testing.T) {
 	t.Parallel()
-	users := map[string]string{"0": "root", "1000": "jordan", "990": "trueup"}
+	users := map[string]string{"0": "root", "1000": "carol", "990": "trueup"}
 	tests := []struct {
 		name string
 		p    process
@@ -56,7 +56,7 @@ func TestCommandLineActor(t *testing.T) {
 		{
 			"a user the database has",
 			fakeProcess(1000, users, "build"), env("USER", "mallory", "LOGNAME", "mallory"),
-			Actor{Kind: OSUser, Name: "jordan", ID: "1000", Host: "build"},
+			Actor{Kind: OSUser, Name: "carol", ID: "1000", Host: "build"},
 		},
 		{
 			"a user the database lacks, as in a container",
@@ -66,17 +66,17 @@ func TestCommandLineActor(t *testing.T) {
 		{
 			"no host name",
 			fakeProcess(1000, users, ""), env(),
-			Actor{Kind: OSUser, Name: "jordan", ID: "1000"},
+			Actor{Kind: OSUser, Name: "carol", ID: "1000"},
 		},
 		{
 			"root through sudo",
-			fakeProcess(0, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "jordan"),
-			Actor{Kind: OSUser, Name: "root", ID: "0", Host: "build", SudoUser: "jordan", SudoUserID: "1000"},
+			fakeProcess(0, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "carol"),
+			Actor{Kind: OSUser, Name: "root", ID: "0", Host: "build", SudoUser: "carol", SudoUserID: "1000"},
 		},
 		{
 			"a service account through sudo",
-			fakeProcess(990, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "jordan"),
-			Actor{Kind: OSUser, Name: "trueup", ID: "990", Host: "build", SudoUser: "jordan", SudoUserID: "1000"},
+			fakeProcess(990, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "carol"),
+			Actor{Kind: OSUser, Name: "trueup", ID: "990", Host: "build", SudoUser: "carol", SudoUserID: "1000"},
 		},
 		{
 			"sudo's user ID without a name",
@@ -87,13 +87,13 @@ func TestCommandLineActor(t *testing.T) {
 			// sudo to oneself, or SUDO_ variables left in the environment
 			// by a shell sudo started, say nothing.
 			"sudo's variables naming the user itself",
-			fakeProcess(1000, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "jordan"),
-			Actor{Kind: OSUser, Name: "jordan", ID: "1000", Host: "build"},
+			fakeProcess(1000, users, "build"), env("SUDO_UID", "1000", "SUDO_USER", "carol"),
+			Actor{Kind: OSUser, Name: "carol", ID: "1000", Host: "build"},
 		},
 		{
 			"SUDO_USER without SUDO_UID",
 			fakeProcess(1000, users, "build"), env("SUDO_USER", "alice"),
-			Actor{Kind: OSUser, Name: "jordan", ID: "1000", Host: "build"},
+			Actor{Kind: OSUser, Name: "carol", ID: "1000", Host: "build"},
 		},
 	}
 	for _, tt := range tests {
@@ -111,8 +111,8 @@ func TestCommandLineActorOnWindows(t *testing.T) {
 	t.Parallel()
 	p := fakeProcess(-1, nil, "WS1")
 	p.goos = "windows"
-	p.windowsAccount = func() (string, string, error) { return `CORP\jordan`, "S-1-5-21-1-2-3-1001", nil }
-	want := Actor{Kind: OSUser, Name: `CORP\jordan`, ID: "S-1-5-21-1-2-3-1001", Host: "WS1"}
+	p.windowsAccount = func() (string, string, error) { return `CORP\carol`, "S-1-5-21-1-2-3-1001", nil }
+	want := Actor{Kind: OSUser, Name: `CORP\carol`, ID: "S-1-5-21-1-2-3-1001", Host: "WS1"}
 	got, err := commandLineActor(p, env("SUDO_UID", "1000"))
 	if err != nil {
 		t.Fatal(err)

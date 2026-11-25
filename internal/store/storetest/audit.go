@@ -139,7 +139,7 @@ func testRemoveEvents(t *testing.T, s store.Store) {
 func fullEvent() audit.Event {
 	return audit.Event{
 		By: audit.By{
-			Actor:         audit.Actor{Kind: audit.OSUser, Name: "root", ID: "0", Host: "host.example.com", SudoUser: "jordan", SudoUserID: "1000"},
+			Actor:         audit.Actor{Kind: audit.OSUser, Name: "root", ID: "0", Host: "host.example.com", SudoUser: "carol", SudoUserID: "1000"},
 			Through:       audit.CommandLine,
 			ClientAddress: "192.0.2.10",
 		},
@@ -321,7 +321,7 @@ func testEventFilters(t *testing.T, s store.Store) {
 	}{
 		{"everything", audit.Filter{}, "01234"},
 		{"an actor, exactly", audit.Filter{Actor: "ann"}, "03"},
-		{"an actor no event has", audit.Filter{Actor: "carol"}, ""},
+		{"an actor no event has", audit.Filter{Actor: "zoe"}, ""},
 		{"an actor, through sudo too", audit.Filter{Actor: "bob"}, "14"},
 		{"an actor by ID, through sudo too", audit.Filter{Actor: "398"}, "14"},
 		{"the account sudo ran as", audit.Filter{Actor: "svc"}, "4"},

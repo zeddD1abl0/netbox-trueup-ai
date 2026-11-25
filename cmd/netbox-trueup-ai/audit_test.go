@@ -142,7 +142,7 @@ func TestAuditText(t *testing.T) {
 		t.Fatal(err)
 	}
 	odd := testBy
-	odd.Actor.Name, odd.Actor.Host, odd.Actor.SudoUser, odd.Actor.SudoUserID = "root", "host\x1b[31m", "jordan", "1000"
+	odd.Actor.Name, odd.Actor.Host, odd.Actor.SudoUser, odd.Actor.SudoUserID = "root", "host\x1b[31m", "carol", "1000"
 	odd.Actor.ID = "0"
 	events := []audit.Event{
 		{
@@ -183,14 +183,14 @@ func TestAuditText(t *testing.T) {
     version: abc
 
 #2  TIME  netbox.write  started
-    by root (uid 0), through sudo from jordan (uid 1000), on "host\x1b[31m", at the command line
+    by root (uid 0), through sudo from carol (uid 1000), on "host\x1b[31m", at the command line
     about dcim.devicetype Dell / R640
 
 #3  TIME  source.removed  succeeded
     by uid 1234, at the command line
 
 #4  TIME  netbox.write  failed, completing #2
-    by root (uid 0), through sudo from jordan (uid 1000), on "host\x1b[31m", at the command line
+    by root (uid 0), through sudo from carol (uid 1000), on "host\x1b[31m", at the command line
     about dcim.devicetype Dell / R640, NetBox https://netbox.example.com/ branch a1b2c3d4 ID 7
     error: "refused\u202e"
     before: {"u_height":1}
@@ -319,9 +319,11 @@ func FuzzAuditText(f *testing.F) {
 		if err != nil {
 			return
 		}
+		// The action and result as well, which a row written to the
+		// database directly, not through the store, can hold.
 		e := audit.Recorded{ID: 1, OccurredAt: time.Unix(0, 0).UTC(), Event: audit.Event{
 			By:     audit.By{Actor: audit.Actor{Kind: audit.OSUser, Name: host, ID: host, Host: host, SudoUser: host, SudoUserID: host}, Through: audit.CommandLine, ClientAddress: host},
-			Action: audit.SourceAdded, Result: audit.Failed, Error: errText, Source: host,
+			Action: audit.Action(objectType), Result: audit.Result(object), Error: errText, Source: host,
 			ObjectType: objectType, Object: object, NetBoxURL: host, NetBoxBranch: host, NetBoxID: 3, Details: details,
 		}}
 		var out strings.Builder

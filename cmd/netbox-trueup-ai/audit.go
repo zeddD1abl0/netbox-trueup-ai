@@ -263,7 +263,9 @@ func writeAuditText(w io.Writer, page audit.Page, limit int) error {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "#%d  %s  %s  %s", e.ID, e.OccurredAt.Format(time.RFC3339), e.Action, e.Result)
+		// The action and result too: the store checks them only as TrueUp
+		// records them, and its schema doesn't for the action.
+		fmt.Fprintf(&b, "#%d  %s  %s  %s", e.ID, e.OccurredAt.Format(time.RFC3339), cell(string(e.Action)), cell(string(e.Result)))
 		if e.Completes != 0 {
 			fmt.Fprintf(&b, ", completing #%d", e.Completes)
 		}

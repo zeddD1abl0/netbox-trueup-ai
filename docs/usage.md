@@ -220,14 +220,14 @@ lists the latest 100 events, oldest first, each with who acted, when, and what c
 
 ```text
 #12  2026-11-23T09:30:01Z  source.new_version  succeeded
-    by jordan (uid 1000), on ops1, at the command line
+    by carol (uid 1000), on ops1, at the command line
     about source devicetype-library
     before: 3f2a1b9c0d4e
     after: 9c41e07a52bd
     ref: master
 ```
 
-At the command line, who acted is the operating system user running the command, found by its user ID, never from `$USER`; a user ID the system's user database lacks, as in some containers or for users from a directory such as LDAP, is shown alone. A command run through sudo records the user who ran sudo too, by name and user ID. Narrow the list with `--since` and `--until`, each an RFC 3339 time or a duration back from now (`90m`, `24h`, `7d`), `--actor NAME`, which matches a user ID too, and the name or ID of the user who ran sudo, `--action ACTION`, repeatable, and `--source NAME`; `--limit N` lists more or fewer of the latest, and `--limit 0` all of them. `--output json` prints `{"events": [...], "more": ...}`, each event with its `actor` as an object, and `more` true when `--limit` left older ones out.
+At the command line, who acted is the operating system user running the command, found by its user ID, never from `$USER`; a user ID the system's user database lacks, as in some containers or for users from a directory such as LDAP, is shown alone. A command run through sudo records the user who ran sudo too, by name and user ID, from the variables sudo sets; whoever runs a command could set those themselves, so the actor, found by user ID, is the one to trust. Narrow the list with `--since` and `--until`, each an RFC 3339 time or a duration back from now (`90m`, `24h`, `7d`), `--actor NAME`, which matches a user ID too, and the name or ID of the user who ran sudo (so it also finds commands whose sudo variables name that user), `--action ACTION`, repeatable, and `--source NAME`; `--limit N` lists more or fewer of the latest, and `--limit 0` all of them. `--output json` prints `{"events": [...], "more": ...}`, each event with its `actor` as an object, and `more` true when `--limit` left older ones out.
 
 ## Reading the JSON
 
