@@ -8,6 +8,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditEvent struct {
+	ID            int64
+	OccurredAt    pgtype.Timestamptz
+	ActorKind     string
+	Actor         string
+	ActorID       string
+	Host          string
+	SudoUser      pgtype.Text
+	SudoUserID    pgtype.Text
+	Through       string
+	ClientAddress pgtype.Text
+	Action        string
+	Result        string
+	Completes     pgtype.Int8
+	Error         pgtype.Text
+	Source        pgtype.Text
+	ObjectType    pgtype.Text
+	Object        pgtype.Text
+	NetboxUrl     pgtype.Text
+	NetboxBranch  pgtype.Text
+	NetboxID      pgtype.Int8
+	Details       string
+}
+
 type Comparison struct {
 	Source        string
 	SourceVersion string

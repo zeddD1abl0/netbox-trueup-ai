@@ -208,6 +208,27 @@ TrueUp sees what the token's permissions let it see. A token that can't read man
 
 Each run records the comparison of each definition it compared with NetBox, alone, in the database, as the latest of that definition, replacing the one before: when it was made, against which version of the source and which NetBox, and the result, as `--output json` prints it. By default, and with `--all`, a run's comparisons replace all of the source's, so the comparisons of definitions NetBox no longer has go; with `--manufacturer` or `--model`, the other definitions keep the comparisons recorded before. Loading a version of the source removes the comparisons of the definitions it no longer holds, and of files that no longer read, which define nothing: the invalid file is reported instead, and its comparison returns when it reads again. A comparison is recorded only against the version of the source that the database holds, as the database loaded it: if the source was fetched or loaded again while it was compared, nothing is recorded for it, and `compare` says so and exits with 4. A definition compared because another source's definition of its object matches NetBox is recorded too, so whether a definition has a record after a default run can depend on the sources compared with it, though what the record says doesn't. An object's comparison isn't recorded: it is built again by merging its definitions' records, as `compare` merges them. The web UI will read these records; for now they are in the `comparisons` table.
 
+## See who changed what
+
+Every action that changes what TrueUp manages, what NetBox holds, or what sources TrueUp reads is recorded in an audit log in the database, never changed or deleted ([ADR 0034](adr/0034-audit-what-changes-what-trueup-manages.md)). So far that is what fetching changes, with `source fetch`, or with `list` or `compare` and `--fetch`: a source added, its kind, URL or ref changed, a new version fetched, and a source no longer configured removed. Fetching a version TrueUp holds, loading, listing and comparing change nothing that is audited. A command that can't tell who runs it fetches nothing. Importing, planning and applying will be recorded as they arrive.
+
+```sh
+netbox-trueup-ai audit
+```
+
+lists the latest 100 events, oldest first, each with who acted, when, and what changed:
+
+```text
+#12  2026-11-23T09:30:01Z  source.new_version  succeeded
+    by carol (uid 1000), on ops1, at the command line
+    about source devicetype-library
+    before: 3f2a1b9c0d4e
+    after: 9c41e07a52bd
+    ref: master
+```
+
+At the command line, who acted is the operating system user running the command, found by its user ID, never from `$USER`; a user ID the system's user database lacks, as in some containers or for users from a directory such as LDAP, is shown alone. A command that can't read the user database, or the host's name, stops before it changes anything, saying why. A command run through sudo records the user who ran sudo too, by name and user ID, from the variables sudo sets; whoever runs a command could set those themselves, so the actor, found by user ID, is the one to trust. Narrow the list with `--since` and `--until`, each an RFC 3339 time or a duration back from now (`90m`, `24h`, `7d`), with `--since` before `--until`, `--actor NAME`, which matches a user ID too, and the name or ID of the user who ran sudo (so it also finds commands whose sudo variables name that user), `--action ACTION`, repeatable, and `--source NAME`; `--limit N` lists more or fewer of the latest, and `--limit 0` all of them. `--output json` prints `{"events": [...], "more": ...}`, each event with its `actor` as an object, and `more` true when `--limit` left older ones out.
+
 ## Reading the JSON
 
 With `--output json`, `compare` prints one document whose fields scripts can rely on ([ADR 0018](adr/0018-cli-conventions.md)):

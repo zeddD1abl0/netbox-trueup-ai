@@ -8,6 +8,30 @@ import (
 	"database/sql"
 )
 
+type AuditEvent struct {
+	ID            int64
+	OccurredAt    string
+	ActorKind     string
+	Actor         string
+	ActorID       string
+	Host          string
+	SudoUser      sql.NullString
+	SudoUserID    sql.NullString
+	Through       string
+	ClientAddress sql.NullString
+	Action        string
+	Result        string
+	Completes     sql.NullInt64
+	Error         sql.NullString
+	Source        sql.NullString
+	ObjectType    sql.NullString
+	Object        sql.NullString
+	NetboxUrl     sql.NullString
+	NetboxBranch  sql.NullString
+	NetboxID      sql.NullInt64
+	Details       string
+}
+
 type Comparison struct {
 	Source        string
 	DefinitionID  int64

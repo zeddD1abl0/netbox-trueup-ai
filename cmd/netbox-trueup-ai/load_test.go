@@ -35,7 +35,7 @@ func fetchedStore(t *testing.T) store.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := db.RecordFetch(t.Context(), store.Fetch{
+	if err := db.RecordFetch(t.Context(), testBy, store.Fetch{
 		Source:    store.SourceConfig{Name: "lib", Kind: "git", URL: "https://git.example.com/lib.git"},
 		FetchedAt: time.Now(), Version: "v1",
 	}); err != nil {

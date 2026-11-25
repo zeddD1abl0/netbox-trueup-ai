@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/version"
 )
@@ -42,6 +43,7 @@ func runCLIApp(t *testing.T, stdout io.Writer, configure func(*app), env []strin
 		stderr:            &errOut,
 		environ:           env,
 		defaultConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
+		whoami:            func() (audit.By, error) { return testBy, nil },
 	}
 	configure(a)
 	code := run(t.Context(), a, args)

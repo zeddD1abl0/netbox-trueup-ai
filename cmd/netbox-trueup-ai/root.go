@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/telemetry"
 )
@@ -25,9 +26,40 @@ type app struct {
 	// instead of the system's. Only tests set it.
 	sourceRootCAs *x509.CertPool
 
+	// whoami, if set, says who the audit log records this process as
+	// acting, in place of the operating system user (by). Only tests set
+	// it.
+	whoami func() (audit.By, error)
+
 	// Set by loadConfig.
 	logger    *slog.Logger
 	logFormat config.LogFormat
+}
+
+// by returns who runs this command, for the audit log: the operating system
+// user, with the process's environment for sudo's variables. It fails where
+// it can't tell, or ctx ends first, and a command that changes what is
+// audited stops then.
+func (a *app) by(ctx context.Context) (audit.By, error) {
+	if a.whoami != nil {
+		return a.whoami()
+	}
+	by, err := audit.CommandLineBy(ctx, func(name string) string {
+		// The first value wins, as Go's and C's getenv take it.
+		for _, kv := range a.environ {
+			if v, ok := strings.CutPrefix(kv, name+"="); ok {
+				return v
+			}
+		}
+		return ""
+	})
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return audit.By{}, fmt.Errorf("interrupted while finding who runs this command, for the audit log: %w", ctx.Err())
+	case err != nil:
+		return audit.By{}, fmt.Errorf("can't tell who runs this command, for the audit log: %w", err)
+	}
+	return by, nil
 }
 
 func newRootCommand(a *app) *cobra.Command {
@@ -47,7 +79,7 @@ effective settings and where each came from.`,
 	root.SetErr(a.stderr)
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
 	config.RegisterFlags(root.PersistentFlags())
-	root.AddCommand(newVersionCommand(), newConfigCommand(a), newNetBoxCommand(a), newSourceCommand(a), newMigrateCommand(a), newListCommand(a), newCompareCommand(a))
+	root.AddCommand(newVersionCommand(), newConfigCommand(a), newNetBoxCommand(a), newSourceCommand(a), newMigrateCommand(a), newListCommand(a), newCompareCommand(a), newAuditCommand(a))
 	root.SetHelpCommand(newHelpCommand())
 	root.InitDefaultHelpCmd()
 	root.InitDefaultCompletionCmd()

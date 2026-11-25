@@ -276,7 +276,7 @@ func recordFetchErr(t *testing.T, dataDir, name string, at time.Time) error {
 		return err
 	}
 	defer func() { _ = s.Close() }()
-	return s.RecordFetch(t.Context(), store.Fetch{
+	return s.RecordFetch(t.Context(), testBy, store.Fetch{
 		Source:    store.SourceConfig{Name: name, Kind: "git", URL: "https://git.example.com/" + name + ".git"},
 		FetchedAt: at, Version: "abc",
 	})

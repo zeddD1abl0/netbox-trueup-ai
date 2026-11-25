@@ -173,7 +173,7 @@ Exit codes:
 		},
 	}
 	addOutputFlag(cmd, &out)
-	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does")
+	cmd.Flags().BoolVar(&fetch, "fetch", false, "fetch each source first, as source fetch does, audited as it is")
 	cmd.Flags().BoolVar(&signal, "exit-code", false, "exit with 5 when some objects compared aren't in step with NetBox")
 	cmd.Flags().StringArrayVar(&sel.manufacturers, "manufacturer", nil,
 		"compare only this manufacturer, by its name as NetBox would store it, and its device types; repeat it for more")

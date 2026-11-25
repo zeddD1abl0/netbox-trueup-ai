@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,6 +24,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	sqlitedriver "modernc.org/sqlite"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/filelock"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/storetest"
@@ -186,7 +188,7 @@ func TestMigrations(t *testing.T) {
 	}
 	tables := query(t, s.db, "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
 	wantTables := []string{
-		"comparisons", "definition_loads", "definition_problems", "definitions", "goose_db_version",
+		"audit_events", "comparisons", "definition_loads", "definition_problems", "definitions", "goose_db_version",
 		"snapshot_files", "snapshot_skipped", "snapshots", "sources", "sqlite_sequence",
 	}
 	if diff := cmp.Diff(wantTables, tables); diff != "" {
@@ -217,7 +219,7 @@ func TestDefinitionsMigrationKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := storetest.FillForMigration(t, before, execOn(before))
+	check := storetest.FillForMigration(t, before, sqlOn(before))
 	closeStore(t, before)
 	s, migrated, err := Open(t.Context(), Options{Path: dbPath})
 	if err != nil {
@@ -238,7 +240,7 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := storetest.FillForComparisonsMigration(t, before, execOn(before))
+	check := storetest.FillForComparisonsMigration(t, before, sqlOn(before))
 	closeStore(t, before)
 	s, migrated, err := Open(t.Context(), Options{Path: dbPath})
 	if err != nil {
@@ -249,6 +251,11 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 		t.Errorf("applied (-want +got):\n%s", diff)
 	}
 	check(t, s)
+}
+
+// sqlOn returns what the shared migration tests need to fill s directly.
+func sqlOn(s *Store) storetest.SQL {
+	return storetest.SQL{Exec: execOn(s), Bytes: func(b []byte) string { return "X'" + hex.EncodeToString(b) + "'" }}
 }
 
 // execOn returns a function that runs a statement on a store's database.
@@ -407,7 +414,7 @@ func TestAMigrationWaitsForOpenStores(t *testing.T) {
 		t.Errorf("waiting wasn't logged:\n%s", logs.String())
 	}
 	// The open store still works on the schema it knows.
-	if err := older.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := older.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Errorf("RecordFetch on the open store: %v", err)
 	}
 
@@ -490,7 +497,7 @@ func TestFileModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeStore(t, s)
-	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := s.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Fatal(err)
 	}
 	// While the store is open, SQLite keeps the -wal and -shm files.
@@ -652,7 +659,7 @@ func TestPathsThatNeedEscaping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a database whose path holds URI syntax: %v", err)
 	}
-	if err := s.RecordFetch(t.Context(), failedFetch()); err != nil {
+	if err := s.RecordFetch(t.Context(), storetest.By, failedFetch()); err != nil {
 		t.Fatal(err)
 	}
 	closeStore(t, s)
@@ -753,5 +760,90 @@ func TestAMigrationsSettingsDontOutliveIt(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
 			t.Fatalf("after a migration that turned foreign keys off, an orphan = %v, want a foreign key error", err)
 		}
+	}
+}
+
+func TestAuditEventsNeverChange(t *testing.T) {
+	t.Parallel()
+	s := openNew(t)
+	event := audit.Event{By: storetest.By, Action: audit.SourceAdded, Result: audit.Succeeded, Source: "lib"}
+	if err := s.RecordEvents(t.Context(), []audit.Event{event}); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"UPDATE audit_events SET actor = 'mallory'", "DELETE FROM audit_events"} {
+		if _, err := s.db.ExecContext(t.Context(), statement); err == nil || !strings.Contains(err.Error(), "audit events are never") {
+			t.Errorf("%s: %v, want the triggers' refusal", statement, err)
+		}
+	}
+	page, err := s.Events(t.Context(), audit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Actor.Name != "tester" {
+		t.Errorf("Events = %+v, want the event as recorded", page.Events)
+	}
+}
+
+// TestMalformedAuditEventsRefused checks that the schema refuses rows,
+// written past the store, that would stop the log being read.
+func TestMalformedAuditEventsRefused(t *testing.T) {
+	t.Parallel()
+	s := openNew(t)
+	insert := func(details string) error {
+		_, err := s.db.ExecContext(t.Context(), `INSERT INTO audit_events
+			(occurred_at, actor_kind, actor, actor_id, host, through, action, result, details)
+			VALUES ('2026-11-25T01:02:03.000000Z', 'os_user', 'mallory', '1001', 'h', 'cli', 'source.added', 'succeeded', ?)`, details)
+		return err
+	}
+	if err := insert(`{"a":1}`); err != nil {
+		t.Fatalf("a well-formed row: %v", err)
+	}
+	for _, details := range []string{"", "[1]", `{"a":`, "null", "{} x", "'{}'"} {
+		if err := insert(details); err == nil {
+			t.Errorf("a row with details %q was recorded", details)
+		}
+	}
+}
+
+// TestAuditEventsGoWithTheirChange checks that an event is recorded in the
+// transaction of the change it describes: a change that fails takes its
+// event with it.
+func TestAuditEventsGoWithTheirChange(t *testing.T) {
+	t.Parallel()
+	s := openNew(t)
+	exec := execOn(s)
+	exec(t, `CREATE TRIGGER refuse_source BEFORE INSERT ON sources WHEN NEW.name = 'refused'
+		BEGIN SELECT RAISE(ABORT, 'refused'); END`)
+	exec(t, `CREATE TRIGGER keep_source BEFORE DELETE ON sources WHEN OLD.name = 'kept'
+		BEGIN SELECT RAISE(ABORT, 'kept'); END`)
+	fetch := func(name string) store.Fetch {
+		return store.Fetch{
+			Source:    store.SourceConfig{Name: name, Kind: "git", URL: "https://git.example.com/" + name + ".git"},
+			FetchedAt: time.Date(2026, 11, 23, 1, 2, 3, 0, time.UTC),
+			Error:     "down",
+		}
+	}
+	if err := s.RecordFetch(t.Context(), storetest.By, fetch("refused")); err == nil {
+		t.Fatal("RecordFetch succeeded though the source's record was refused")
+	}
+	for _, name := range []string{"gone", "kept"} {
+		if err := s.RecordFetch(t.Context(), storetest.By, fetch(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// gone is removed first, and its event recorded, before kept fails.
+	if _, err := s.RemoveSources(t.Context(), storetest.By, nil); err == nil {
+		t.Fatal("RemoveSources succeeded though kept's removal was refused")
+	}
+	page, err := s.Events(t.Context(), audit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range page.Events {
+		got = append(got, string(e.Action)+" "+e.Source)
+	}
+	if want := []string{"source.added gone", "source.added kept"}; !slices.Equal(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
 	}
 }

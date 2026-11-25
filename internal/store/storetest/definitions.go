@@ -348,7 +348,7 @@ func testLoadsRemoved(t *testing.T, s store.Store) {
 	}
 	// The source a's latest load failed, and is removed all the same.
 	recordLoad(t, s, store.Load{Source: "a", Version: "v1", Reader: reader, Settings: settings, StartedAt: t0.Add(time.Second), Error: "failed"})
-	removed, err := s.RemoveSources(t.Context(), []string{"b"})
+	removed, err := s.RemoveSources(t.Context(), By, []string{"b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,9 +600,9 @@ func testLoadsWhileFetching(t *testing.T, s store.Store) {
 		wg.Go(func() {
 			var err error
 			if i%2 == 0 {
-				err = s.RecordFetch(t.Context(), success("lib", version+"-next", at.Add(time.Millisecond), "a.yaml"))
+				err = s.RecordFetch(t.Context(), By, success("lib", version+"-next", at.Add(time.Millisecond), "a.yaml"))
 			} else {
-				_, err = s.RemoveSources(t.Context(), nil)
+				_, err = s.RemoveSources(t.Context(), By, nil)
 			}
 			if err != nil {
 				t.Errorf("round %d: %v", i, err)
@@ -635,6 +635,43 @@ func testLoadsWhileFetching(t *testing.T, s store.Store) {
 	}
 }
 
+// SQL is what the migration tests need of an engine to fill a database at
+// an older schema directly, since the store's methods write what the latest
+// schema holds: a statement run, and bytes written as a literal.
+type SQL struct {
+	Exec  func(t *testing.T, statement string)
+	Bytes func(b []byte) string
+}
+
+// recordInSQL records f, in SQL that db runs, as RecordFetch did before the
+// audit log: a store at an older schema can't record a fetch, since
+// RecordFetch records audit events too.
+func recordInSQL(t *testing.T, db SQL, f store.Fetch) {
+	t.Helper()
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	at := quote(f.FetchedAt.UTC().Format("2006-01-02T15:04:05.000000Z"))
+	fetchErr := "NULL"
+	if f.Error != "" {
+		fetchErr = quote(f.Error)
+	}
+	src := f.Source
+	db.Exec(t, fmt.Sprintf(`INSERT INTO sources (name, kind, url, ref, fetched_at, error) VALUES (%s, %s, %s, %s, %s, %s)`,
+		quote(src.Name), quote(src.Kind), quote(src.URL), quote(src.Ref), at, fetchErr))
+	if f.Error != "" {
+		return
+	}
+	db.Exec(t, fmt.Sprintf(`INSERT INTO snapshots (source, url, version, ref, fetched_at) VALUES (%s, %s, %s, %s, %s)`,
+		quote(src.Name), quote(src.URL), quote(f.Version), quote(f.Ref), at))
+	for _, file := range f.Files {
+		db.Exec(t, fmt.Sprintf(`INSERT INTO snapshot_files (source, path, size, digest) VALUES (%s, %s, %d, %s)`,
+			quote(src.Name), quote(file.Path), file.Size, quote(file.Digest)))
+	}
+	for i, sk := range f.Skipped {
+		db.Exec(t, fmt.Sprintf(`INSERT INTO snapshot_skipped (source, seq, path, reason) VALUES (%s, %d, %s, %s)`,
+			quote(src.Name), i, db.Bytes([]byte(sk.Path)), quote(sk.Reason)))
+	}
+}
+
 // FillForMigration records, in a store at schema version 2, what
 // migrations since must keep: sources with and without a snapshot, and the
 // snapshot's lists. It returns a function that checks that a store,
@@ -642,13 +679,13 @@ func testLoadsWhileFetching(t *testing.T, s store.Store) {
 // nothing loaded, and that no comparison is left, since comparisons
 // recorded then are of no definition: each engine's test records one, in
 // SQL, since RecordComparisons records them otherwise now.
-func FillForMigration(t *testing.T, s store.Store, exec func(t *testing.T, statement string)) (check func(*testing.T, store.Store)) {
+func FillForMigration(t *testing.T, s store.Store, db SQL) (check func(*testing.T, store.Store)) {
 	t.Helper()
 	ok := success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml")
 	ok.Skipped = []store.Skipped{{Path: "big.png", Reason: "too_large"}}
-	record(t, s, ok)
-	record(t, s, failure("down", t0, "unreachable"))
-	exec(t, `INSERT INTO comparisons (
+	recordInSQL(t, db, ok)
+	recordInSQL(t, db, failure("down", t0, "unreachable"))
+	db.Exec(t, `INSERT INTO comparisons (
 		source, object_type, path, identity, source_version, compared_at,
 		netbox_url, netbox_version, outcome, netbox_id, differences, result
 	) VALUES (
@@ -687,11 +724,11 @@ func FillForMigration(t *testing.T, s store.Store, exec func(t *testing.T, state
 // of the definitions it has, with their outcomes, by their IDs, and
 // removes the others; that the definitions' unique values read as empty;
 // and that a load of them keeps their IDs, and their comparisons.
-func FillForComparisonsMigration(t *testing.T, s store.Store, exec func(t *testing.T, statement string)) (check func(*testing.T, store.Store)) {
+func FillForComparisonsMigration(t *testing.T, s store.Store, db SQL) (check func(*testing.T, store.Store)) {
 	t.Helper()
-	record(t, s, success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml"))
+	recordInSQL(t, db, success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml"))
 	const at = "2026-10-26T01:02:03.456789Z"
-	exec(t, fmt.Sprintf(`INSERT INTO definition_loads (
+	db.Exec(t, fmt.Sprintf(`INSERT INTO definition_loads (
 		source, started_at, version, reader, settings, error,
 		loaded_at, loaded_version, loaded_reader, loaded_settings, files, invalid_files
 	) VALUES ('lib', '%[1]s', 'v1', '%[2]s', '%[3]s', NULL, '%[1]s', 'v1', '%[2]s', '%[3]s', 2, 0)`, at, reader, settings))
@@ -699,7 +736,7 @@ func FillForComparisonsMigration(t *testing.T, s store.Store, exec func(t *testi
 	for i, d := range defs {
 		// As a load records it, but for its unique values, so that a load
 		// rewrites the row for them alone.
-		exec(t, fmt.Sprintf(`INSERT INTO definitions (
+		db.Exec(t, fmt.Sprintf(`INSERT INTO definitions (
 			source, object_type, path, identity, seq, manufacturer, model, slug, part_number, search, digest, definition
 		) VALUES ('lib', '%s', '%s', '%s', %d, '%s', '%s', '%s', '%s', '%s', '%s', '%s')`,
 			d.ObjectType, d.Path, d.Identity, i, d.Manufacturer, d.Model, d.Slug, d.PartNumber, d.SearchText(), d.Digest, d.JSON))
@@ -714,7 +751,7 @@ func FillForComparisonsMigration(t *testing.T, s store.Store, exec func(t *testi
 		if c.path == "" {
 			typ = "dcim.manufacturer"
 		}
-		exec(t, fmt.Sprintf(`INSERT INTO comparisons (
+		db.Exec(t, fmt.Sprintf(`INSERT INTO comparisons (
 			source, object_type, path, identity, source_version, compared_at,
 			netbox_url, netbox_version, outcome, netbox_id, differences, result
 		) VALUES ('lib', '%s', '%s', '%s', 'v1', '2026-10-26T01:02:04.456789Z', 'https://netbox.example.com/', '4.7.2', '%s', %s, 0, '%s')`,

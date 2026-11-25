@@ -271,7 +271,7 @@ func testComparisonsRemoved(t *testing.T, s store.Store) {
 		l := loadDefinitions(t, s, name, "v1", t0, definition("a.yaml", "A", "v1"))
 		recordComparisons(t, s, l.run(t0, true, l.comparison(a, "absent", 0)))
 	}
-	removed, err := s.RemoveSources(t.Context(), []string{"kept"})
+	removed, err := s.RemoveSources(t.Context(), By, []string{"kept"})
 	if err != nil {
 		t.Fatalf("RemoveSources: %v", err)
 	}
@@ -380,7 +380,7 @@ func testComparisonsWhileFetching(t *testing.T, s store.Store) {
 	a, b := key("a.yaml", "A"), key("b.yaml", "B")
 	for i := range 30 {
 		// Each round starts afresh.
-		if _, err := s.RemoveSources(t.Context(), nil); err != nil {
+		if _, err := s.RemoveSources(t.Context(), By, nil); err != nil {
 			t.Fatalf("round %d: RemoveSources: %v", i, err)
 		}
 		at := t0.Add(time.Duration(i) * time.Second)
@@ -394,12 +394,12 @@ func testComparisonsWhileFetching(t *testing.T, s store.Store) {
 			var err error
 			switch i % 3 {
 			case 0:
-				err = s.RecordFetch(t.Context(), success("lib", version+"-next", at.Add(2*time.Millisecond), "a.yaml"))
+				err = s.RecordFetch(t.Context(), By, success("lib", version+"-next", at.Add(2*time.Millisecond), "a.yaml"))
 			case 1:
 				// Loaded again, without b.
 				err = s.RecordLoad(t.Context(), loadOf("lib", version, at.Add(2*time.Millisecond), definition("a.yaml", "A", version)))
 			default:
-				_, err = s.RemoveSources(t.Context(), nil)
+				_, err = s.RemoveSources(t.Context(), By, nil)
 			}
 			if err != nil {
 				t.Errorf("round %d: %v", i, err)

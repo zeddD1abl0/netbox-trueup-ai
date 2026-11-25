@@ -37,6 +37,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/filelock"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/store/sqlite/sqlitedb"
@@ -128,14 +129,29 @@ func (s *Store) Close() error {
 	return err
 }
 
-// RecordFetch records a fetch of a source in one transaction.
-func (s *Store) RecordFetch(ctx context.Context, f store.Fetch) error {
+// RecordFetch records a fetch of a source, and the audit events of what it
+// changed, in one transaction.
+func (s *Store) RecordFetch(ctx context.Context, by audit.By, f store.Fetch) error {
 	f, err := f.Prepare()
 	if err != nil {
 		return fmt.Errorf("record a fetch: %w", err)
 	}
+	if by, err = store.PrepareBy(by); err != nil {
+		return fmt.Errorf("record the fetch of source %s: %w", f.Source.Name, err)
+	}
 	at := f.FetchedAt.Format(timeLayout)
 	err = s.inTx(ctx, nil, func(q *sqlitedb.Queries) error {
+		before, err := sourceState(ctx, q, f.Source.Name)
+		if err != nil {
+			return err
+		}
+		events, err := store.FetchEvents(by, before, f)
+		if err != nil {
+			return err
+		}
+		if err := insertEvents(ctx, q, events); err != nil {
+			return err
+		}
 		if err := q.UpsertSource(ctx, sqlitedb.UpsertSourceParams{
 			Name:      f.Source.Name,
 			Kind:      f.Source.Kind,
@@ -268,11 +284,16 @@ func (s *Store) Snapshot(ctx context.Context, source string) (store.Snapshot, er
 }
 
 // RemoveSources removes every source not named in keep, its snapshot, its
-// definitions and its comparisons, in one transaction. Foreign keys don't cascade, so it deletes each
+// definitions and its comparisons, and records each removal as an audit
+// event, in one transaction. Foreign keys don't cascade, so it deletes each
 // source's rows from the bottom up.
-func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, error) {
+func (s *Store) RemoveSources(ctx context.Context, by audit.By, keep []string) ([]string, error) {
+	by, err := store.PrepareBy(by)
+	if err != nil {
+		return nil, fmt.Errorf("remove sources no longer configured: %w", err)
+	}
 	var removed []string
-	err := s.inTx(ctx, nil, func(q *sqlitedb.Queries) error {
+	err = s.inTx(ctx, nil, func(q *sqlitedb.Queries) error {
 		names, err := q.ListSourceNames(ctx)
 		if err != nil {
 			return err
@@ -280,6 +301,20 @@ func (s *Store) RemoveSources(ctx context.Context, keep []string) ([]string, err
 		for _, name := range names {
 			if slices.Contains(keep, name) {
 				continue
+			}
+			before, err := sourceState(ctx, q, name)
+			if err != nil {
+				return fmt.Errorf("source %s: %w", name, err)
+			}
+			if before == nil {
+				return fmt.Errorf("source %s: its record went while it was listed", name)
+			}
+			event, err := store.RemovedEvent(by, name, *before)
+			if err != nil {
+				return fmt.Errorf("source %s: %w", name, err)
+			}
+			if err := insertEvents(ctx, q, []audit.Event{event}); err != nil {
+				return fmt.Errorf("source %s: %w", name, err)
 			}
 			for _, del := range []func(context.Context, string) error{
 				q.DeleteComparisons, q.DeleteDefinitionProblems, q.DeleteDefinitions, q.DeleteDefinitionLoad,

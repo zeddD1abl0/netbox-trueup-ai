@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zeddD1abl0/netbox-trueup-ai/internal/audit"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/config"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format"
 	"github.com/zeddD1abl0/netbox-trueup-ai/internal/format/devicetypelib"
@@ -56,6 +57,11 @@ or why it failed. A source that fails keeps the version it had. The records
 of sources no longer configured are removed with their caches. Fetches of
 one source take turns, even in different processes: a fetch waits up to the
 source's fetch_timeout for another to finish, and otherwise fails.
+
+The audit log records, as the operating system user running the command,
+each source added, each source's kind, URL or ref changed, each new version
+fetched, and each source removed, in the same transaction as the change.
+"netbox-trueup-ai audit" lists them.
 
 Each version fetched is then read with the source's format, and its
 definitions and the problems with its files are loaded into the database,
@@ -218,10 +224,15 @@ func cacheRoot(cfg *config.Config) (string, error) {
 // fetchInto fetches sources as fetchSources does, into the caches in root,
 // which cacheRoot made, recording the fetches in db, which is open.
 func (a *app) fetchInto(ctx context.Context, db store.Store, cfg *config.Config, root string, sources []config.Source) (fetchJSON, error) {
+	// Who fetches, before anything is fetched.
+	by, err := a.by(ctx)
+	if err != nil {
+		return fetchJSON{}, err
+	}
 	kinds := a.sourceKinds(root)
 	result := fetchJSON{OK: true, Sources: []fetchSourceJSON{}}
 	for _, s := range sources {
-		row, err := a.fetchAndRecord(ctx, db, kinds, root, s)
+		row, err := a.fetchAndRecord(ctx, db, by, kinds, root, s)
 		if err != nil {
 			return fetchJSON{}, err
 		}
@@ -229,7 +240,7 @@ func (a *app) fetchInto(ctx context.Context, db store.Store, cfg *config.Config,
 		result.Sources = append(result.Sources, row)
 	}
 
-	if err := a.removeUnconfigured(ctx, db, root, cfg.Settings.Sources); err != nil {
+	if err := a.removeUnconfigured(ctx, db, by, root, cfg.Settings.Sources); err != nil {
 		return fetchJSON{}, err
 	}
 	return result, nil
@@ -239,7 +250,7 @@ func (a *app) fetchInto(ctx context.Context, db store.Store, cfg *config.Config,
 // longer configured. It takes each one's fetch lock first, without waiting,
 // and leaves those another process is fetching, perhaps with an older
 // configuration, for a later run.
-func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root string, configured []config.Source) error {
+func (a *app) removeUnconfigured(ctx context.Context, db store.Store, by audit.By, root string, configured []config.Source) error {
 	interrupted := func() error {
 		return fmt.Errorf("interrupted while removing sources no longer configured: %w", ctx.Err())
 	}
@@ -292,7 +303,7 @@ func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root strin
 		}
 	}
 
-	forgotten, err := db.RemoveSources(ctx, keep)
+	forgotten, err := db.RemoveSources(ctx, by, keep)
 	if err != nil {
 		if ctx.Err() != nil {
 			return interrupted()
@@ -323,7 +334,7 @@ func (a *app) removeUnconfigured(ctx context.Context, db store.Store, root strin
 // process held the lock too long, is only reported, since it fetched
 // nothing. Any other problem with the lock, the cache or the database is an
 // error.
-func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[string]source.Kind, root string, s config.Source) (fetchSourceJSON, error) {
+func (a *app) fetchAndRecord(ctx context.Context, db store.Store, by audit.By, kinds map[string]source.Kind, root string, s config.Source) (fetchSourceJSON, error) {
 	row := fetchSourceJSON{Name: s.Name, Kind: s.Kind, URL: s.URL, Skipped: []skippedJSON{}}
 	fail := func(msg string) {
 		row.OK, row.Error = false, &msg
@@ -360,7 +371,7 @@ func (a *app) fetchAndRecord(ctx context.Context, db store.Store, kinds map[stri
 	}
 	rec.Source = store.SourceConfig{Name: s.Name, Kind: s.Kind, URL: s.URL, Ref: s.Ref}
 	rec.FetchedAt = started
-	if err := db.RecordFetch(ctx, rec); err != nil {
+	if err := db.RecordFetch(ctx, by, rec); err != nil {
 		if ctx.Err() != nil {
 			return row, fmt.Errorf("interrupted while recording the fetch of source %s: %w", s.Name, ctx.Err())
 		}
