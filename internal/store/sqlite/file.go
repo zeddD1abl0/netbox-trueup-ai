@@ -132,6 +132,12 @@ func setWAL(ctx context.Context, db *sql.DB) (string, error) {
 // by mistake. It reads through a connection of its own, opened read-only, so
 // that SQLite can't write to a file that turns out not to be TrueUp's, as a
 // connection that can write does when it recovers or checkpoints a WAL.
+//
+// It reads the ID and the tables in one statement, which SQLite runs in one
+// read transaction, so both come from the same moment. Read apart, another
+// process's first migration, which sets the ID and creates the tables in one
+// transaction, could commit between them, and a new database would look like
+// another application's.
 func checkOwner(ctx context.Context, path string) (err error) {
 	connector, err := sqlitedriver.NewConnector(dsn(path, "ro"))
 	if err != nil {
@@ -140,22 +146,15 @@ func checkOwner(ctx context.Context, path string) (err error) {
 	db := sql.OpenDB(connector)
 	defer func() { err = errors.Join(err, db.Close()) }()
 	var id int64
-	if err := db.QueryRowContext(ctx, "PRAGMA application_id").Scan(&id); err != nil {
-		return fmt.Errorf("read the database file's header: %w", err)
+	var others int
+	err = db.QueryRowContext(ctx, `SELECT application_id,
+		(SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\' AND name <> 'goose_db_version')
+		FROM pragma_application_id`).Scan(&id, &others)
+	if err != nil {
+		return fmt.Errorf("read the database file's header and tables: %w", err)
 	}
-	if id == applicationID {
+	if id == applicationID || (id == 0 && others == 0) {
 		return nil
-	}
-	if id == 0 {
-		var others int
-		err := db.QueryRowContext(ctx,
-			`SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\' AND name <> 'goose_db_version'`).Scan(&others)
-		if err != nil {
-			return fmt.Errorf("read the database's tables: %w", err)
-		}
-		if others == 0 {
-			return nil
-		}
 	}
 	return fmt.Errorf("%s holds another application's database, not TrueUp's: point database.url at a file of TrueUp's own", path)
 }
