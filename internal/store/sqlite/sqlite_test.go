@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -340,6 +341,41 @@ func TestConcurrentOpeners(t *testing.T) {
 	for _, m := range shipped(t) {
 		if n := query(t, rawDB(t, dbPath), fmt.Sprintf("SELECT COUNT(*) FROM goose_db_version WHERE version_id = %d", m.Version)); !slices.Equal(n, []string{"1"}) {
 			t.Errorf("migration %d is recorded %v times, want once", m.Version, n)
+		}
+	}
+}
+
+// TestOwnerCheckedDuringTheFirstMigration checks a new database's owner over
+// and over while another opener migrates it, as processes that start at once
+// do. Read apart, the file's application ID could be read before the first
+// migration commits and its tables after, which looks like another
+// application's database.
+func TestOwnerCheckedDuringTheFirstMigration(t *testing.T) {
+	t.Parallel()
+	for range 20 {
+		dbPath := filepath.Join(t.TempDir(), "trueup.db")
+		if err := createFile(t.Context(), dbPath, slog.New(slog.DiscardHandler)); err != nil {
+			t.Fatal(err)
+		}
+		var migrated atomic.Bool
+		checked := make(chan error, 1)
+		go func() {
+			for {
+				done := migrated.Load()
+				if err := checkOwner(t.Context(), dbPath); err != nil || done {
+					checked <- err
+					return
+				}
+			}
+		}()
+		s, _, err := Open(t.Context(), Options{Path: dbPath})
+		migrated.Store(true)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		closeStore(t, s)
+		if err := <-checked; err != nil {
+			t.Fatalf("checkOwner during the first migration: %v", err)
 		}
 	}
 }
