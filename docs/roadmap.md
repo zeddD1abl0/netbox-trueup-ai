@@ -207,7 +207,7 @@ flowchart LR
 
 Steps 16, 17 and 21 can start at once. Every step works with branching off, the default, and its tests cover both.
 
-- **16. `feat(audit): keep an append-only audit log`.**
+- **16. `feat(audit): keep an append-only audit log`.** Done in #36.
   - `internal/audit`, and an `audit_events` table on both engines that triggers keep append-only. Each event says who acted (at the command line, the operating system user found by the process's user ID, never `$USER`, with the host, and sudo's user under sudo), what, when, through what, about what, and with what result, and is recorded in the same transaction as the change it describes.
   - `source fetch` records sources added, reconfigured, moved to a new version and removed.
   - `netbox-trueup-ai audit`, filtered by time, actor, action and source, as text or JSON.
