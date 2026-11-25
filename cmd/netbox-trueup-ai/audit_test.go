@@ -180,7 +180,7 @@ func TestAuditText(t *testing.T) {
     about source lib
     kind: git
     url: https://git.example.com/lib.git
-    ref: ` + `
+    ref: ""
     version: abc
 
 #2  TIME  netbox.write  started
@@ -392,6 +392,42 @@ func TestAuditTextHeading(t *testing.T) {
 	}
 }
 
+func TestDescribe(t *testing.T) {
+	t.Parallel()
+	by := func(name, id, sudoUser, sudoID string) audit.By {
+		return audit.By{Actor: audit.Actor{Kind: audit.OSUser, Name: name, ID: id, Host: "ops1", SudoUser: sudoUser, SudoUserID: sudoID}, Through: audit.CommandLine}
+	}
+	for _, tt := range []struct {
+		by   audit.By
+		want string
+	}{
+		{by("carol", "1000", "", ""), "carol (uid 1000), on ops1, at the command line"},
+		{by(`CORP\carol`, "S-1-5-21-1-2-3-1001", "", ""), `CORP\carol (S-1-5-21-1-2-3-1001), on ops1, at the command line`},
+		// sudo's variables, set by hand to read as more of the line.
+		{
+			by("alice", "1000", "root (uid 0), on db-prod, at the command line;", "0"),
+			`alice (uid 1000), through sudo from "root (uid 0), on db-prod, at the command line;" (uid 0), on ops1, at the command line`,
+		},
+		{by("alice", "1000", "", "0), on db-prod"), `alice (uid 1000), through sudo from "0), on db-prod", on ops1, at the command line`},
+	} {
+		if got := describeBy(tt.by); got != tt.want {
+			t.Errorf("describeBy = %s, want %s", got, tt.want)
+		}
+	}
+	for _, tt := range []struct {
+		e    audit.Event
+		want string
+	}{
+		{audit.Event{ObjectType: "dcim.devicetype", Object: "Dell / R640"}, "dcim.devicetype Dell / R640"},
+		{audit.Event{Object: " Dell / R640 "}, `" Dell / R640 "`},
+		{audit.Event{ObjectType: "dcim.devicetype"}, "dcim.devicetype"},
+	} {
+		if got := describeSubject(tt.e); got != tt.want {
+			t.Errorf("describeSubject(%+v) = %s, want %s", tt.e, got, tt.want)
+		}
+	}
+}
+
 func TestDetailLines(t *testing.T) {
 	t.Parallel()
 	got, err := detailLines(json.RawMessage(`{"before":null,"after":"v1","n":1,"o":{"a":[1,2]},"s":"a\u202eb","":"","ref":"null","one":"1","q":"\"a\""}`))
@@ -399,7 +435,7 @@ func TestDetailLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"before: null", "after: v1", "n: 1", `o: {"a":[1,2]}`, `s: "a\u202eb"`, ": ",
+		"before: null", "after: v1", "n: 1", `o: {"a":[1,2]}`, `s: "a\u202eb"`, `: ""`,
 		// Strings that read as other JSON values, quoted.
 		`ref: "null"`, `one: "1"`, `q: "\"a\""`,
 	}

@@ -92,6 +92,9 @@ func thisProcess() process {
 	}
 }
 
+// commandLineActor finds p's actor. It takes no context, since none could
+// interrupt its lookups: lookUpActor runs it on a goroutine it stops
+// waiting for when its context ends.
 func commandLineActor(p process, getenv func(string) string) (Actor, error) {
 	a := Actor{Kind: OSUser}
 	// User IDs belong to a host, and hosts can share PostgreSQL.

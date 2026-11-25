@@ -70,6 +70,9 @@ func looksLikeTime(s string) bool {
 func parseAgo(s string) (time.Duration, error) {
 	var d time.Duration
 	if days, ok := strings.CutSuffix(s, "d"); ok {
+		if strings.HasPrefix(days, "-") {
+			return 0, errOutOfRange
+		}
 		// ParseUint refuses a sign.
 		n, err := strconv.ParseUint(days, 10, 32)
 		switch {

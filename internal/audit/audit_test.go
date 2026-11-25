@@ -274,6 +274,7 @@ func TestParseTime(t *testing.T) {
 	for _, tt := range []struct{ in, want string }{
 		{"yesterday", `"yesterday" is neither an RFC 3339 time`},
 		{"-5m", `"-5m" is a duration back from now that is negative, or reaches back more than 100 years`},
+		{"-7d", `"-7d" is a duration back from now that is negative`},
 		{"36501d", `"36501d" is a duration back from now that is negative`},
 		{"999999999999d", `"999999999999d" is a duration back from now that is negative`},
 		{"2026-11-31T00:00:00Z", `"2026-11-31T00:00:00Z" isn't an RFC 3339 time, such as 2026-11-23T09:30:00Z: parsing time "2026-11-31T00:00:00Z": day out of range`},

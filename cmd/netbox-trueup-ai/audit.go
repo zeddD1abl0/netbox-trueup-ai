@@ -332,9 +332,9 @@ func describeBy(by audit.By) string {
 func describeUser(name, id string) string {
 	switch {
 	case name != "" && id != "":
-		return fmt.Sprintf("%s (%s)", cell(name), describeID(id))
+		return fmt.Sprintf("%s (%s)", nameCell(name), describeID(id))
 	case name != "":
-		return cell(name)
+		return nameCell(name)
 	default:
 		return describeID(id)
 	}
@@ -346,7 +346,33 @@ func describeID(id string) string {
 	if _, err := strconv.ParseUint(id, 10, 32); err == nil {
 		return "uid " + id
 	}
-	return cell(id)
+	return nameCell(id)
+}
+
+// nameCell writes a user's name or ID as it is where it reads as one
+// alone, holding only letters, digits and ._-@$\, as user names, Windows
+// accounts and security identifiers do, and quoted otherwise. sudo's
+// variables are whatever the user running a command set, and spaces,
+// commas or parentheses in them would read as more of the line.
+func nameCell(s string) string {
+	plain := s != "" && !strings.ContainsFunc(s, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune(`._-@$\`, r)
+	})
+	if plain {
+		return s
+	}
+	return strconv.Quote(s)
+}
+
+// textCell writes a string value so that it can't be mistaken for another:
+// quoted where it is empty, has spaces at its ends, or reads as a JSON
+// value other than a string, such as a ref named null, or 1, and escaped
+// as cell escapes it otherwise.
+func textCell(s string) string {
+	if s == "" || strings.TrimSpace(s) != s || json.Valid([]byte(s)) {
+		return strconv.Quote(s)
+	}
+	return cell(s)
 }
 
 // describeSubject says what an event is about, or "" if nothing in
@@ -356,8 +382,14 @@ func describeSubject(e audit.Event) string {
 	if e.Source != "" {
 		parts = append(parts, "source "+cell(e.Source))
 	}
-	if e.ObjectType != "" || e.Object != "" {
-		parts = append(parts, strings.TrimSpace(cell(e.ObjectType)+" "+cell(e.Object)))
+	var object []string
+	for _, v := range []string{e.ObjectType, e.Object} {
+		if v != "" {
+			object = append(object, textCell(v))
+		}
+	}
+	if len(object) > 0 {
+		parts = append(parts, strings.Join(object, " "))
 	}
 	if e.NetBoxURL != "" {
 		where := "NetBox " + cell(e.NetBoxURL)
@@ -373,7 +405,7 @@ func describeSubject(e audit.Event) string {
 }
 
 // detailLines writes an event's details a line per field, in the order the
-// event holds them: a string as it is, escaped, and anything else as
+// event holds them: a string as textCell writes it, and anything else as
 // compact JSON.
 func detailLines(details json.RawMessage) ([]string, error) {
 	if len(details) == 0 {
@@ -404,13 +436,7 @@ func detailLines(details json.RawMessage) ([]string, error) {
 		var s string
 		// null unmarshals into a string as "", which it isn't.
 		if err := json.Unmarshal(value, &s); err == nil && !bytes.Equal(value, []byte("null")) {
-			// A string that reads as another JSON value, such as a ref
-			// named null, or 1, is quoted, so it can't pass for one.
-			if json.Valid([]byte(s)) {
-				lines = append(lines, cell(key)+": "+strconv.Quote(s))
-			} else {
-				lines = append(lines, cell(key)+": "+cell(s))
-			}
+			lines = append(lines, cell(key)+": "+textCell(s))
 			continue
 		}
 		lines = append(lines, cell(key)+": "+cell(string(value)))
