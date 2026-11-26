@@ -8,10 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/testcontainers/testcontainers-go/network"
 )
 
 // nb is the NetBox that TestMain starts for every test in the package.
@@ -99,7 +104,7 @@ func TestStatusAndToken(t *testing.T) {
 // must remove what it started without an error of its own.
 func TestStartReportsFailure(t *testing.T) {
 	t.Parallel()
-	st, _, err := parseStack(composeFile)
+	st, _, err := parseStack(composeFile, buildContexts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +128,7 @@ services:
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	got, err := start(ctx, []byte(broken))
+	got, err := start(ctx, []byte(broken), buildContexts, Stock)
 	if err == nil {
 		_ = got.Stop(ctx)
 		t.Fatal("start succeeded with a service that exits")
@@ -153,4 +158,149 @@ func getStatus(t *testing.T, authorization string) (int, []byte) {
 		t.Fatalf("GET /api/status/: %v", err)
 	}
 	return status, body
+}
+
+// TestProfile checks that NetBox runs the profile asked for: netbox-branching
+// at BranchingVersion and a worker in Branching, neither in Stock.
+func TestProfile(t *testing.T) {
+	t.Parallel()
+	var st struct {
+		Plugins map[string]string `json:"plugins"`
+		Workers *int              `json:"rq-workers-running"`
+	}
+	if err := nb.Get(t.Context(), "/api/status/", nil, &st); err != nil {
+		t.Fatal(err)
+	}
+	wantPlugins, wantWorkers := map[string]string{}, 0
+	if nb.Profile == Branching {
+		wantPlugins, wantWorkers = map[string]string{"netbox_branching": BranchingVersion}, 1
+	}
+	if diff := cmp.Diff(wantPlugins, st.Plugins); diff != "" {
+		t.Errorf("the %s profile's plugins (-want +got):\n%s", nb.Profile, diff)
+	}
+	switch {
+	case st.Workers == nil:
+		t.Errorf("the %s profile's /api/status/ doesn't say how many workers run, want %d", nb.Profile, wantWorkers)
+	case *st.Workers != wantWorkers:
+		t.Errorf("the %s profile runs %d workers, want %d", nb.Profile, *st.Workers, wantWorkers)
+	}
+}
+
+// names counts the names unique makes, so that each is new within the test
+// binary, whose NetBox the tests share, even with -count.
+var names atomic.Int64
+
+// unique returns a name for test data, with prefix, that no other call in
+// this test binary returns.
+func unique(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, names.Add(1))
+}
+
+// requireBranching skips a test unless NetBox runs the Branching profile.
+// CI runs the integration tests with each profile.
+func requireBranching(t *testing.T) {
+	t.Helper()
+	if nb.Profile != Branching {
+		t.Skipf("needs netbox-branching: run with %s=%s", ProfileVariable, Branching)
+	}
+}
+
+// TestBranch creates a branch, and checks that what a test writes in it
+// stays in it.
+func TestBranch(t *testing.T) {
+	t.Parallel()
+	requireBranching(t)
+	// A branch here is ready in seconds; without a deadline, one that never
+	// is would hold up every test in the binary until go test's timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	name, slug := unique("netboxtest-branch"), unique("branch-only")
+	b, err := nb.CreateBranch(ctx, name, "TestBranch in internal/netboxtest")
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	var state branchState
+	if err := nb.Get(ctx, fmt.Sprintf("%s%d/", branchesPath, b.ID), nil, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Status.Value != "ready" || state.SchemaID != b.SchemaID || state.Name != name {
+		t.Errorf("the branch is %+v, want %s, ready, with schema ID %s", state, name, b.SchemaID)
+	}
+
+	in := nb.InBranch(b)
+	var created struct {
+		ID int `json:"id"`
+	}
+	if err := in.Post(ctx, "/api/dcim/manufacturers/", map[string]string{"name": slug, "slug": slug}, &created); err != nil {
+		t.Fatalf("Post in the branch: %v", err)
+	}
+	query := url.Values{"slug": {slug}}
+	var inBranch, inMain struct {
+		Results []struct {
+			ID int `json:"id"`
+		} `json:"results"`
+	}
+	if err := in.Get(ctx, "/api/dcim/manufacturers/", query, &inBranch); err != nil {
+		t.Fatalf("Get in the branch: %v", err)
+	}
+	if len(inBranch.Results) != 1 || inBranch.Results[0].ID != created.ID {
+		t.Errorf("the branch has manufacturers %+v, want the one created there, %d", inBranch.Results, created.ID)
+	}
+	if err := nb.Get(ctx, "/api/dcim/manufacturers/", query, &inMain); err != nil {
+		t.Fatalf("Get in main: %v", err)
+	}
+	if len(inMain.Results) != 0 {
+		t.Errorf("main has manufacturers %+v, want none: it was created in the branch", inMain.Results)
+	}
+}
+
+// TestCreateBranchReportsStoppedWorker checks that CreateBranch fails, with
+// the worker's log, when the worker has stopped, rather than waiting for a
+// branch nothing provisions. A container that exits at once stands in for the
+// worker, as stopping the real one would fail the tests that share it.
+func TestCreateBranchReportsStoppedWorker(t *testing.T) {
+	t.Parallel()
+	requireBranching(t)
+	st, _, err := parseStack(composeFile, buildContexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	nw, err := network.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = nw.Remove(context.WithoutCancel(ctx)) }()
+	dead := service{
+		Image:       st.Services["valkey"].Image,
+		Command:     []string{"sh", "-c", "echo worker-was-here; exit 3"},
+		Expose:      []string{"6379"},
+		Healthcheck: &healthcheck{Test: []string{"CMD", "true"}, StartPeriod: duration(time.Minute), StartInterval: duration(time.Second), Interval: duration(time.Second), Timeout: duration(time.Second), Retries: 1},
+	}
+	ctr, err := startService(ctx, nw, workerService, dead, buildContexts)
+	if ctr != nil {
+		defer func() { _ = ctr.Terminate(context.WithoutCancel(ctx)) }()
+	}
+	if err == nil || ctr == nil {
+		t.Fatalf("the stand-in worker didn't stop: %v", err)
+	}
+
+	stopped := &NetBox{URL: nb.URL, Token: nb.Token, Profile: Branching, services: []startedService{{name: workerService, container: ctr}}}
+	name := unique("netboxtest-stopped-worker")
+	_, err = stopped.CreateBranch(ctx, name, "TestCreateBranchReportsStoppedWorker in internal/netboxtest")
+	if err == nil {
+		t.Fatal("CreateBranch succeeded with a stopped worker")
+	}
+	var left struct {
+		Count int `json:"count"`
+	}
+	if err := nb.Get(ctx, branchesPath, url.Values{"name": {name}}, &left); err != nil || left.Count != 0 {
+		t.Errorf("CreateBranch left %d branches named %s, %v; want none, since nothing would provision them", left.Count, name, err)
+	}
+	for _, want := range []string{fmt.Sprintf("create branch %q", name), "NetBox's worker, which provisions branches, has stopped", "Its state is exited", "The end of its log:", "worker-was-here"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("CreateBranch error doesn't contain %q:\n%v", want, err)
+		}
+	}
 }

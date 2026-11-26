@@ -1,35 +1,46 @@
 package netboxtest
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
 
 // TestComposeFile checks the real compose.yaml: that netboxtest can run it,
-// and that it runs the NetBox release the project targets.
+// that it runs the NetBox release the project targets, and that both
+// profiles run the same NetBox, configured the same way, apart from
+// netbox-branching and its worker.
 func TestComposeFile(t *testing.T) {
 	t.Parallel()
-	st, order, err := parseStack(composeFile)
+	st, plans, err := parseStack(composeFile, buildContexts)
 	if err != nil {
 		t.Fatalf("parseStack(compose.yaml): %v", err)
 	}
-	if diff := cmp.Diff([]string{"postgres", "valkey", netboxService}, order); diff != "" {
-		t.Errorf("start order (-want +got):\n%s", diff)
+	want := map[Profile]plan{
+		Stock:     {order: []string{"postgres", "valkey", "netbox"}, web: "netbox"},
+		Branching: {order: []string{"postgres", "valkey", "netbox-branching", workerService}, web: "netbox-branching"},
+	}
+	if diff := cmp.Diff(want, plans, cmp.AllowUnexported(plan{})); diff != "" {
+		t.Errorf("profiles (-want +got):\n%s", diff)
 	}
 
 	// Moving to another NetBox release is a decision (docs/adr/0003), not an
 	// image update: Version and the Makefile's NETBOX_VERSION move with it.
-	image := st.Services[netboxService].Image
-	if want := "docker.io/netboxcommunity/netbox:v" + Version + "-"; !strings.HasPrefix(image, want) {
-		t.Errorf("NetBox image = %q, want %s<netbox-docker version>@sha256:<digest>, to match netboxtest.Version", image, want)
+	stock := st.Services["netbox"]
+	if want := "docker.io/netboxcommunity/netbox:v" + Version + "-"; !strings.HasPrefix(stock.Image, want) {
+		t.Errorf("NetBox image = %q, want %s<netbox-docker version>@sha256:<digest>, to match netboxtest.Version", stock.Image, want)
 	}
-	if diff := cmp.Diff([]string{"8080/tcp"}, st.Services[netboxService].containerPorts()); diff != "" {
+	if diff := cmp.Diff([]string{"8080/tcp"}, stock.containerPorts()); diff != "" {
 		t.Errorf("NetBox container ports (-want +got):\n%s", diff)
 	}
 
@@ -40,8 +51,246 @@ func TestComposeFile(t *testing.T) {
 
 	// netbox-docker's default, "*", would let a page that rebinds its own name
 	// to 127.0.0.1 reach NetBox from a browser.
-	if hosts := st.Services[netboxService].Environment["ALLOWED_HOSTS"]; hosts == "" || strings.Contains(hosts, "*") {
+	if hosts := stock.Environment["ALLOWED_HOSTS"]; hosts == "" || strings.Contains(hosts, "*") {
 		t.Errorf("NetBox's ALLOWED_HOSTS = %q, want only names for this machine", hosts)
+	}
+
+	// The branching image is the stock one with netbox-branching added, so the
+	// stock NetBox's image update must move its base too.
+	branching, worker := st.Services["netbox-branching"], st.Services[workerService]
+	for name, s := range map[string]service{"netbox-branching": branching, workerService: worker} {
+		if s.Build == nil || s.Build.Context != "branching" {
+			t.Errorf("%s doesn't build from branching/", name)
+			continue
+		}
+		if base, err := dockerfileBase(buildContexts, s.Build.Context); err != nil || base != stock.Image {
+			t.Errorf("%s builds on %q, %v; want the stock netbox service's image, %s", name, base, err, stock.Image)
+		}
+		// Compose files can't share settings without anchors, which netboxtest
+		// doesn't read, so the file repeats them.
+		if diff := cmp.Diff(stock.Environment, s.Environment); diff != "" {
+			t.Errorf("%s's environment differs from netbox's (-netbox +%s):\n%s", name, name, diff)
+		}
+		if s.User != stock.User {
+			t.Errorf("%s runs as %q, netbox as %q", name, s.User, stock.User)
+		}
+	}
+	if diff := cmp.Diff(stock.Ports, branching.Ports); diff != "" {
+		t.Errorf("netbox-branching's ports differ from netbox's (-netbox +netbox-branching):\n%s", diff)
+	}
+	if diff := cmp.Diff(stock.Healthcheck, branching.Healthcheck); diff != "" {
+		t.Errorf("netbox-branching's health check differs from netbox's (-netbox +netbox-branching):\n%s", diff)
+	}
+	if len(worker.Command) == 0 || worker.Command[len(worker.Command)-1] != "rqworker" {
+		t.Errorf("%s runs %q, not NetBox's rqworker", workerService, worker.Command)
+	}
+}
+
+// TestBuildContexts checks that netboxtest builds from the same files as
+// Compose, which sends a build context's whole directory to Docker, and
+// that every embedded directory is a build context compose.yaml uses.
+// Embedding keeps neither file modes nor .dockerignore's meaning, so the
+// directories may hold neither executable files nor a .dockerignore.
+func TestBuildContexts(t *testing.T) {
+	t.Parallel()
+	st, _, err := parseStack(composeFile, buildContexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	used := map[string]bool{}
+	for _, s := range st.Services {
+		if s.Build != nil {
+			used[s.Build.Context] = true
+		}
+	}
+	dirs, err := fs.ReadDir(buildContexts, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if !used[d.Name()] {
+			t.Errorf("netboxtest embeds %s/, which no service in compose.yaml builds from", d.Name())
+		}
+		embedded, err := fs.Sub(buildContexts, d.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(readFiles(t, os.DirFS(d.Name())), readFiles(t, embedded)); diff != "" {
+			t.Errorf("%s/: the embedded files differ from those on disk (-disk +embedded):\n%s", d.Name(), diff)
+		}
+		for _, err := range checkContextFiles(os.DirFS(d.Name())) {
+			t.Errorf("%s/: %v", d.Name(), err)
+		}
+	}
+}
+
+// checkContextFiles refuses what netboxtest's build would treat differently
+// from Compose's: an executable file, which writeContext writes with mode
+// 0644, and a .dockerignore, which writeContext copies like any other file.
+// The Dockerfile sets the modes of what it copies, which otherwise follow the
+// checkout's under Compose.
+func checkContextFiles(fsys fs.FS) []error {
+	var errs []error
+	err := fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch base := path.Base(name); {
+		case base == ".dockerignore" || strings.HasSuffix(base, ".dockerignore"):
+			errs = append(errs, fmt.Errorf("%s: netboxtest sends every file, so a .dockerignore would make Compose build from other files", name))
+		case info.Mode()&0o111 != 0:
+			errs = append(errs, fmt.Errorf("%s is executable, which netboxtest's build wouldn't keep; run it through its interpreter instead", name))
+		}
+		return nil
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+func TestCheckContextFiles(t *testing.T) {
+	t.Parallel()
+	ok := fstest.MapFS{"Dockerfile": {Data: []byte("FROM x\n"), Mode: 0o644}, "sub/plugins.py": {Mode: 0o600}}
+	if errs := checkContextFiles(ok); len(errs) != 0 {
+		t.Errorf("checkContextFiles(ok) = %v", errs)
+	}
+	bad := fstest.MapFS{
+		"Dockerfile":              {Data: []byte("FROM x\n")},
+		"setup.sh":                {Mode: 0o755},
+		".dockerignore":           {Data: []byte("*.md\n")},
+		"Dockerfile.dockerignore": {},
+	}
+	var got []string
+	for _, err := range checkContextFiles(bad) {
+		got = append(got, err.Error())
+	}
+	want := []string{
+		".dockerignore: netboxtest sends every file, so a .dockerignore would make Compose build from other files",
+		"Dockerfile.dockerignore: netboxtest sends every file, so a .dockerignore would make Compose build from other files",
+		"setup.sh is executable, which netboxtest's build wouldn't keep; run it through its interpreter instead",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("checkContextFiles(bad) (-want +got):\n%s", diff)
+	}
+}
+
+// readFiles returns every file under fsys, by path, with its content.
+func readFiles(t *testing.T, fsys fs.FS) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(fsys, name)
+		files[name] = string(data)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+// TestBranchingRequirements checks that the branching image installs
+// netbox-branching at BranchingVersion, pinned by a hash, and nothing else.
+func TestBranchingRequirements(t *testing.T) {
+	t.Parallel()
+	data, err := fs.ReadFile(buildContexts, "branching/requirements.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := branchingPin(string(data))
+	if err != nil {
+		t.Fatalf("branching/requirements.txt: %v", err)
+	}
+	if got != BranchingVersion {
+		t.Errorf("branching/requirements.txt pins netbox-branching %s, want %s, to match netboxtest.BranchingVersion", got, BranchingVersion)
+	}
+}
+
+// requirementPin is the one requirement branching/requirements.txt may hold:
+// netbox-branching at one version, with a hash for each of the release's
+// files that it accepts, as Dependabot writes them. The Dockerfile installs
+// the wheel only.
+var requirementPin = regexp.MustCompile(`^netboxlabs-netbox-branching==(\S+)( --hash=sha256:[0-9a-f]{64})+$`)
+
+// branchingPin returns the version of netbox-branching that a requirements
+// file pins, and fails unless it pins that, by hash, and nothing else.
+func branchingPin(file string) (string, error) {
+	var requirements []string
+	for _, line := range strings.Split(strings.ReplaceAll(file, "\\\n", " "), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			requirements = append(requirements, strings.Join(strings.Fields(line), " "))
+		}
+	}
+	if len(requirements) != 1 || !requirementPin.MatchString(requirements[0]) {
+		return "", fmt.Errorf("holds %q, want one requirement: netboxlabs-netbox-branching==<version> --hash=sha256:<hash>", requirements)
+	}
+	return requirementPin.FindStringSubmatch(requirements[0])[1], nil
+}
+
+func TestBranchingPin(t *testing.T) {
+	t.Parallel()
+	const (
+		h1 = "--hash=sha256:774a7feeb21b4f42950b99c8b6107108487ae7341154c0950224e8b66d3f2c17"
+		h2 = "--hash=sha256:103c07148e8894cbaaa7d7f622d863c4369de0bb1fdb2c55d821169bb372b735"
+	)
+	tests := []struct {
+		name, file, want string
+	}{
+		{name: "one hash", file: "# a comment\nnetboxlabs-netbox-branching==1.2.4 \\\n    " + h1 + "\n", want: "1.2.4"},
+		{name: "a hash for each file, as Dependabot writes", file: "netboxlabs-netbox-branching==1.2.5 \\\n    " + h1 + " \\\n    " + h2 + "\n", want: "1.2.5"},
+		{name: "no hash", file: "netboxlabs-netbox-branching==1.2.4\n"},
+		{name: "a range", file: "netboxlabs-netbox-branching>=1.2.4 " + h1 + "\n"},
+		{name: "another package", file: "netboxlabs-netbox-branching==1.2.4 " + h1 + "\nrequests==2.0 " + h2 + "\n"},
+		{name: "a short hash", file: "netboxlabs-netbox-branching==1.2.4 --hash=sha256:774a\n"},
+		{name: "nothing", file: "# empty\n"},
+	}
+	for _, tt := range tests {
+		got, err := branchingPin(tt.file)
+		switch {
+		case tt.want == "" && err == nil:
+			t.Errorf("%s: branchingPin = %q, want an error", tt.name, got)
+		case tt.want != "" && (err != nil || got != tt.want):
+			t.Errorf("%s: branchingPin = %q, %v; want %q", tt.name, got, err, tt.want)
+		}
+	}
+}
+
+func TestProfileFromEnv(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		value   string
+		set     bool
+		want    Profile
+		wantErr string
+	}{
+		{want: Stock},
+		{set: true, want: Stock},
+		{value: "stock", set: true, want: Stock},
+		{value: "branching", set: true, want: Branching},
+		{value: "Branching", set: true, wantErr: `NETBOXTEST_PROFILE="Branching" isn't a profile netboxtest runs; use one of stock, branching`},
+		{value: "netbox", set: true, wantErr: "isn't a profile"},
+	}
+	for _, tt := range tests {
+		got, err := profileFromEnv(func(name string) (string, bool) {
+			if name != ProfileVariable {
+				t.Errorf("looked up %s, want %s", name, ProfileVariable)
+			}
+			return tt.value, tt.set
+		})
+		switch {
+		case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+			t.Errorf("profileFromEnv(%q, %v) = %q, %v; want an error containing %q", tt.value, tt.set, got, err, tt.wantErr)
+		case tt.wantErr == "" && (err != nil || got != tt.want):
+			t.Errorf("profileFromEnv(%q, %v) = %q, %v; want %q", tt.value, tt.set, got, err, tt.want)
+		}
 	}
 }
 
@@ -100,14 +349,32 @@ services:
       retries: 3
 `
 
+// validDockerfile is a Dockerfile that dockerfileBase accepts, in testContexts.
+const validDockerfile = `# A comment.
+FROM example.com/netbox:v4.7.2-1.0.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+COPY requirements.txt /opt/requirements.txt
+RUN ["pip", "install", \\
+     "--require-hashes", "-r", "/opt/requirements.txt"]
+`
+
+// testContexts holds the build contexts the stacks in these tests build from.
+var testContexts = fstest.MapFS{
+	"web/Dockerfile":       {Data: []byte(validDockerfile)},
+	"web/requirements.txt": {Data: []byte("example==1.0\n")},
+}
+
 func TestParseStackAcceptsValidStack(t *testing.T) {
 	t.Parallel()
-	st, order, err := parseStack([]byte(validStack))
+	st, plans, err := parseStack([]byte(validStack), testContexts)
 	if err != nil {
 		t.Fatalf("parseStack: %v", err)
 	}
-	if diff := cmp.Diff([]string{"db", "netbox"}, order); diff != "" {
-		t.Errorf("start order (-want +got):\n%s", diff)
+	// Services in no profile run in every profile.
+	for _, p := range profiles {
+		if diff := cmp.Diff(plan{order: []string{"db", "netbox"}, web: "netbox"}, plans[p], cmp.AllowUnexported(plan{})); diff != "" {
+			t.Errorf("profile %s (-want +got):\n%s", p, diff)
+		}
 	}
 	db := st.Services["db"]
 	if diff := cmp.Diff([]string{"5432/tcp"}, db.containerPorts()); diff != "" {
@@ -116,6 +383,199 @@ func TestParseStackAcceptsValidStack(t *testing.T) {
 	// 1m start period, then 3 failures 35s apart.
 	if got, want := db.Healthcheck.readiness(), time.Minute+3*35*time.Second; got != want {
 		t.Errorf("db readiness = %v, want %v", got, want)
+	}
+}
+
+// profileStack is a stack with a NetBox for each profile, one built from a
+// Dockerfile, and a worker.
+const profileStack = `
+services:
+  db:
+    image: example.com/db:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    expose: ["5432"]
+    healthcheck: {test: ["CMD", "db-ready"], start_period: 1m, start_interval: 1s, interval: 30s, timeout: 5s, retries: 3}
+  netbox:
+    profiles: ["stock"]
+    image: example.com/netbox:v4.7.2-1.0.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    depends_on: {db: {condition: service_healthy}}
+    environment: {SUPERUSER_NAME: admin, SUPERUSER_PASSWORD: insecure-test-only}
+    ports: ["127.0.0.1:${NETBOX_PORT:-8000}:8080"]
+    healthcheck: {test: ["CMD", "ready"], start_period: 1m, start_interval: 1s, interval: 30s, timeout: 5s, retries: 3}
+  built:
+    profiles: ["branching"]
+    build: {context: web}
+    depends_on: {db: {condition: service_healthy}}
+    environment: {SUPERUSER_NAME: admin, SUPERUSER_PASSWORD: insecure-test-only}
+    ports: ["127.0.0.1:${NETBOX_PORT:-8000}:8080"]
+    healthcheck: {test: ["CMD", "ready"], start_period: 1m, start_interval: 1s, interval: 30s, timeout: 5s, retries: 3}
+  worker:
+    profiles: ["branching"]
+    build: {context: web}
+    command: ["rqworker"]
+    depends_on: {built: {condition: service_healthy}}
+    expose: ["9999"]
+    healthcheck: {test: ["CMD", "ready"], start_period: 1m, start_interval: 1s, interval: 30s, timeout: 5s, retries: 3}
+`
+
+func TestParseStackAcceptsProfiles(t *testing.T) {
+	t.Parallel()
+	_, plans, err := parseStack([]byte(profileStack), testContexts)
+	if err != nil {
+		t.Fatalf("parseStack: %v", err)
+	}
+	want := map[Profile]plan{
+		Stock:     {order: []string{"db", "netbox"}, web: "netbox"},
+		Branching: {order: []string{"db", "built", "worker"}, web: "built"},
+	}
+	if diff := cmp.Diff(want, plans, cmp.AllowUnexported(plan{})); diff != "" {
+		t.Errorf("profiles (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseStackRejectsProfiles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		old, new string // replaced once in profileStack
+		want     string // in the error
+	}{
+		{
+			name: "unknown profile",
+			old:  `profiles: ["stock"]`, new: `profiles: ["plain"]`,
+			want: `service netbox: profile "plain" isn't one netboxtest runs (stock, branching)`,
+		},
+		{
+			name: "two profiles",
+			old:  `profiles: ["stock"]`, new: `profiles: ["stock", "branching"]`,
+			want: "service netbox: is in 2 profiles",
+		},
+		{
+			name: "profile with no NetBox",
+			old:  "  netbox:\n    profiles: [\"stock\"]", new: "  netbox:\n    profiles: [\"branching\"]",
+			want: "profile stock: needs exactly one service that publishes ports, for NetBox's web server, not 0",
+		},
+		{
+			name: "profiles with two NetBoxes",
+			old:  `expose: ["5432"]`, new: `ports: ["127.0.0.1::5432"]`,
+			want: "profile stock: needs exactly one service that publishes ports, for NetBox's web server, not 2 (db, netbox)",
+		},
+		{
+			name: "dependency in another profile",
+			old:  "depends_on: {built: {condition: service_healthy}}", new: "depends_on: {netbox: {condition: service_healthy}}",
+			want: "service worker: depends on netbox, which isn't in every profile it runs in",
+		},
+		{
+			name: "dependency of a shared service in a profile",
+			old:  "    expose: [\"5432\"]\n", new: "    expose: [\"5432\"]\n    depends_on: {netbox: {condition: service_healthy}}\n",
+			want: "service db: depends on netbox, which isn't in every profile it runs in",
+		},
+		{
+			name: "image and build",
+			old:  "    build: {context: web}\n    command", new: "    build: {context: web}\n    image: example.com/x:1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n    command",
+			want: "service worker: has both image and build",
+		},
+		{
+			name: "build option netboxtest doesn't run",
+			old:  "build: {context: web}\n    command", new: "build: {context: web, args: {X: y}}\n    command",
+			want: "field args not found",
+		},
+		{
+			name: "build context that isn't embedded",
+			old:  "build: {context: web}\n    command", new: "build: {context: other}\n    command",
+			want: "service worker: build: context other: read its Dockerfile",
+		},
+		{
+			name: "build context outside the directory",
+			old:  "build: {context: web}\n    command", new: "build: {context: ../web}\n    command",
+			want: `context "../web" must be a directory beside compose.yaml`,
+		},
+		{
+			// testcontainers-go would publish the image's own ports on every interface.
+			name: "an empty expose",
+			old:  `expose: ["9999"]`, new: `expose: []`,
+			want: "service worker: must list its container ports under expose or ports",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(profileStack, tt.old) {
+				t.Fatalf("profileStack doesn't contain %q", tt.old)
+			}
+			_, _, err := parseStack([]byte(strings.Replace(profileStack, tt.old, tt.new, 1)), testContexts)
+			if err == nil {
+				t.Fatalf("parseStack succeeded, want an error containing %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("parseStack error = %q, want it to contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseStackWrapsBuildErrors checks that a build's error is kept, not
+// only its text, so that a caller can tell a missing Dockerfile.
+func TestParseStackWrapsBuildErrors(t *testing.T) {
+	t.Parallel()
+	doc := strings.Replace(profileStack, "build: {context: web}\n    command", "build: {context: other}\n    command", 1)
+	if _, _, err := parseStack([]byte(doc), testContexts); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("parseStack with a missing Dockerfile = %v, want it to wrap fs.ErrNotExist", err)
+	}
+}
+
+func TestDockerfileBase(t *testing.T) {
+	t.Parallel()
+	const pinned = "example.com/netbox:v4.7.2-1.0.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	base, err := dockerfileBase(testContexts, "web")
+	if err != nil || base != pinned {
+		t.Errorf("dockerfileBase(valid) = %q, %v; want %q", base, err, pinned)
+	}
+
+	tests := []struct {
+		name       string
+		dockerfile string
+		want       string
+	}{
+		{name: "lower case instructions", dockerfile: "from " + pinned + "\nrun true\n"},
+		{name: "no FROM", dockerfile: "# nothing\n", want: "has no FROM"},
+		{name: "FROM without a digest", dockerfile: "FROM example.com/netbox:v4.7.2\n", want: "line 1: FROM must name one image, with a tag and a pinned digest"},
+		{name: "FROM with a stage name", dockerfile: "FROM " + pinned + " AS base\n", want: "FROM must name one image"},
+		{name: "FROM with a platform", dockerfile: "FROM --platform=linux/amd64 " + pinned + "\n", want: "FROM must name one image"},
+		{name: "two FROMs", dockerfile: "FROM " + pinned + "\nRUN true\nFROM " + pinned + "\n", want: "line 3: a second FROM"},
+		{name: "RUN before FROM", dockerfile: "RUN true\nFROM " + pinned + "\n", want: "line 1: FROM must come first"},
+		{name: "ARG", dockerfile: "ARG BASE=x\nFROM " + pinned + "\n", want: "line 1: ARG isn't allowed"},
+		{name: "ADD", dockerfile: "FROM " + pinned + "\nADD https://example.com/x /x\n", want: "line 2: ADD isn't allowed"},
+		{name: "ENV", dockerfile: "FROM " + pinned + "\nENV X=y\n", want: "line 2: ENV isn't allowed"},
+		{name: "syntax directive", dockerfile: "# syntax=docker/dockerfile:1\nFROM " + pinned + "\n", want: "line 1: parser directives aren't allowed"},
+		{name: "escape directive", dockerfile: "#escape=`\nFROM " + pinned + "\n", want: "parser directives aren't allowed"},
+		{name: "RUN --mount", dockerfile: "FROM " + pinned + "\nRUN --mount=type=cache,target=/root/.cache pip install x\n", want: "line 2: RUN --mount=type=cache,target=/root/.cache isn't allowed"},
+		{name: "COPY --from", dockerfile: "FROM " + pinned + "\nCOPY --from=example.com/other:1 /x /x\n", want: "COPY --from=example.com/other:1 isn't allowed"},
+		{name: "a flag after a line continuation", dockerfile: "FROM " + pinned + "\nRUN \\\n  --mount=type=cache x\n", want: "line 2: RUN --mount=type=cache isn't allowed"},
+		// Docker skips the blank line, so --mount is RUN's flag, not a new instruction.
+		{name: "blank line within an instruction", dockerfile: "FROM " + pinned + "\nRUN \\\n\n  --mount=x true\n", want: "line 2: RUN --mount=x isn't allowed"},
+		{name: "RUN here-document", dockerfile: "FROM " + pinned + "\nRUN <<EOF\npip install x\nEOF\n", want: "line 2: here-documents (<<) aren't allowed"},
+		{name: "here-document after a command", dockerfile: "FROM " + pinned + "\nRUN cat <<-EOF > /x\n", want: "here-documents (<<) aren't allowed"},
+		{name: "here-document joined to its command", dockerfile: "FROM " + pinned + "\nRUN cat<<EOF >/x\n", want: "here-documents (<<) aren't allowed"},
+		{name: "COPY here-document", dockerfile: "FROM " + pinned + "\nCOPY <<EOF /x\n", want: "here-documents (<<) aren't allowed"},
+		{name: "empty RUN", dockerfile: "FROM " + pinned + "\nRUN\n", want: "line 2: RUN has nothing to do"},
+		{name: "ends in a line continuation", dockerfile: "FROM " + pinned + "\nRUN true \\\n", want: "ends in the middle of an instruction"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := dockerfileBase(fstest.MapFS{"web/Dockerfile": {Data: []byte(tt.dockerfile)}}, "web")
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("dockerfileBase: %v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("dockerfileBase error = %v, want it to contain %q", err, tt.want)
+			}
+		})
+	}
+	for _, context := range []string{"Web", "web/sub", "", ".", "-web"} {
+		if _, err := dockerfileBase(testContexts, context); err == nil || !strings.Contains(err.Error(), "must be a directory beside compose.yaml") {
+			t.Errorf("dockerfileBase(context %q) = %v, want it refused", context, err)
+		}
 	}
 }
 
@@ -259,17 +719,17 @@ func TestParseStackRejects(t *testing.T) {
 		{
 			name: "NetBox without a published port",
 			old:  "    ports:\n      - \"127.0.0.1:${NETBOX_PORT:-8000}:8080\"\n", new: "    expose: [\"8080\"]\n",
+			want: "profile stock: needs exactly one service that publishes ports, for NetBox's web server, not 0",
+		},
+		{
+			name: "NetBox publishing two ports",
+			old:  "      - \"127.0.0.1:${NETBOX_PORT:-8000}:8080\"\n", new: "      - \"127.0.0.1:${NETBOX_PORT:-8000}:8080\"\n      - \"127.0.0.1::8081\"\n",
 			want: "service netbox: needs exactly one entry in ports",
 		},
 		{
 			name: "NetBox without a superuser password",
 			old:  "      SUPERUSER_PASSWORD: insecure-test-only\n", new: "",
 			want: "environment needs SUPERUSER_PASSWORD",
-		},
-		{
-			name: "no NetBox service",
-			old:  "  netbox:\n", new: "  web:\n",
-			want: "no netbox service",
 		},
 		{
 			name: "no services",
@@ -329,7 +789,7 @@ func TestParseStackRejects(t *testing.T) {
 				t.Fatalf("validStack doesn't contain %q", tt.old)
 			}
 			doc := strings.Replace(validStack, tt.old, tt.new, 1)
-			_, _, err := parseStack([]byte(doc))
+			_, _, err := parseStack([]byte(doc), testContexts)
 			if err == nil {
 				t.Fatalf("parseStack succeeded, want an error containing %q", tt.want)
 			}

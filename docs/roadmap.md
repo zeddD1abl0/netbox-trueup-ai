@@ -213,9 +213,9 @@ Steps 16, 17 and 21 can start at once. Every step works with branching off, the 
   - `netbox-trueup-ai audit`, filtered by time, actor, action and source, as text or JSON.
   - ADR 0034: what is audited, and how.
 
-- **17. `test: run a disposable NetBox with netbox-branching`.**
-  - An image built on the pinned netbox-docker image, with netbox-branching 1.2.x pinned by hash and configured as the plugin requires; a profile for `make netbox-up`, an option for `netboxtest`, and the integration tests run against it in CI.
-  - For tests only: netbox-branching's `merge_validators` refusing a merge, as a change request awaiting approval does, and a rule refusing writes to main, as a protected main does.
+- **17. `test: run a disposable NetBox with netbox-branching`.** Done in #37.
+  - An image built on the pinned netbox-docker image, with netbox-branching 1.2.x pinned by hash and configured as the plugin requires, and a worker; a `branching` profile for `make netbox-up` and `netboxtest`, which creates branches and works in them for tests, and the integration tests run against it in CI as well as against the stock NetBox ([ADR 0035](adr/0035-test-against-netbox-with-and-without-branching.md)).
+  - No stand-in for a refused merge, since merging is a person's act in NetBox, nor for a protected main, until it is known how deployments protect it (backlog).
 
 - **18. `feat(netbox): find and read NetBox's branches`.**
   - Settings `netbox.branching`, off by default, and `netbox.protect_main`, on by default. The client reads NetBox's installed plugins when it connects: branching on without netbox-branching 1.2.x is an error, and netbox-branching with branching off a warning.
@@ -266,6 +266,8 @@ Proposed order, to be refined when milestone 2 is done.
 Release and packaging (release-please, GoReleaser, container image, Helm chart, dev container) is a separate track, done before the first release. When to make that release is the maintainer's call.
 
 ## Backlog outside the milestones
+
+- A protected main in the test NetBox. Find out how deployments refuse writes to main made outside a branch (NetBox Changes, an edition's netbox-branching, or something else, since public netbox-branching 1.2.4 has no such setting) and what NetBox answers, then refuse such writes in the `branching` profile for tests that ask for it, and test step 23's error for a write to main that NetBox refuses against it ([ADR 0035](adr/0035-test-against-netbox-with-and-without-branching.md)).
 
 - Claude Code hooks from tooling.md §1.5 that aren't placed in a step above: block commits on `main`, force-pushes and `--no-verify`, and block reads of secret files.
 - Repository settings: turn off the Wiki and Projects tabs, and restrict which Actions may run.

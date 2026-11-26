@@ -1,0 +1,6 @@
+# netbox-branching for the test NetBox's "branching" profile, pinned by the
+# hash of its wheel. 1.2.x is the release line for NetBox 4.7, the target
+# (docs/adr/0003), and netboxtest.BranchingVersion must match this version.
+# It has no dependencies of its own.
+netboxlabs-netbox-branching==1.2.4 \
+    --hash=sha256:774a7feeb21b4f42950b99c8b6107108487ae7341154c0950224e8b66d3f2c17

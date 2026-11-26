@@ -41,11 +41,12 @@ func ProvisionToken(ctx context.Context, baseURL, description string) (config.Se
 // Superuser returns the user name and password of the superuser that
 // compose.yaml creates: dummy values, for this disposable stack only.
 func Superuser() (username, password string, err error) {
-	st, _, err := parseStack(composeFile)
+	st, plans, err := parseStack(composeFile, buildContexts)
 	if err != nil {
 		return "", "", fmt.Errorf("compose.yaml: %w", err)
 	}
-	env := st.Services[netboxService].Environment
+	// Every profile's NetBox has the same environment, which TestComposeFile checks.
+	env := st.Services[plans[Stock].web].Environment
 	return env["SUPERUSER_NAME"], env["SUPERUSER_PASSWORD"], nil
 }
 
