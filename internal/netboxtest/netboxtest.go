@@ -190,8 +190,8 @@ func (nb *NetBox) waitForWorker(ctx context.Context, worker *testcontainers.Dock
 	defer cancel()
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
-	// NetBox has just started, so a failed request is worth trying again;
-	// the last one's error explains a wait that runs out.
+	// NetBox has just started, so a request that got no answer, or a 5xx one,
+	// is worth trying again; the last one's error explains a wait that runs out.
 	var lastErr error
 	for {
 		if err := alive(waitCtx); err != nil && waitCtx.Err() == nil {
@@ -205,6 +205,9 @@ func (nb *NetBox) waitForWorker(ctx context.Context, worker *testcontainers.Dock
 		case err != nil:
 			// A request the wait's own end cut short says nothing about NetBox.
 			if waitCtx.Err() == nil {
+				if !mayPass(err) {
+					return fmt.Errorf("wait for NetBox to count its worker: %w%s", err, diagnose(ctx, worker))
+				}
 				lastErr = err
 			}
 		case st.Workers == nil:

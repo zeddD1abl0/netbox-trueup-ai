@@ -267,7 +267,7 @@ func (s service) check(all map[string]service, contexts fs.FS) []error {
 		add("has both image and build; give one, as Compose would otherwise tag what it builds with the image's name")
 	case s.Build != nil:
 		if _, err := dockerfileBase(contexts, s.Build.Context); err != nil {
-			add("build: %v", err)
+			add("build: %w", err)
 		}
 	case !isPinned(s.Image):
 		// Dependabot needs the tag to propose updates, and the digest makes the
@@ -475,7 +475,7 @@ func dockerfileBase(contexts fs.FS, context string) (string, error) {
 			return "", fmt.Errorf("the Dockerfile's line %d: %s has nothing to do", start, keyword)
 		case strings.HasPrefix(args[0], "--"):
 			return "", fmt.Errorf("the Dockerfile's line %d: %s %s isn't allowed; netboxtest builds %s without flags", start, keyword, args[0], keyword)
-		case slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "<<") }):
+		case slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, "<<") }):
 			// BuildKit reads the lines after <<EOF as a here-document; the
 			// classic builder reads them as instructions.
 			return "", fmt.Errorf("the Dockerfile's line %d: here-documents (<<) aren't allowed; only BuildKit builds them", start)

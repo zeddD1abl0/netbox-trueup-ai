@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +19,8 @@ import (
 // branchNetBox is a fake NetBox with netbox-branching. It answers a new
 // branch's status with each of statuses in turn, then the last one again,
 // and records the X-NetBox-Branch header of each request. A status of
-// "hang" answers nothing until the request ends.
+// "hang" answers nothing until the request ends, and "503" and "404" answer
+// with those statuses.
 type branchNetBox struct {
 	t        *testing.T
 	statuses []string
@@ -46,6 +49,11 @@ func (f *branchNetBox) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == branchesPath+"3/":
 		status := f.statuses[min(f.reads, len(f.statuses)-1)]
 		f.reads++
+		if code, err := strconv.Atoi(status); err == nil {
+			w.WriteHeader(code)
+			_, _ = fmt.Fprint(w, `{"detail": "not now"}`)
+			return
+		}
 		if status == "" {
 			_, _ = fmt.Fprint(w, `{"id": 3, "name": "b", "schema_id": "abcd1234"}`)
 			return
@@ -90,6 +98,7 @@ func TestWaitForBranch(t *testing.T) {
 		timeout  time.Duration // the caller's
 		limit    time.Duration // waitForBranch's own; a minute if 0
 		want     string        // in the error; "" for none
+		notWant  string        // not in the error
 	}{
 		{name: "ready at once", statuses: []string{"ready"}},
 		{name: "provisioned", statuses: []string{"new", "provisioning", "provisioning", "ready"}},
@@ -116,12 +125,29 @@ func TestWaitForBranch(t *testing.T) {
 			want:     `the branch is still new: it wasn't ready within 500ms` + "\n" + `Its job "Provision branch" is "pending", with the error "".`,
 		},
 		{name: "no status", statuses: []string{"provisioning", ""}, want: "NetBox's answer about the branch has no status"},
+		{name: "ready after a failed look", statuses: []string{"provisioning", "503", "ready"}},
 		{
-			// The deadline passes while NetBox is asked for the branch's status.
+			// A 4xx answer won't change, so the wait stops at it.
+			name:     "a look refused",
+			statuses: []string{"provisioning", "404"},
+			limit:    5 * time.Second,
+			want:     "GET /api/plugins/branching/branches/3/: NetBox answered 404",
+			notWant:  "the branch is still",
+		},
+		{
+			name:     "looks failing until the limit",
+			statuses: []string{"503"},
+			limit:    500 * time.Millisecond,
+			want:     "the branch is still new: it wasn't ready within 500ms; the last look failed: GET /api/plugins/branching/branches/3/: NetBox answered 503",
+		},
+		{
+			// The deadline passes while NetBox is asked for the branch's status,
+			// which isn't a failed look.
 			name:     "deadline while reading the status",
 			statuses: []string{"hang"},
 			timeout:  500 * time.Millisecond,
 			want:     "the branch is still new: context deadline exceeded",
+			notWant:  "the last look failed",
 		},
 		{
 			// The deadline passes while the worker is being checked, not while
@@ -165,6 +191,8 @@ func TestWaitForBranch(t *testing.T) {
 				t.Fatalf("waitForBranch: %v", err)
 			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
 				t.Fatalf("waitForBranch error = %v, want it to contain %q", err, tt.want)
+			case tt.notWant != "" && strings.Contains(err.Error(), tt.notWant):
+				t.Fatalf("waitForBranch error = %v, which shouldn't contain %q", err, tt.notWant)
 			}
 			if tt.want == "" && f.reads < len(tt.statuses) {
 				t.Errorf("waitForBranch returned after %d reads, before the branch was ready", f.reads)
@@ -209,6 +237,35 @@ func TestCreateBranchNamesWhatItLeaves(t *testing.T) {
 	_, err := nb.createBranch(t.Context(), "b", "", alive)
 	if err == nil || !strings.Contains(err.Error(), `create branch "b" (ID 3, left in NetBox): provisioning the branch failed`) {
 		t.Errorf("createBranch = %v, want it to name the branch it left", err)
+	}
+}
+
+// TestCreateBranchWithoutAnAnswer checks that a create NetBox didn't answer
+// says that NetBox may have made the branch, and one it refused doesn't.
+func TestCreateBranchWithoutAnAnswer(t *testing.T) {
+	t.Parallel()
+	// The server notices the client leave only once it has read the body.
+	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hang.Close)
+	refuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"name": ["exists"]}`)
+	}))
+	t.Cleanup(refuse.Close)
+	for _, tt := range []struct {
+		url   string
+		maybe bool
+	}{{hang.URL, true}, {refuse.URL, false}} {
+		nb := &NetBox{URL: tt.url, Token: config.NewSecret(testToken), Profile: Branching}
+		ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+		_, err := nb.createBranch(ctx, "b", "", alive)
+		cancel()
+		if err == nil || strings.Contains(err.Error(), "NetBox may have made it anyway") != tt.maybe {
+			t.Errorf("createBranch = %v; want it to say NetBox may have made the branch: %v", err, tt.maybe)
+		}
 	}
 }
 
@@ -277,7 +334,7 @@ func TestInBranchRefuses(t *testing.T) {
 	}
 	// netbox-branching serves these from main whatever the branch.
 	c := nb.InBranch(Branch{SchemaID: "abcd1234"})
-	for _, path := range []string{"/api/status/", "/api/users/users/", "/api/users/tokens/1/", "/api/core/jobs/", "/api/plugins/branching/branches/", "/api/extras/custom-fields/", "/api/extras/webhooks/3/"} {
+	for _, path := range []string{"/api/status/", "/api/users/users/", "/api/users/tokens/1/", "/api/core/jobs/", "/api/plugins/branching/branches/", "/api/extras/custom-fields/", "/api/extras/webhooks/3/", "/api/extras/bookmarks/", "/api/extras/scripts/upload/", "/api/extras/dashboard/"} {
 		for name, call := range map[string]func() error{
 			"Post": func() error { return c.Post(ctx, path, map[string]string{}, nil) },
 			"Get":  func() error { return c.Get(ctx, path, nil, nil) },
@@ -337,6 +394,13 @@ func TestWaitForWorker(t *testing.T) {
 		want    string // in the error; "" for none
 		notWant string
 	}{
+		{
+			// A 4xx answer won't change, so the wait stops at it.
+			name:    "refused",
+			answers: []answer{{status: http.StatusForbidden, body: `{"detail": "no"}`}},
+			want:    "wait for NetBox to count its worker: GET /api/status/: NetBox answered 403",
+			notWant: "counted no running worker",
+		},
 		{
 			name:    "worker stopped",
 			answers: []answer{none},

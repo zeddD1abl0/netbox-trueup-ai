@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // builtImageRepo prefixes the name of each image netboxtest builds, followed
@@ -79,14 +80,33 @@ type tailWriter struct {
 	partial string
 }
 
+// maxLine is how much of a line tailWriter keeps, from its end, so that output
+// without newlines, such as a progress bar's, can't fill memory or an error.
+const maxLine = 2048
+
+// clip returns the end of a line, at most maxLine bytes of it, starting at a
+// whole UTF-8 character.
+func clip(line string) string {
+	if len(line) <= maxLine {
+		return line
+	}
+	end := line[len(line)-maxLine:]
+	for i := 0; i < len(end) && i < utf8.UTFMax; i++ {
+		if utf8.RuneStart(end[i]) {
+			return "…" + end[i:]
+		}
+	}
+	return "…" + end
+}
+
 func (w *tailWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	text := w.partial + string(p)
 	lines := strings.Split(text, "\n")
-	w.partial = lines[len(lines)-1]
+	w.partial = clip(lines[len(lines)-1])
 	for _, line := range lines[:len(lines)-1] {
-		w.lines = append(w.lines, line)
+		w.lines = append(w.lines, clip(line))
 		if len(w.lines) > w.keep {
 			w.lines = w.lines[1:]
 		}

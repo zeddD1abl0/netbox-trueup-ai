@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -97,11 +98,11 @@ func (nb *NetBox) request(ctx context.Context, branch, method, path string, quer
 	}
 	switch {
 	case status >= 400:
-		return fmt.Errorf("%s: NetBox answered %d, not %d: %q", what, status, want, snippet(respBody))
+		return &answerError{what: what, status: status, want: want, body: snippet(respBody), quoted: true}
 	case status != want:
 		// Any other answer might hold a token, from /api/users/tokens/ say,
 		// so don't quote it.
-		return fmt.Errorf("%s: NetBox answered %d, not %d", what, status, want)
+		return &answerError{what: what, status: status, want: want}
 	}
 	if out == nil {
 		return nil
@@ -117,4 +118,28 @@ func (nb *NetBox) request(ctx context.Context, branch, method, path string, quer
 // permission can do. password is the one the test gave that user.
 func (nb *NetBox) UserToken(ctx context.Context, username, password string) (config.Secret, error) {
 	return provisionToken(ctx, nb.URL, username, password, "netboxtest", false)
+}
+
+// answerError is NetBox answering a request with another status than the one
+// wanted.
+type answerError struct {
+	what         string // the request, such as "GET /api/status/"
+	status, want int
+	body         string // a snippet of the answer, if quoted
+	quoted       bool
+}
+
+func (e *answerError) Error() string {
+	if !e.quoted {
+		return fmt.Sprintf("%s: NetBox answered %d, not %d", e.what, e.status, e.want)
+	}
+	return fmt.Sprintf("%s: NetBox answered %d, not %d: %q", e.what, e.status, e.want, e.body)
+}
+
+// mayPass reports whether a request that failed may succeed if sent again:
+// it got no answer, or one of NetBox's 5xx answers, or one it couldn't
+// decode. A 4xx answer won't change, so a wait stops at it.
+func mayPass(err error) bool {
+	var ae *answerError
+	return !errors.As(err, &ae) || ae.status >= 500
 }

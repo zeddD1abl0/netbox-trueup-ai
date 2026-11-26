@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -79,6 +80,28 @@ func TestTailWriter(t *testing.T) {
 	}
 	if _, _ = w.Write([]byte("\n")); !strings.HasSuffix(w.report(), "  | three\n  | four") {
 		t.Errorf("report after the last line ended = %q", w.report())
+	}
+}
+
+func TestTailWriterClipsLongLines(t *testing.T) {
+	t.Parallel()
+	w := &tailWriter{keep: 2}
+	long := strings.Repeat("x", 10*maxLine)
+	_, _ = w.Write([]byte(long + "\n" + long))
+	if got := w.report(); len(got) > 3*maxLine || !strings.Contains(got, "  | …xxx") {
+		t.Errorf("report of two %d-byte lines is %d bytes, want each clipped to its last %d", len(long), len(got), maxLine)
+	}
+	if len(w.partial) > maxLine+len("…") {
+		t.Errorf("tailWriter holds %d bytes of an unfinished line, want at most %d", len(w.partial), maxLine)
+	}
+}
+
+func TestClipKeepsWholeCharacters(t *testing.T) {
+	t.Parallel()
+	// Three bytes each, so the cut lands inside one.
+	got := clip(strings.Repeat("…", maxLine))
+	if !utf8.ValidString(got) || !strings.HasPrefix(got, "……") || len(got) > maxLine+len("…") {
+		t.Errorf("clip = %d bytes, valid UTF-8 %v, starting %q", len(got), utf8.ValidString(got), got[:min(len(got), 9)])
 	}
 }
 

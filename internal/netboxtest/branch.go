@@ -40,11 +40,11 @@ const branchWait = 2 * time.Minute
 // netbox_branching/constants.py, 1.2.4); the objects of the models it exempts
 // (EXEMPT_MODELS there): core's, its own, and extras' custom fields, custom
 // links, event rules, export templates, notification groups, saved filters and
-// webhooks; and users, tokens and permissions, which aren't change-logged
-// (supports_branching in utilities.py). BranchClient refuses them, rather
-// than write in main what a test meant for a branch. A few more of extras'
-// models aren't change-logged either; /api/plugins/branching/branchable-models/
-// lists every model a branch holds.
+// webhooks; and those of models that aren't change-logged (supports_branching
+// in utilities.py): users, tokens and permissions, and extras' bookmarks,
+// notifications, subscriptions, scripts and dashboard, in NetBox 4.7.2. BranchClient
+// refuses them, rather than write in main what a test meant for a branch.
+// /api/plugins/branching/branchable-models/ lists every model a branch holds.
 var mainOnlyPaths = []string{
 	"/api/status/",
 	"/api/users/",
@@ -58,6 +58,11 @@ var mainOnlyPaths = []string{
 	"/api/extras/notification-groups/",
 	"/api/extras/saved-filters/",
 	"/api/extras/webhooks/",
+	"/api/extras/bookmarks/",
+	"/api/extras/notifications/",
+	"/api/extras/subscriptions/",
+	"/api/extras/scripts/",
+	"/api/extras/dashboard/",
 }
 
 // Branch is a branch of this NetBox, from netbox-branching.
@@ -101,6 +106,11 @@ func (nb *NetBox) createBranch(ctx context.Context, name, description string, al
 	}
 	var b branchState
 	if err := nb.Post(ctx, branchesPath, map[string]string{"name": name, "description": description}, &b); err != nil {
+		// Without NetBox's answer, it may have made the branch anyway.
+		var ae *answerError
+		if !errors.As(err, &ae) {
+			return Branch{}, fmt.Errorf("create branch %q: %w; NetBox may have made it anyway", name, err)
+		}
 		return Branch{}, fmt.Errorf("create branch %q: %w", name, err)
 	}
 	// From here on the branch exists, and stays in this disposable NetBox if
@@ -125,12 +135,20 @@ func (nb *NetBox) waitForBranch(ctx context.Context, b branchState, alive func(c
 	defer tick.Stop()
 	path := branchesPath + strconv.Itoa(b.ID) + "/"
 	status := b.Status.Value
+	// A look that gets no answer, or a 5xx one, may be a passing fault, so the
+	// wait looks again; the last failure explains a wait that runs out. A 4xx
+	// answer won't change, so the wait stops at it.
+	var lastErr error
 	// still reports a branch the wait ran out on, with what NetBox's job for
 	// it says, asked with a context of its own, since waitCtx has ended.
 	still := func() error {
 		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		return fmt.Errorf("the branch is still %s: %w%s", status, context.Cause(waitCtx), nb.branchJobReport(reportCtx, b.ID))
+		why := context.Cause(waitCtx)
+		if lastErr != nil {
+			why = fmt.Errorf("%w; the last look failed: %w", why, lastErr)
+		}
+		return fmt.Errorf("the branch is still %s: %w%s", status, why, nb.branchJobReport(reportCtx, b.ID))
 	}
 	for {
 		// Without a worker, the branch would wait for ever.
@@ -142,22 +160,28 @@ func (nb *NetBox) waitForBranch(ctx context.Context, b branchState, alive func(c
 			return err
 		}
 		var st branchState
-		if err := nb.Get(waitCtx, path, nil, &st); err != nil {
-			if waitCtx.Err() != nil {
-				return still()
+		switch err := nb.Get(waitCtx, path, nil, &st); {
+		case err != nil:
+			// A look the wait's own end cut short says nothing about NetBox.
+			if waitCtx.Err() == nil {
+				if !mayPass(err) {
+					return err
+				}
+				lastErr = err
 			}
-			return err
-		}
-		switch status = st.Status.Value; status {
-		case "ready":
-			return nil
-		case "new", "provisioning":
-		case "":
-			return errors.New("NetBox's answer about the branch has no status")
-		case "failed":
-			return fmt.Errorf("provisioning the branch failed%s", nb.branchJobReport(ctx, b.ID))
 		default:
-			return fmt.Errorf("the branch is %q, not provisioning or ready", status)
+			lastErr = nil
+			switch status = st.Status.Value; status {
+			case "ready":
+				return nil
+			case "new", "provisioning":
+			case "":
+				return errors.New("NetBox's answer about the branch has no status")
+			case "failed":
+				return fmt.Errorf("provisioning the branch failed%s", nb.branchJobReport(ctx, b.ID))
+			default:
+				return fmt.Errorf("the branch is %q, not provisioning or ready", status)
+			}
 		}
 		select {
 		case <-waitCtx.Done():

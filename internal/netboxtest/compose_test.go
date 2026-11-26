@@ -1,6 +1,7 @@
 package netboxtest
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -512,6 +513,16 @@ func TestParseStackRejectsProfiles(t *testing.T) {
 	}
 }
 
+// TestParseStackWrapsBuildErrors checks that a build's error is kept, not
+// only its text, so that a caller can tell a missing Dockerfile.
+func TestParseStackWrapsBuildErrors(t *testing.T) {
+	t.Parallel()
+	doc := strings.Replace(profileStack, "build: {context: web}\n    command", "build: {context: other}\n    command", 1)
+	if _, _, err := parseStack([]byte(doc), testContexts); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("parseStack with a missing Dockerfile = %v, want it to wrap fs.ErrNotExist", err)
+	}
+}
+
 func TestDockerfileBase(t *testing.T) {
 	t.Parallel()
 	const pinned = "example.com/netbox:v4.7.2-1.0.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -544,6 +555,7 @@ func TestDockerfileBase(t *testing.T) {
 		{name: "blank line within an instruction", dockerfile: "FROM " + pinned + "\nRUN \\\n\n  --mount=x true\n", want: "line 2: RUN --mount=x isn't allowed"},
 		{name: "RUN here-document", dockerfile: "FROM " + pinned + "\nRUN <<EOF\npip install x\nEOF\n", want: "line 2: here-documents (<<) aren't allowed"},
 		{name: "here-document after a command", dockerfile: "FROM " + pinned + "\nRUN cat <<-EOF > /x\n", want: "here-documents (<<) aren't allowed"},
+		{name: "here-document joined to its command", dockerfile: "FROM " + pinned + "\nRUN cat<<EOF >/x\n", want: "here-documents (<<) aren't allowed"},
 		{name: "COPY here-document", dockerfile: "FROM " + pinned + "\nCOPY <<EOF /x\n", want: "here-documents (<<) aren't allowed"},
 		{name: "empty RUN", dockerfile: "FROM " + pinned + "\nRUN\n", want: "line 2: RUN has nothing to do"},
 		{name: "ends in a line continuation", dockerfile: "FROM " + pinned + "\nRUN true \\\n", want: "ends in the middle of an instruction"},

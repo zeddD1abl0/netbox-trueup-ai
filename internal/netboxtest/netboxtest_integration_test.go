@@ -178,8 +178,11 @@ func TestProfile(t *testing.T) {
 	if diff := cmp.Diff(wantPlugins, st.Plugins); diff != "" {
 		t.Errorf("the %s profile's plugins (-want +got):\n%s", nb.Profile, diff)
 	}
-	if st.Workers == nil || *st.Workers != wantWorkers {
-		t.Errorf("the %s profile runs %v workers, want %d", nb.Profile, st.Workers, wantWorkers)
+	switch {
+	case st.Workers == nil:
+		t.Errorf("the %s profile's /api/status/ doesn't say how many workers run, want %d", nb.Profile, wantWorkers)
+	case *st.Workers != wantWorkers:
+		t.Errorf("the %s profile runs %d workers, want %d", nb.Profile, *st.Workers, wantWorkers)
 	}
 }
 
