@@ -213,7 +213,7 @@ Steps 16, 17 and 21 can start at once. Every step works with branching off, the 
   - `netbox-trueup-ai audit`, filtered by time, actor, action and source, as text or JSON.
   - ADR 0034: what is audited, and how.
 
-- **17. `test: run a disposable NetBox with netbox-branching`.**
+- **17. `test: run a disposable NetBox with netbox-branching`.** Done in #37.
   - An image built on the pinned netbox-docker image, with netbox-branching 1.2.x pinned by hash and configured as the plugin requires, and a worker; a `branching` profile for `make netbox-up` and `netboxtest`, which creates branches and works in them for tests, and the integration tests run against it in CI as well as against the stock NetBox ([ADR 0035](adr/0035-test-against-netbox-with-and-without-branching.md)).
   - No stand-in for a refused merge, since merging is a person's act in NetBox, nor for a protected main, until it is known how deployments protect it (backlog).
 
