@@ -38,8 +38,9 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0030](0030-compare-what-netbox-has-by-default.md) | Compare what NetBox has by default, matching definitions by their unique values first | Accepted |
 | [0031](0031-merge-routine-dependabot-updates-automatically.md) | Merge Dependabot's patch and minor updates of Go modules and test databases automatically, once every required check passes | Accepted |
 | [0032](0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison | Accepted |
-| [0033](0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people | Accepted |
+| [0033](0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people | Accepted; the test NetBox stands in for neither a refused merge nor a protected main since [0035](0035-test-against-netbox-with-and-without-branching.md) |
 | [0034](0034-audit-what-changes-what-trueup-manages.md) | Audit what changes what TrueUp manages, as the operating system user at the command line, in the change's own transaction | Accepted |
+| [0035](0035-test-against-netbox-with-and-without-branching.md) | Test against NetBox with and without netbox-branching, from one Compose file, with the plugin pinned by hash into an image built locally | Accepted |
 
 ## When to write one
 

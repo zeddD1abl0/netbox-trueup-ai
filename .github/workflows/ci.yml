@@ -68,15 +68,21 @@ jobs:
         run: make build
 
   integration:
-    name: Integration tests
+    name: Integration tests (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    # Two packages with integration tests each start a fresh NetBox, which
+    # Four packages with integration tests each start a fresh NetBox, which
     # spends about 4 minutes on migrations, and packages run one at a time.
     # Three more start PostgreSQL, in seconds. `go test -timeout 30m` gives up
     # on any one with a stack dump before this does.
     timeout-minutes: 65
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The whole suite against each NetBox: as netbox-docker ships it, and
+        # with netbox-branching (internal/netboxtest/README.md).
+        profile: [stock, branching]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,8 +92,27 @@ jobs:
         with:
           go-version: stable
 
-      # Starts a disposable NetBox from internal/netboxtest/compose.yaml, and
-      # PostgreSQL from internal/store/postgres/pgtest/compose.yaml, with
-      # testcontainers-go, on the runner's own Docker.
+      # Starts a disposable NetBox from internal/netboxtest/compose.yaml, of
+      # the profile NETBOX_PROFILE names, building the branching profile's
+      # image, and PostgreSQL from internal/store/postgres/pgtest/compose.yaml,
+      # with testcontainers-go, on the runner's own Docker.
       - name: Integration tests
         run: make test-integration
+        env:
+          NETBOX_PROFILE: ${{ matrix.profile }}
+
+  # The required check for both profiles, so that the main ruleset names one
+  # check whatever the matrix holds. It passes only if every profile passed.
+  integration-result:
+    name: Integration tests
+    if: always()
+    needs: integration
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check every profile passed
+        env:
+          RESULT: ${{ needs.integration.result }}
+        run: |
+          echo "The integration tests' result: $RESULT"
+          test "$RESULT" = success

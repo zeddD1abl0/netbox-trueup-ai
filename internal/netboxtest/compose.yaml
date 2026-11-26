@@ -8,9 +8,16 @@
 # Every credential below is a dummy value for this stack alone. Never reuse
 # them, and never publish this NetBox beyond 127.0.0.1.
 #
+# Two profiles choose which NetBox runs on the shared PostgreSQL and Valkey:
+# "stock", netbox-docker's image as it is, and "branching", that image with
+# netbox-branching added (branching/Dockerfile) and the background worker the
+# plugin needs. Start exactly one: `make netbox-up NETBOX_PROFILE=branching`,
+# or NETBOXTEST_PROFILE for the tests.
+#
 # Images are pinned by digest. Dependabot proposes updates (.github/dependabot.yml).
 # The NetBox version is the project's target (docs/adr/0003): moving it also
-# means moving netboxtest.Version and NETBOX_VERSION in the Makefile.
+# means moving branching/Dockerfile's base, netboxtest.Version and
+# NETBOX_VERSION in the Makefile.
 
 name: trueup-netbox
 
@@ -49,6 +56,7 @@ services:
       retries: 3
 
   netbox:
+    profiles: ["stock"]
     image: docker.io/netboxcommunity/netbox:v4.7.2-5.1.1@sha256:3cf9d3bd77aa186233b84d0ea1cf1755581d5e5678fa7d86ec3be62f79d0c643
     user: "netbox:root"
     depends_on:
@@ -91,6 +99,109 @@ services:
       # machine. With PostgreSQL and Valkey, up to 15m45s in all.
       start_period: 12m
       start_interval: 2s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # NetBox with netbox-branching: the same NetBox, configuration and data,
+  # built from branching/ on this machine. TestComposeFile checks that its
+  # environment, ports and health check are netbox's.
+  netbox-branching:
+    profiles: ["branching"]
+    build:
+      context: branching
+    user: "netbox:root"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: insecure-test-only
+      # One Valkey serves both, with separate databases as NetBox requires.
+      REDIS_HOST: valkey
+      REDIS_DATABASE: "0"
+      REDIS_CACHE_HOST: valkey
+      REDIS_CACHE_DATABASE: "1"
+      # Only these names, not netbox-docker's default "*": a web page that
+      # rebinds its own name to 127.0.0.1 would otherwise reach this NetBox.
+      ALLOWED_HOSTS: "localhost 127.0.0.1 [::1]"
+      SECRET_KEY: insecure-test-only-secret-key-for-a-disposable-local-netbox
+      # v2 API tokens need a pepper of at least 50 characters.
+      API_TOKEN_PEPPER_1: insecure-test-only-token-pepper-for-a-disposable-local-netbox
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@example.com
+      SUPERUSER_PASSWORD: insecure-test-only
+      # Nothing leaves this machine: no census report, release check or Copilot.
+      CENSUS_REPORTING_ENABLED: "false"
+      ISOLATED_DEPLOYMENT: "true"
+      COPILOT_ENABLED: "false"
+    ports:
+      # Loopback only. Tests ignore the host port and take a random one.
+      - "127.0.0.1:${NETBOX_PORT:-8000}:8080"
+    healthcheck:
+      # netbox-docker's own check. It passes once migrations have run, the
+      # superuser exists and the web server answers.
+      test: ["CMD", "/opt/netbox/health.sh"]
+      # A fresh database needs about 4 minutes of migrations, and more on a slow
+      # machine. With PostgreSQL and Valkey, up to 15m45s in all.
+      start_period: 12m
+      start_interval: 2s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # netbox-branching provisions, syncs and merges branches in background jobs,
+  # which this worker runs, as netbox-docker's own netbox-worker does. It starts
+  # once NetBox has migrated the database, and has netbox-branching's environment.
+  netbox-worker:
+    profiles: ["branching"]
+    build:
+      context: branching
+    user: "netbox:root"
+    command: ["/opt/netbox/venv/bin/python", "/opt/netbox/netbox/manage.py", "rqworker"]
+    depends_on:
+      netbox-branching:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: insecure-test-only
+      # One Valkey serves both, with separate databases as NetBox requires.
+      REDIS_HOST: valkey
+      REDIS_DATABASE: "0"
+      REDIS_CACHE_HOST: valkey
+      REDIS_CACHE_DATABASE: "1"
+      # Only these names, not netbox-docker's default "*": a web page that
+      # rebinds its own name to 127.0.0.1 would otherwise reach this NetBox.
+      ALLOWED_HOSTS: "localhost 127.0.0.1 [::1]"
+      SECRET_KEY: insecure-test-only-secret-key-for-a-disposable-local-netbox
+      # v2 API tokens need a pepper of at least 50 characters.
+      API_TOKEN_PEPPER_1: insecure-test-only-token-pepper-for-a-disposable-local-netbox
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@example.com
+      SUPERUSER_PASSWORD: insecure-test-only
+      # Nothing leaves this machine: no census report, release check or Copilot.
+      CENSUS_REPORTING_ENABLED: "false"
+      ISOLATED_DEPLOYMENT: "true"
+      COPILOT_ENABLED: "false"
+    # It listens on no port, but netboxtest needs one listed: given none,
+    # testcontainers-go would publish whatever ports the image declares, on
+    # every interface. 8080 is NetBox's web port, which nothing here serves,
+    # and netboxtest publishes it on 127.0.0.1 only.
+    expose: ["8080"]
+    healthcheck:
+      # netbox-docker's own check: the worker's process is running. netboxtest
+      # also waits until NetBox reports it among its running workers.
+      test: ["CMD-SHELL", "ps -eo args | grep -v grep | grep -q rqworker"]
+      start_period: 1m
+      start_interval: 1s
       interval: 10s
       timeout: 5s
       retries: 3

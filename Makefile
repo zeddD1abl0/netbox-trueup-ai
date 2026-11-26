@@ -14,15 +14,29 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X $(MODULE)/internal/version.version=$(VERSION)
 
 # NetBox release whose source `make reference` fetches (docs/adr/0003). Keep it
-# in step with netboxtest.Version and the image in internal/netboxtest/compose.yaml.
+# in step with netboxtest.Version, the image in internal/netboxtest/compose.yaml
+# and the base of internal/netboxtest/branching/Dockerfile.
 NETBOX_VERSION ?= 4.7.2
 REFERENCE_DIR  := .cache/reference/netbox-$(NETBOX_VERSION)
 
 # The disposable local NetBox (internal/netboxtest/README.md). Only ever on
-# 127.0.0.1; set NETBOX_PORT to use another port.
+# 127.0.0.1; set NETBOX_PORT to use another port. NETBOX_PROFILE chooses the
+# NetBox that `make netbox-up` starts and `make test-integration` tests
+# against: stock, or branching, with netbox-branching and a worker. Neither
+# variable is named TRUEUP_..., because TrueUp rejects TRUEUP_ variables it
+# doesn't know.
 NETBOX_PORT       ?= 8000
+NETBOX_PROFILE    ?= stock
 NETBOX_COMPOSE    := docker compose --file internal/netboxtest/compose.yaml
 NETBOX_TOKEN_FILE := .cache/netbox/token
+
+# Fails a recipe unless NETBOX_PROFILE names one profile, since Compose would
+# quietly start no NetBox for a profile it doesn't know.
+# The profiles are filter's patterns, so a % in NETBOX_PROFILE matches nothing.
+# In CI (CI is set), NETBOX_PROFILE must be given: a misspelled variable would
+# otherwise test the stock NetBox in the branching job, whose tests would skip.
+# NETBOXTEST_PROFILE, which the tests read, must agree with it if it is set.
+CHECK_NETBOX_PROFILE = $(if $(and $(filter 1,$(words $(NETBOX_PROFILE))),$(filter stock branching,$(NETBOX_PROFILE))),,$(error NETBOX_PROFILE is "$(NETBOX_PROFILE)": use stock or branching))$(if $(and $(CI),$(filter file,$(origin NETBOX_PROFILE))),$(error NETBOX_PROFILE isn't set: in CI, name the profile to test))$(if $(and $(NETBOXTEST_PROFILE),$(filter-out $(NETBOX_PROFILE),$(NETBOXTEST_PROFILE))),$(error NETBOXTEST_PROFILE is "$(NETBOXTEST_PROFILE)" but NETBOX_PROFILE is "$(NETBOX_PROFILE)": set NETBOX_PROFILE))
 
 # The packages sqlc generates, as sqlc.yaml names them (its out: lines). They
 # hold nothing but generated files.
@@ -55,22 +69,28 @@ build: ## Build the binary into ./bin
 test: ## Run tests with the race detector
 	go test -race -shuffle=on ./...
 
-# Each package with integration tests starts its own NetBox, which takes
-# about 4 minutes and 1 GB, or its own PostgreSQL, which takes seconds, so
-# packages run one at a time (-p 1). The long timeout applies to each
-# package.
+# Each package with integration tests starts its own NetBox, of the profile
+# NETBOX_PROFILE names, which takes about 4 minutes and 1 GB, or its own
+# PostgreSQL, which takes seconds, so packages run one at a time (-p 1). The
+# long timeout applies to each package.
 .PHONY: test-integration
-test-integration: ## Run tests and integration tests against a disposable NetBox and PostgreSQL (needs Docker)
-	go test -race -shuffle=on -tags integration -p 1 -timeout 30m ./...
+test-integration: ## Run tests and integration tests against a disposable NetBox (NETBOX_PROFILE, default stock) and PostgreSQL (needs Docker)
+	$(CHECK_NETBOX_PROFILE)
+	@echo "Integration tests against the $(NETBOX_PROFILE) NetBox"
+	NETBOXTEST_PROFILE=$(NETBOX_PROFILE) go test -race -shuffle=on -tags integration -p 1 -timeout 30m ./...
 
+# --build rebuilds the branching profile's image when branching/ changes; with
+# nothing changed, Docker's cache makes it a no-op.
 .PHONY: netbox-up
-netbox-up: ## Start a disposable NetBox on 127.0.0.1 (port NETBOX_PORT, default 8000) and provision a token
-	NETBOX_PORT=$(NETBOX_PORT) $(NETBOX_COMPOSE) up --detach --wait --wait-timeout 1200
+netbox-up: ## Start a disposable NetBox (NETBOX_PROFILE, default stock) on 127.0.0.1 (port NETBOX_PORT, default 8000) and provision a token
+	$(CHECK_NETBOX_PROFILE)
+	NETBOX_PORT=$(NETBOX_PORT) $(NETBOX_COMPOSE) --profile $(NETBOX_PROFILE) up --build --detach --wait --wait-timeout 1200
 	go run ./internal/netboxtest/cmd/netbox-token -url http://127.0.0.1:$(NETBOX_PORT) -out $(NETBOX_TOKEN_FILE)
 
+# Every profile, so that it stops whichever is running.
 .PHONY: netbox-down
-netbox-down: ## Stop the disposable NetBox and delete its data
-	$(NETBOX_COMPOSE) down --volumes --remove-orphans
+netbox-down: ## Stop the disposable NetBox, of either profile, and delete its data
+	$(NETBOX_COMPOSE) --profile '*' down --volumes --remove-orphans
 	rm -f $(NETBOX_TOKEN_FILE)
 
 # SQLC_FRESH generates the sqlc packages afresh into the directory "$tmp",
@@ -107,12 +127,12 @@ generate-check: ## Check that the generated code matches its sources
 	done
 
 # Rewrites each spec package's schema snapshot from the schema of a fresh
-# disposable NetBox, which takes about 4 minutes to start, regenerates the
+# disposable NetBox, of the stock profile, which takes about 4 minutes to start, regenerates the
 # choice values from it, and then checks the specs against it. Review the
 # difference before committing it: it is how NetBox's API changed.
 .PHONY: schema
 schema: ## Refresh the OpenAPI schema snapshots from a disposable NetBox, regenerate, and check the specs (needs Docker)
-	go test -tags integration -run '^TestLiveSchema$$' -count=1 -timeout 30m $(addprefix ./,$(SPEC_PKGS)) -args -update
+	NETBOXTEST_PROFILE=stock go test -tags integration -run '^TestLiveSchema$$' -count=1 -timeout 30m $(addprefix ./,$(SPEC_PKGS)) -args -update
 	$(MAKE) generate
 	go test -count=1 $(addprefix ./,$(SPEC_PKGS))
 

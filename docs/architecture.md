@@ -737,6 +737,7 @@ ADRs that record this design:
 | [0032](adr/0032-compare-definitions-across-sources-as-objects.md) | Compare definitions across sources as objects, merged from each definition's own comparison |
 | [0033](adr/0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people |
 | [0034](adr/0034-audit-what-changes-what-trueup-manages.md) | Audit what changes what TrueUp manages, as the operating system user at the command line, in the change's own transaction |
+| [0035](adr/0035-test-against-netbox-with-and-without-branching.md) | Test against NetBox with and without netbox-branching, from one Compose file, with the plugin pinned by hash into an image built locally |
 
 ADRs still to write, with the work that needs each one:
 

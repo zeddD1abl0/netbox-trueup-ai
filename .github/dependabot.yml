@@ -5,7 +5,8 @@
 # Patch and minor updates of gomod and docker-compose entries merge
 # themselves once the required checks pass, apart from those the workflow
 # dependabot-auto-merge.yml holds back (ADR 0031). A new entry for either
-# ecosystem comes under that rule too.
+# ecosystem comes under that rule too. Updates of every other ecosystem, pip
+# included, wait for a maintainer.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -52,7 +53,8 @@ updates:
       include: scope
     groups:
       # NetBox stays out of the group: its update fails TestComposeFile until
-      # netboxtest.Version moves too, and shouldn't hold these back.
+      # branching/Dockerfile's base moves with it, and netboxtest.Version too
+      # for a new NetBox release, and shouldn't hold these back.
       test-databases:
         patterns: ["*postgres", "*valkey"]
     ignore:
@@ -66,6 +68,26 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "*valkey"
         update-types: ["version-update:semver-major"]
+
+  # netbox-branching, which the test NetBox's branching profile installs
+  # (internal/netboxtest/branching/requirements.txt, pinned by hash). It pairs
+  # with the NetBox release, so a maintainer reviews it, as the NetBox image;
+  # the workflow never merges pip updates by itself.
+  - package-ecosystem: pip
+    directory: /internal/netboxtest/branching
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: test
+      include: scope
+    ignore:
+      # 1.2.x is netbox-branching's line for NetBox 4.7, the target
+      # (docs/adr/0003). A new minor release is for another NetBox release, and
+      # moves with the target. Patch releases are still proposed.
+      - dependency-name: "netboxlabs-netbox-branching"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # The PostgreSQL of the storage tests (internal/store/postgres/pgtest/compose.yaml).
   - package-ecosystem: docker-compose
