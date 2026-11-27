@@ -121,7 +121,7 @@ func (c *Client) readPlugins(raw json.RawMessage) (plugins, error) {
 	}
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &all); err != nil || all == nil {
-		return plugins{}, fmt.Errorf("GET %s: the answer's plugins aren't a JSON object of each plugin's version", statusPath)
+		return plugins{}, fmt.Errorf("GET %s: the answer's plugins aren't a JSON object of each plugin's version: %q", statusPath, cut(c.redact(string(raw))))
 	}
 	p := plugins{listed: true}
 	v, ok := all[branchingPlugin]
@@ -134,7 +134,7 @@ func (c *Client) readPlugins(raw json.RawMessage) (plugins, error) {
 	}
 	var version string
 	if err := json.Unmarshal(v, &version); err != nil {
-		return plugins{}, fmt.Errorf("GET %s: the answer gives %s's version as neither text nor null", statusPath, branchingPlugin)
+		return plugins{}, fmt.Errorf("GET %s: the answer gives %s's version as neither text nor null: %q", statusPath, branchingPlugin, cut(c.redact(string(v))))
 	}
 	p.branchingVersion = cut(c.redact(version))
 	return p, nil
@@ -237,7 +237,7 @@ func (c *Client) readBranch(raw json.RawMessage) (Branch, error) {
 	if b.LastSync != nil {
 		t, err := time.Parse(time.RFC3339Nano, *b.LastSync)
 		if err != nil {
-			return Branch{}, fmt.Errorf("NetBox sent branch #%d with a last_sync that isn't an RFC 3339 time", id)
+			return Branch{}, fmt.Errorf("NetBox sent branch #%d with a last_sync that isn't an RFC 3339 time: %q", id, cut(c.redact(*b.LastSync)))
 		}
 		branch.LastSync = t.UTC()
 	}
@@ -317,7 +317,12 @@ func (c *Client) listBranches(ctx context.Context, query url.Values, name string
 // Branches returned, and must be ready; if it stops being ready, NetBox
 // refuses each request, with a *BranchRefusedError. The client must have
 // connected with Options.Branching.
-func (c *Client) InBranch(b Branch) (*Client, error) {
+//
+// netbox-branching's answers don't say which branch they come from, so a
+// proxy in front of NetBox that dropped the header would have every read come
+// from main unnoticed. InBranch first checks that the header reaches NetBox
+// (checkBranchHeader).
+func (c *Client) InBranch(ctx context.Context, b Branch) (*Client, error) {
 	switch {
 	case !c.branching:
 		return nil, fmt.Errorf("branch %q: netbox.branching is off, so TrueUp reads main only", b.Name)
@@ -326,11 +331,43 @@ func (c *Client) InBranch(b Branch) (*Client, error) {
 	case !b.Ready():
 		return nil, fmt.Errorf("branch %q is %s, not ready", b.Name, strconv.Quote(b.Status))
 	}
+	if err := c.checkBranchHeader(ctx); err != nil {
+		return nil, err
+	}
 	bound := *c
 	bound.branch = &b
 	bound.info.Branch = &b
 	bound.info.Warnings = c.Info().Warnings
 	return &bound, nil
+}
+
+// branchProbe is what checkBranchHeader names as the branch: a value that
+// can't be any branch's schema ID, which is eight lower case letters and
+// digits.
+const branchProbe = "trueup-probe"
+
+// ErrBranchHeaderIgnored is returned, wrapped, by InBranch when NetBox
+// answers a request that names a branch it can't have as if it named none.
+var ErrBranchHeaderIgnored = errors.New("NetBox answered a request naming a branch it can't have as if it named none: " +
+	"something in front of NetBox, such as a proxy, may drop the X-NetBox-Branch header, so TrueUp can't read through a branch")
+
+// checkBranchHeader checks that the X-NetBox-Branch header reaches NetBox: a
+// request naming a branch that can't exist must be refused, as
+// netbox-branching's middleware refuses it, before NetBox checks the token
+// or a permission (BranchMiddleware in netbox_branching/middleware.py).
+func (c *Client) checkBranchHeader(ctx context.Context) error {
+	probe := *c
+	probe.branch = &Branch{Name: "a branch that can't exist", SchemaID: branchProbe}
+	var who struct{}
+	_, err := probe.getJSON(ctx, authCheckPath, nil, &who)
+	switch {
+	case errors.Is(err, ErrBranchRefused):
+		return nil
+	case err == nil:
+		return fmt.Errorf("GET %s: %w", authCheckPath, ErrBranchHeaderIgnored)
+	default:
+		return fmt.Errorf("check that NetBox gets the X-NetBox-Branch header: %w", err)
+	}
 }
 
 // onMain returns the client itself, or if it is bound to a branch, a client

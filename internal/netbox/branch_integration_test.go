@@ -87,7 +87,7 @@ func TestReadThroughABranch(t *testing.T) {
 		t.Errorf("Branches = %+v, %v; want it to hold %+v", all, err, b)
 	}
 
-	bc, err := c.InBranch(b)
+	bc, err := c.InBranch(t.Context(), b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestBranchRefusedByNetBox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, err := c.InBranch(Branch{ID: 999, Name: "gone", SchemaID: "zzzzzzzz", Status: BranchReady})
+	gone, err := c.InBranch(t.Context(), Branch{ID: 999, Name: "gone", SchemaID: "zzzzzzzz", Status: BranchReady})
 	if err != nil {
 		t.Fatal(err)
 	}

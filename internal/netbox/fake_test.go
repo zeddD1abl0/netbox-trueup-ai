@@ -115,7 +115,8 @@ func (f *fakeNetBox) serve(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	// As netbox-branching's middleware does, before anything else but
 	// /api/status/, a branch the request names must exist and be ready.
-	if hasBranch && r.URL.Path != statusPath {
+	// handle may have changed the request's headers, as a proxy can.
+	if _, named := r.Header[http.CanonicalHeaderKey(branchHeader)]; named && r.URL.Path != statusPath {
 		switch status, ok := f.branches[r.Header.Get(branchHeader)]; {
 		case !ok:
 			f.writeBadRequest(w, "Invalid branch identifier")

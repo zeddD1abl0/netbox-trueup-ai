@@ -130,16 +130,19 @@ func TestConnectChecksBranching(t *testing.T) {
 func TestConnectRefusesPluginsItCantRead(t *testing.T) {
 	t.Parallel()
 
-	const notObject = "GET /api/status/: the answer's plugins aren't a JSON object of each plugin's version"
+	const (
+		notObject = "GET /api/status/: the answer's plugins aren't a JSON object of each plugin's version: "
+		notText   = "GET /api/status/: the answer gives netbox_branching's version as neither text nor null: "
+	)
 	tests := []struct {
 		plugins any
 		want    string
 	}{
-		{plugins: nil, want: notObject},
-		{plugins: "netbox_branching", want: notObject},
-		{plugins: []any{"netbox_branching"}, want: notObject},
-		{plugins: map[string]any{"netbox_branching": 1.2}, want: "GET /api/status/: the answer gives netbox_branching's version as neither text nor null"},
-		{plugins: map[string]any{"netbox_branching": map[string]any{"version": "1.2.4"}}, want: "GET /api/status/: the answer gives netbox_branching's version as neither text nor null"},
+		{plugins: nil, want: notObject + `"null"`},
+		{plugins: "netbox_branching", want: notObject + `"\"netbox_branching\""`},
+		{plugins: []any{"netbox_branching"}, want: notObject + `"[\"netbox_branching\"]"`},
+		{plugins: map[string]any{"netbox_branching": 1.2}, want: notText + `"1.2"`},
+		{plugins: map[string]any{"netbox_branching": map[string]any{"version": "1.2.4"}}, want: notText + `"{\"version\":\"1.2.4\"}"`},
 	}
 	for _, tt := range tests {
 		for _, branching := range []bool{false, true} {
@@ -244,7 +247,7 @@ func TestBranchesRefusesBranchesItCantRead(t *testing.T) {
 		{"no status", func(o map[string]any) { delete(o, "status") }, "NetBox sent branch #1 without a status"},
 		{"a status without a value", func(o map[string]any) { o["status"] = map[string]any{"label": "Ready"} }, "NetBox sent branch #1 without a status"},
 		{"a status that is text", func(o map[string]any) { o["status"] = "ready" }, "branch #1 can't be read"},
-		{"a last sync that isn't a time", func(o map[string]any) { o["last_sync"] = "yesterday" }, "NetBox sent branch #1 with a last_sync that isn't an RFC 3339 time"},
+		{"a last sync that isn't a time", func(o map[string]any) { o["last_sync"] = "yesterday" }, `NetBox sent branch #1 with a last_sync that isn't an RFC 3339 time: "yesterday"`},
 		{"an owner that is text", func(o map[string]any) { o["owner"] = "alice" }, "branch #1 can't be read"},
 	}
 	for _, tt := range tests {
@@ -376,7 +379,7 @@ func TestInBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bc, err := c.InBranch(b)
+	bc, err := c.InBranch(t.Context(), b)
 	if err != nil {
 		t.Fatalf("InBranch: %v", err)
 	}
@@ -405,8 +408,12 @@ func TestInBranch(t *testing.T) {
 
 	reqs := f.recorded()[before:]
 	var inBranch []string
+	probes := 0
 	for _, r := range reqs {
 		switch {
+		case r.hasBranch && r.branch == branchProbe:
+			// InBranch's check that the header reaches NetBox.
+			probes++
 		case r.path == branchesPath && r.hasBranch:
 			t.Errorf("%s?%s named branch %q", r.path, r.query.Encode(), r.branch)
 		case r.hasBranch && r.branch != "abcd1234":
@@ -418,6 +425,9 @@ func TestInBranch(t *testing.T) {
 	want := []string{"/api/dcim/device-types/", "/api/dcim/interface-templates/", "/api/dcim/rear-port-templates/", authCheckPath}
 	if diff := cmp.Diff(want, inBranch); diff != "" {
 		t.Errorf("requests in the branch (-want +got):\n%s", diff)
+	}
+	if probes != 1 {
+		t.Errorf("InBranch checked the header %d times, want once", probes)
 	}
 	if last := reqs[len(reqs)-1]; last.hasBranch {
 		t.Errorf("the main client's last request named branch %q", last.branch)
@@ -444,7 +454,7 @@ func TestInBranchSharesTheLimit(t *testing.T) {
 	f.addBranch(1, "lab", "abcd1234", BranchReady)
 	f.add("/api/dcim/device-types/", ids(1), nil)
 	c := connected(t, f, Options{Branching: true, MaxRequests: 1}, nil)
-	bc, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady})
+	bc, err := c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,23 +488,51 @@ func TestInBranchSharesTheLimit(t *testing.T) {
 	wg.Wait()
 }
 
+// A proxy that drops the branch header would have every read come from main;
+// InBranch finds out, and refuses to bind the client.
+func TestInBranchWhenTheHeaderIsDropped(t *testing.T) {
+	t.Parallel()
+	f := branchingFake(t)
+	f.addBranch(1, "lab", "abcd1234", BranchReady)
+	c := connected(t, f, Options{Branching: true}, nil)
+	f.mu.Lock()
+	f.handle = func(_ http.ResponseWriter, r *http.Request) bool {
+		r.Header.Del(branchHeader)
+		return false
+	}
+	f.mu.Unlock()
+	if _, err := c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); !errors.Is(err, ErrBranchHeaderIgnored) {
+		t.Errorf("InBranch behind a proxy that drops the header: %v, want ErrBranchHeaderIgnored", err)
+	}
+	// A NetBox that can't be reached for the check fails InBranch too.
+	f.mu.Lock()
+	f.handle = func(w http.ResponseWriter, _ *http.Request) bool {
+		w.WriteHeader(http.StatusBadGateway)
+		return true
+	}
+	f.mu.Unlock()
+	if _, err := c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err == nil || errors.Is(err, ErrBranchHeaderIgnored) || !isStatus(err, http.StatusBadGateway) {
+		t.Errorf("InBranch with NetBox failing: %v, want the 502", err)
+	}
+}
+
 func TestInBranchRefuses(t *testing.T) {
 	t.Parallel()
 	f := branchingFake(t)
 	c := connected(t, f, Options{Branching: true}, nil)
 	for _, id := range []string{"", "abcd123", "abcd1234\r\nX-Other: 1", "ABCD1234"} {
-		if _, err := c.InBranch(Branch{Name: "lab", SchemaID: id, Status: BranchReady}); err == nil {
+		if _, err := c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: id, Status: BranchReady}); err == nil {
 			t.Errorf("InBranch with schema ID %q succeeded", id)
 		}
 	}
 	for _, status := range []string{"merging", "new", "", "Ready"} {
-		if _, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: status}); err == nil {
+		if _, err := c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: status}); err == nil {
 			t.Errorf("InBranch with a branch whose status is %q succeeded", status)
 		}
 	}
 	// A client connected with branching off reads main only.
 	off := connected(t, f, Options{}, nil)
-	if _, err := off.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err == nil {
+	if _, err := off.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err == nil {
 		t.Error("InBranch on a client with branching off succeeded")
 	}
 }
@@ -540,7 +578,7 @@ func TestBranchRefused(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client, err := c.InBranch(bc)
+			client, err := c.InBranch(t.Context(), bc)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -614,7 +652,7 @@ func TestOtherBadRequestsAreNotBranchRefusals(t *testing.T) {
 			client := c.Client
 			if tt.branch {
 				var err error
-				if client, err = c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err != nil {
+				if client, err = c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -638,7 +676,7 @@ func TestBranchRefusalIsCleaned(t *testing.T) {
 		return true
 	}
 	f.mu.Unlock()
-	bc, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady})
+	bc, err := c.InBranch(t.Context(), Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady})
 	if err != nil {
 		t.Fatal(err)
 	}

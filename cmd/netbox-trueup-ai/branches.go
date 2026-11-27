@@ -58,7 +58,7 @@ func inBranch(ctx context.Context, c *netbox.Client, name string) (*netbox.Clien
 		return nil, fmt.Errorf("branch %s is %s, not ready: TrueUp reads only branches that are ready; 'netbox-trueup-ai netbox branches' lists those it can use",
 			strconv.Quote(name), cell(b.Status))
 	}
-	bc, err := c.InBranch(b)
+	bc, err := c.InBranch(ctx, b)
 	if err != nil {
 		return nil, fmt.Errorf("read through branch %s: %w", strconv.Quote(name), err)
 	}
