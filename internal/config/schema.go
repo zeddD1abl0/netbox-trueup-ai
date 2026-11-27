@@ -165,13 +165,13 @@ var settings = []setting{
 	},
 	{
 		key: "netbox.branching", kind: kindBool, flag: true, def: "false",
-		usage: "read and write NetBox's branches, with netbox-branching",
+		usage: "read and write NetBox's branches, with netbox-branching; given alone, true",
 		apply: func(_ *loader, st *Settings, r resolved) { st.NetBox.Branching = r.str == "true" },
 	},
 	{
 		// After netbox.branching, which its warning reads.
 		key: "netbox.protect_main", kind: kindBool, flag: true, def: "true",
-		usage: "with branching on, keep runs out of main",
+		usage: "with branching on, keep runs out of main; turn it off with --netbox-protect-main=false",
 		apply: func(ld *loader, st *Settings, r resolved) {
 			st.NetBox.ProtectMain = r.str == "true"
 			if r.origin != OriginDefault && !st.NetBox.Branching {

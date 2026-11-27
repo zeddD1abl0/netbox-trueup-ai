@@ -38,7 +38,7 @@ A file named by `--config` or `TRUEUP_CONFIG` must exist. TrueUp never looks for
 - The file holds a single YAML document, without tags (such as `!!str`), anchors or aliases. Settings don't need them, and the YAML library's errors about them can quote a value, which could be a secret.
 - Relative paths in the file are relative to the file's own directory.
 - A setting that takes a number, such as `netbox.retries`, can be a YAML number or a string.
-- A setting that is on or off, such as `netbox.branching`, takes `true` or `false`, in any case: a YAML boolean, or a string. Other spellings, such as `yes`, `on` or `1`, are errors.
+- A setting that is on or off, such as `netbox.branching`, takes `true` or `false`, in any case: a YAML boolean, or a string. Other spellings, such as `yes`, `on` or `1`, are errors. Its flag given alone, such as `--netbox-branching`, means true; turn one off with `=`, as in `--netbox-protect-main=false`. With a space instead, `false` isn't the flag's value but an argument, which commands refuse.
 - The file can be at most 1 MiB.
 
 ```yaml
