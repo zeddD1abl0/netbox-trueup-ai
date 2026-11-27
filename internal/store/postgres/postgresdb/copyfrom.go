@@ -31,6 +31,9 @@ func (r iteratorForInsertComparisons) Values() ([]interface{}, error) {
 	return []interface{}{
 		r.rows[0].Source,
 		r.rows[0].DefinitionID,
+		r.rows[0].Branch,
+		r.rows[0].BranchName,
+		r.rows[0].BranchNetboxID,
 		r.rows[0].SourceVersion,
 		r.rows[0].ComparedAt,
 		r.rows[0].NetboxUrl,
@@ -48,7 +51,7 @@ func (r iteratorForInsertComparisons) Err() error {
 
 // Adds comparisons, all in one COPY.
 func (q *Queries) InsertComparisons(ctx context.Context, arg []InsertComparisonsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"comparisons"}, []string{"source", "definition_id", "source_version", "compared_at", "netbox_url", "netbox_version", "outcome", "netbox_id", "differences", "result"}, &iteratorForInsertComparisons{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"comparisons"}, []string{"source", "definition_id", "branch", "branch_name", "branch_netbox_id", "source_version", "compared_at", "netbox_url", "netbox_version", "outcome", "netbox_id", "differences", "result"}, &iteratorForInsertComparisons{rows: arg})
 }
 
 // iteratorForInsertDefinitionProblems implements pgx.CopyFromSource.

@@ -169,7 +169,8 @@ func TestConnectWarnsAboutV1Tokens(t *testing.T) {
 	c := connected(t, f, Options{Token: config.NewSecret(testV1Token)}, nil)
 
 	info := c.Info()
-	if info.TokenVersion != 1 || len(info.Warnings) != 1 || !strings.Contains(info.Warnings[0], "is a v1 token, which NetBox deprecated in 4.6") {
+	if info.TokenVersion != 1 || len(info.Warnings) != 1 || info.Warnings[0].Key != "netbox.token" ||
+		!strings.Contains(info.Warnings[0].Message, "is a v1 token, which NetBox deprecated in 4.6") {
 		t.Errorf("Info = %+v, want token version 1 with a warning", info)
 	}
 	if !strings.Contains(c.logs.String(), `"level":"WARN","msg":"netbox.token is a v1 token`) {

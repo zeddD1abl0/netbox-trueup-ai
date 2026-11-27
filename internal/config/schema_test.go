@@ -83,6 +83,8 @@ func TestEveryEnvironmentVariableSetsItsSetting(t *testing.T) {
 		"netbox.max_requests":      "8",
 		"netbox.retries":           "0",
 		"netbox.max_response_size": "64MiB",
+		"netbox.branching":         "true",
+		"netbox.protect_main":      "false",
 		"sources":                  `[{"name":"lib","kind":"git","url":"https://example.com/lib.git","format":"devicetype-library"}]`,
 	}
 	for _, s := range settings {
@@ -126,13 +128,21 @@ func TestRegisterFlags(t *testing.T) {
 	fs.VisitAll(func(f *pflag.Flag) { names = append(names, f.Name) })
 	got := strings.Join(names, " ")
 	// pflag lists flags sorted. Secrets have only their _file flag.
-	want := "config data-dir database-url-file log-format log-level netbox-ca-bundle netbox-max-requests " +
-		"netbox-max-response-size netbox-retries netbox-timeout netbox-token-file netbox-url"
+	want := "config data-dir database-url-file log-format log-level netbox-branching netbox-ca-bundle " +
+		"netbox-max-requests netbox-max-response-size netbox-protect-main netbox-retries netbox-timeout " +
+		"netbox-token-file netbox-url"
 	if got != want {
 		t.Errorf("flags = %q, want %q", got, want)
 	}
 	if f := fs.Lookup("log-level"); f.DefValue != "info" {
 		t.Errorf("--log-level default = %q, want %q", f.DefValue, "info")
+	}
+	// A boolean setting's flag is a switch, true when given alone, with the
+	// setting's default.
+	for name, def := range map[string]string{"netbox-branching": "false", "netbox-protect-main": "true"} {
+		if f := fs.Lookup(name); f.DefValue != def || f.NoOptDefVal != "true" || f.Value.Type() != "bool" {
+			t.Errorf("--%s: default %q, alone %q, type %q; want %q, \"true\", \"bool\"", name, f.DefValue, f.NoOptDefVal, f.Value.Type(), def)
+		}
 	}
 }
 

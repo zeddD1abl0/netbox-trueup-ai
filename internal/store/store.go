@@ -82,9 +82,10 @@ type Store interface {
 	// wrapping ErrNotFound if the source has no snapshot.
 	DefinitionsByID(ctx context.Context, source string, ids []int64) (SourceDefinitions, error)
 	// RecordComparisons records a run's comparisons of one source's
-	// definitions as their latest, all of them or nothing: it replaces the
-	// comparisons of the definitions compared, and for a whole run removes
-	// the source's others, or keeps them. It returns an error wrapping
+	// definitions as their latest in the run's target, main or a branch, all
+	// of them or nothing: it replaces the comparisons of the definitions
+	// compared in that target, and for a whole run removes the source's
+	// others in that target, or keeps them. Other targets' are kept. It returns an error wrapping
 	// ErrSnapshotChanged, recording nothing, if the source's recorded
 	// snapshot or latest load isn't the one compared
 	// (ComparisonRun.CheckLoad). Recordings, loads and fetches of one source
@@ -92,7 +93,8 @@ type Store interface {
 	// removes.
 	RecordComparisons(ctx context.Context, run ComparisonRun) error
 	// Comparisons returns the comparisons recorded of a source's
-	// definitions, sorted by object type, path and identity.
+	// definitions, in every target: main's first, then each branch's by its
+	// schema ID, each sorted by object type, path and identity.
 	Comparisons(ctx context.Context, source string) ([]RecordedComparison, error)
 	// RecordEvents records audit events, all of them or none, for actions
 	// that change nothing else TrueUp records, such as a write to NetBox.

@@ -29,29 +29,40 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		if err := run.CheckLoad(status); err != nil {
 			return err
 		}
+		target := run.Target()
 		if run.Whole {
-			if err := q.DeleteComparisons(ctx, run.Source); err != nil {
+			if err := q.DeleteTargetComparisons(ctx, sqlitedb.DeleteTargetComparisonsParams{Source: run.Source, Branch: target}); err != nil {
 				return err
 			}
 		} else {
 			for _, c := range run.Comparisons {
-				if err := q.DeleteComparison(ctx, sqlitedb.DeleteComparisonParams{Source: run.Source, DefinitionID: c.DefinitionID}); err != nil {
+				if err := q.DeleteTargetComparison(ctx, sqlitedb.DeleteTargetComparisonParams{
+					Source: run.Source, DefinitionID: c.DefinitionID, Branch: target,
+				}); err != nil {
 					return err
 				}
 			}
 		}
+		var name sql.NullString
+		var branchID sql.NullInt64
+		if b := run.Branch; b != nil {
+			name, branchID = sql.NullString{String: b.Name, Valid: true}, sql.NullInt64{Int64: b.NetBoxID, Valid: true}
+		}
 		for _, c := range run.Comparisons {
 			if err := q.InsertComparison(ctx, sqlitedb.InsertComparisonParams{
-				Source:        run.Source,
-				DefinitionID:  c.DefinitionID,
-				SourceVersion: run.Loaded.Version,
-				ComparedAt:    at,
-				NetboxUrl:     run.NetBoxURL,
-				NetboxVersion: run.NetBoxVersion,
-				Outcome:       c.Outcome,
-				NetboxID:      sql.NullInt64{Int64: c.NetBoxID, Valid: c.NetBoxID != 0},
-				Differences:   int64(c.Differences),
-				Result:        string(c.Result),
+				Source:         run.Source,
+				DefinitionID:   c.DefinitionID,
+				Branch:         target,
+				BranchName:     name,
+				BranchNetboxID: branchID,
+				SourceVersion:  run.Loaded.Version,
+				ComparedAt:     at,
+				NetboxUrl:      run.NetBoxURL,
+				NetboxVersion:  run.NetBoxVersion,
+				Outcome:        c.Outcome,
+				NetboxID:       sql.NullInt64{Int64: c.NetBoxID, Valid: c.NetBoxID != 0},
+				Differences:    int64(c.Differences),
+				Result:         string(c.Result),
 			}); err != nil {
 				return fmt.Errorf("the comparison of definition #%d: %w", c.DefinitionID, err)
 			}
@@ -90,7 +101,17 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 			ComparedAt:    at,
 			NetBoxURL:     r.NetboxUrl,
 			NetBoxVersion: r.NetboxVersion,
+			Branch:        recordedBranch(r.Branch, r.BranchName.String, r.BranchNetboxID.Int64),
 		})
 	}
 	return out, nil
+}
+
+// recordedBranch returns the branch a comparison was recorded in, as the
+// database holds it, or nil for main, whose schema ID is empty.
+func recordedBranch(schemaID, name string, id int64) *store.Branch {
+	if schemaID == "" {
+		return nil
+	}
+	return &store.Branch{SchemaID: schemaID, Name: name, NetBoxID: id}
 }

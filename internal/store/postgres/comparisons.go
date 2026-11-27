@@ -40,10 +40,11 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		if err := run.CheckLoad(status); err != nil {
 			return err
 		}
+		target := run.Target()
 		if run.Whole {
-			err = q.DeleteComparisons(ctx, run.Source)
+			err = q.DeleteTargetComparisons(ctx, postgresdb.DeleteTargetComparisonsParams{Source: run.Source, Branch: target})
 		} else {
-			err = q.DeleteComparisonsOf(ctx, postgresdb.DeleteComparisonsOfParams{Source: run.Source, Ids: run.IDs()})
+			err = q.DeleteTargetComparisonsOf(ctx, postgresdb.DeleteTargetComparisonsOfParams{Source: run.Source, Branch: target, Ids: run.IDs()})
 		}
 		if err != nil {
 			return err
@@ -51,19 +52,27 @@ func (s *Store) RecordComparisons(ctx context.Context, run store.ComparisonRun) 
 		if len(run.Comparisons) == 0 {
 			return nil
 		}
+		var name pgtype.Text
+		var branchID pgtype.Int8
+		if b := run.Branch; b != nil {
+			name, branchID = pgtype.Text{String: b.Name, Valid: true}, pgtype.Int8{Int64: b.NetBoxID, Valid: true}
+		}
 		rows := make([]postgresdb.InsertComparisonsParams, len(run.Comparisons))
 		for i, c := range run.Comparisons {
 			rows[i] = postgresdb.InsertComparisonsParams{
-				Source:        run.Source,
-				DefinitionID:  c.DefinitionID,
-				SourceVersion: run.Loaded.Version,
-				ComparedAt:    at,
-				NetboxUrl:     run.NetBoxURL,
-				NetboxVersion: run.NetBoxVersion,
-				Outcome:       c.Outcome,
-				NetboxID:      pgtype.Int8{Int64: c.NetBoxID, Valid: c.NetBoxID != 0},
-				Differences:   int64(c.Differences),
-				Result:        string(c.Result),
+				Source:         run.Source,
+				DefinitionID:   c.DefinitionID,
+				Branch:         target,
+				BranchName:     name,
+				BranchNetboxID: branchID,
+				SourceVersion:  run.Loaded.Version,
+				ComparedAt:     at,
+				NetboxUrl:      run.NetBoxURL,
+				NetboxVersion:  run.NetBoxVersion,
+				Outcome:        c.Outcome,
+				NetboxID:       pgtype.Int8{Int64: c.NetBoxID, Valid: c.NetBoxID != 0},
+				Differences:    int64(c.Differences),
+				Result:         string(c.Result),
 			}
 		}
 		if _, err := q.InsertComparisons(ctx, rows); err != nil {
@@ -103,7 +112,17 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 			ComparedAt:    at,
 			NetBoxURL:     r.NetboxUrl,
 			NetBoxVersion: r.NetboxVersion,
+			Branch:        recordedBranch(r.Branch, r.BranchName.String, r.BranchNetboxID.Int64),
 		})
 	}
 	return out, nil
+}
+
+// recordedBranch returns the branch a comparison was recorded in, as the
+// database holds it, or nil for main, whose schema ID is empty.
+func recordedBranch(schemaID, name string, id int64) *store.Branch {
+	if schemaID == "" {
+		return nil
+	}
+	return &store.Branch{SchemaID: schemaID, Name: name, NetBoxID: id}
 }

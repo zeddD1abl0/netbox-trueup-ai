@@ -223,3 +223,20 @@ func TestValueStrings(t *testing.T) {
 		t.Errorf("Kind(99).String() = %s", got)
 	}
 }
+
+// StripSpace trims what Python's str.strip trims, as NetBox stores names,
+// and nothing within.
+func TestStripSpace(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"lab":                               "lab",
+		" lab\t":                            "lab",
+		"\x1c\u00a0lab one\u3000\x1f\u0085": "lab one",
+		"\u200blab":                         "\u200blab", // a zero-width space isn't white space to Python either
+		" \t\n":                             "",
+	} {
+		if got := StripSpace(in); got != want {
+			t.Errorf("StripSpace(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -104,8 +105,13 @@ type Options struct {
 	Retries int
 	// MaxResponseSize is the most bytes read of one answer. Zero means 32 MiB.
 	MaxResponseSize int64
+	// Branching is netbox.branching: TrueUp may read NetBox's branches. On,
+	// Connect requires netbox-branching of SupportedBranching; off, it warns
+	// if NetBox has netbox-branching.
+	Branching bool
 	// Logger gets a debug record for each request, and a warning for each
-	// retry and for a v1 token. Nil means no logging.
+	// retry, for a v1 token, and for netbox-branching with Branching off.
+	// Nil means no logging.
 	Logger *slog.Logger
 }
 
@@ -121,9 +127,24 @@ type Info struct {
 	User string
 	// TokenVersion is 2 for a v2 token, or 1 for a deprecated v1 token.
 	TokenVersion int
+	// Branching is Options.Branching, and BranchingVersion the version of
+	// netbox-branching that NetBox reported, cut short, or empty if NetBox
+	// has none, or didn't say.
+	Branching        bool
+	BranchingVersion string
+	// Branch is the branch a client bound to one reads from (InBranch), or
+	// nil for main.
+	Branch *Branch
 	// Warnings are problems that don't stop the client, such as a v1 token.
 	// Connect also logs them.
-	Warnings []string
+	Warnings []Warning
+}
+
+// Warning is a problem that doesn't stop the client.
+type Warning struct {
+	// Key is the setting the warning is about, such as netbox.token.
+	Key     string
+	Message string
 }
 
 // Client reads from one NetBox. It is safe for concurrent use.
@@ -141,7 +162,9 @@ type Client struct {
 	userAgent    string
 	apiVersion   string // set by Connect, then required of every answer
 	info         Info
-	warnings     []string // found before connecting, for Info
+	warnings     []Warning // found before connecting, for Info
+	branching    bool      // netbox.branching
+	branch       *Branch   // the branch every request names, or nil for main
 
 	// Fixed outside tests.
 	pageSize       int
@@ -166,9 +189,10 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 	return c, nil
 }
 
-// connect checks NetBox's version and the token, and records what it found.
+// connect checks NetBox's version, the token, and its plugins against
+// netbox.branching, and records what it found.
 func (c *Client) connect(ctx context.Context) error {
-	version, err := c.checkVersion(ctx)
+	version, plugins, err := c.checkVersion(ctx)
 	if err != nil {
 		return err
 	}
@@ -176,20 +200,31 @@ func (c *Client) connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	branchingWarning, err := c.checkBranching(plugins)
+	if err != nil {
+		return err
+	}
 	c.info = Info{
-		URL:          c.base.String(),
-		Version:      version,
-		APIVersion:   c.apiVersion,
-		User:         user,
-		TokenVersion: c.tokenVersion,
-		Warnings:     slices.Clone(c.warnings),
+		URL:              c.base.String(),
+		Version:          version,
+		APIVersion:       c.apiVersion,
+		User:             user,
+		TokenVersion:     c.tokenVersion,
+		Branching:        c.branching,
+		BranchingVersion: plugins.branchingVersion,
+		Warnings:         slices.Clone(c.warnings),
 	}
 	if c.tokenVersion == 1 {
 		msg := "netbox.token is a v1 token, which NetBox deprecated in 4.6 and removes in 5.0: provision a v2 token (nbt_<key>.<token>) instead"
-		c.info.Warnings = append(c.info.Warnings, msg)
+		c.info.Warnings = append(c.info.Warnings, Warning{Key: "netbox.token", Message: msg})
 		c.log.Warn(msg)
 	}
-	c.log.Debug("connected to NetBox", "url", c.info.URL, "version", version, "user", user, "token_version", c.tokenVersion)
+	if branchingWarning != "" {
+		c.info.Warnings = append(c.info.Warnings, Warning{Key: "netbox.branching", Message: branchingWarning})
+		c.log.Warn(branchingWarning)
+	}
+	c.log.Debug("connected to NetBox", "url", c.info.URL, "version", version, "user", user, "token_version", c.tokenVersion,
+		"branching", c.branching, "branching_version", plugins.branchingVersion)
 	return nil
 }
 
@@ -220,9 +255,9 @@ func newClient(opts Options) (*Client, error) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	roots, warning := rootCAs(opts.CACerts)
-	var warnings []string
+	var warnings []Warning
 	if warning != "" {
-		warnings = append(warnings, warning)
+		warnings = append(warnings, Warning{Key: "netbox.ca_bundle", Message: warning})
 		logger.Warn(warning)
 	}
 
@@ -256,6 +291,7 @@ func newClient(opts Options) (*Client, error) {
 		maxResponse:    opts.MaxResponseSize,
 		log:            logger,
 		warnings:       warnings,
+		branching:      opts.Branching,
 		userAgent:      "netbox-trueup-ai/" + version.String(),
 		pageSize:       pageSize,
 		maxFilterBytes: maxFilterBytes,
@@ -269,6 +305,10 @@ func newClient(opts Options) (*Client, error) {
 func (c *Client) Info() Info {
 	info := c.info
 	info.Warnings = slices.Clone(c.info.Warnings)
+	if info.Branch != nil {
+		b := *info.Branch
+		info.Branch = &b
+	}
 	return info
 }
 
@@ -349,39 +389,46 @@ func rootCAs(extra []*x509.Certificate) (pool *x509.CertPool, warning string) {
 var versionPattern = regexp.MustCompile(`^([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})$`)
 
 // checkVersion reads NetBox's status and refuses a release TrueUp doesn't
-// support (ADR 0003). A token NetBox refuses fails here already: REST
+// support (ADR 0003), and returns the plugins the status lists, which
+// /api/status/ gives whatever branch a request names (EXEMPT_PATHS in
+// netbox_branching/constants.py). A token NetBox refuses fails here already: REST
 // framework authenticates every request before it checks permissions, and
 // with LOGIN_REQUIRED on, as it is by default in 4.7, /api/status/ needs an
 // authenticated user anyway (StatusView and IsAuthenticatedOrLoginNotRequired
 // in netbox/netbox/api/views.py and authentication.py).
-func (c *Client) checkVersion(ctx context.Context) (string, error) {
+func (c *Client) checkVersion(ctx context.Context) (string, plugins, error) {
 	var status struct {
-		Version *string `json:"netbox-version"`
+		Version *string         `json:"netbox-version"`
+		Plugins json.RawMessage `json:"plugins"`
 	}
 	header, err := c.getJSON(ctx, statusPath, nil, &status)
 	if err != nil {
 		if refusedByNetBox(err) {
-			return "", fmt.Errorf("%w: %w", ErrTokenRejected, err)
+			return "", plugins{}, fmt.Errorf("%w: %w", ErrTokenRejected, err)
 		}
-		return "", fmt.Errorf("read NetBox's status: %w", err)
+		return "", plugins{}, fmt.Errorf("read NetBox's status: %w", err)
 	}
 	if status.Version == nil {
-		return "", fmt.Errorf("GET %s: the answer has no netbox-version: is %s NetBox's address?", statusPath, c.base)
+		return "", plugins{}, fmt.Errorf("GET %s: the answer has no netbox-version: is %s NetBox's address?", statusPath, c.base)
 	}
 	v := c.redact(*status.Version)
 	m := versionPattern.FindStringSubmatch(v)
 	if m == nil || m[1]+"."+m[2] != SupportedVersion {
-		return "", &VersionError{Version: cut(v)}
+		return "", plugins{}, &VersionError{Version: cut(v)}
 	}
 	// The middleware sets API-Version on every API answer to the release's
 	// major and minor version (CoreMiddleware in netbox/netbox/middleware.py,
 	// REST_FRAMEWORK_VERSION in settings.py). Every later answer must carry
 	// the same, which catches a NetBox upgraded while TrueUp runs.
 	if got := header.Get("API-Version"); got != SupportedVersion {
-		return "", fmt.Errorf("GET %s: NetBox %s answered with API-Version %q, not %s", statusPath, v, cut(c.redact(got)), SupportedVersion)
+		return "", plugins{}, fmt.Errorf("GET %s: NetBox %s answered with API-Version %q, not %s", statusPath, v, cut(c.redact(got)), SupportedVersion)
+	}
+	p, err := c.readPlugins(status.Plugins)
+	if err != nil {
+		return "", plugins{}, err
 	}
 	c.apiVersion = SupportedVersion
-	return v, nil
+	return v, p, nil
 }
 
 // checkToken asks NetBox whose token it is. /api/authentication-check/

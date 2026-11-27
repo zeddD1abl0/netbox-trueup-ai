@@ -159,6 +159,9 @@ func (c *Client) send(ctx context.Context, path string, query url.Values, target
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
+	if c.branch != nil {
+		req.Header.Set(branchHeader, c.branch.SchemaID)
+	}
 	// security: the only place the token leaves the client. The log below
 	// gives the scheme and "[redacted]" instead.
 	req.Header.Set("Authorization", c.scheme+" "+c.token.Reveal())
@@ -171,6 +174,9 @@ func (c *Client) send(ctx context.Context, path string, query url.Values, target
 		attrs := []any{
 			"method", http.MethodGet, "path", path, "query", cut(query.Encode()),
 			"authorization", c.scheme + " [redacted]", "attempt", attempt, "duration", time.Since(start),
+		}
+		if c.branch != nil {
+			attrs = append(attrs, "branch", c.branch.SchemaID)
 		}
 		if err != nil {
 			attrs = append(attrs, "error", err.Error())
@@ -377,10 +383,14 @@ func sleep(ctx context.Context, d time.Duration) error {
 }
 
 // decode checks a final answer and decodes its JSON into out. Any status
-// but success is a *StatusError. A successful answer must be JSON, and once
-// connected, must carry the API version that Connect saw.
+// but success is a *StatusError, or for netbox-branching refusing the
+// request's branch, a *BranchRefusedError. A successful answer must be JSON,
+// and once connected, must carry the API version that Connect saw.
 func (c *Client) decode(path string, ans answer, out any) error {
 	if ans.status < 200 || ans.status > 299 {
+		if err := c.branchRefusal(path, ans); err != nil {
+			return err
+		}
 		return c.statusError(path, ans)
 	}
 	if ct := ans.header.Get("Content-Type"); !isJSON(ct) {

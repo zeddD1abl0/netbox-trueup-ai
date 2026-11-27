@@ -186,8 +186,16 @@ func TestConnectToNetBox(t *testing.T) {
 			if info.User != tt.want.User || info.TokenVersion != tt.want.TokenVersion {
 				t.Errorf("Info = %+v, want user %s and token version %d", info, tt.want.User, tt.want.TokenVersion)
 			}
-			if wantWarning := tt.want.TokenVersion == 1; (len(info.Warnings) == 1) != wantWarning {
-				t.Errorf("warnings = %q", info.Warnings)
+			// The v1 token's warning; the branching NetBox adds one about
+			// netbox.branching, which TestBranchingInNetBox checks.
+			tokenWarnings := 0
+			for _, w := range info.Warnings {
+				if w.Key == "netbox.token" {
+					tokenWarnings++
+				}
+			}
+			if wantWarning := tt.want.TokenVersion == 1; (tokenWarnings == 1) != wantWarning {
+				t.Errorf("warnings = %+v", info.Warnings)
 			}
 			// The token never reaches the log, though requests do.
 			secret := tt.token.Reveal()

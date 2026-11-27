@@ -62,6 +62,7 @@ func Run(t *testing.T, open Open) {
 		{"comparisons need the load compared", testComparisonsNeedTheLoad},
 		{"comparisons go with their source", testComparisonsRemoved},
 		{"invalid comparisons record nothing", testInvalidComparisons},
+		{"comparisons are kept for each target", testComparisonsByTarget},
 		{"comparisons sort as bytes", testComparisonsSorting},
 		{"comparisons recorded while the source is fetched or removed", testComparisonsWhileFetching},
 		{"many comparisons", testLargeComparisons},

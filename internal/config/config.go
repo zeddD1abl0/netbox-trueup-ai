@@ -57,6 +57,12 @@ type NetBox struct {
 	Retries int
 	// MaxResponseSize is the most bytes TrueUp reads of one answer.
 	MaxResponseSize int64
+	// Branching says TrueUp may read and write NetBox's branches, through
+	// netbox-branching. Off, every run reads and writes main.
+	Branching bool
+	// ProtectMain keeps runs out of main while Branching is on. It has no
+	// effect with Branching off (docs/adr/0033-runs-against-main-or-a-chosen-branch.md).
+	ProtectMain bool
 }
 
 // Source is where definitions come from.

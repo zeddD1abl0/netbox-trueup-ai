@@ -253,6 +253,40 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	check(t, s)
 }
 
+func TestComparisonsSchema(t *testing.T) {
+	t.Parallel()
+	s, _, err := Open(t.Context(), Options{Path: filepath.Join(t.TempDir(), "trueup.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	storetest.CheckComparisonsSchema(t, s, func(statement string) error {
+		_, err := s.db.ExecContext(t.Context(), statement)
+		return err
+	})
+}
+
+func TestTargetsMigrationKeepsData(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "trueup.db")
+	files, after := storetest.MigrationsUpTo(t, migrationFiles, 5)
+	before, _, err := open(t.Context(), Options{Path: dbPath}, files, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := storetest.FillForTargetsMigration(t, before, sqlOn(before))
+	closeStore(t, before)
+	s, migrated, err := Open(t.Context(), Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	if diff := cmp.Diff(after, migrated.Applied); diff != "" {
+		t.Errorf("applied (-want +got):\n%s", diff)
+	}
+	check(t, s)
+}
+
 // sqlOn returns what the shared migration tests need to fill s directly.
 func sqlOn(s *Store) storetest.SQL {
 	return storetest.SQL{Exec: execOn(s), Bytes: func(b []byte) string { return "X'" + hex.EncodeToString(b) + "'" }}

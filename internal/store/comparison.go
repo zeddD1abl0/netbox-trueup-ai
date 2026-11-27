@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 )
@@ -33,8 +34,34 @@ type Comparison struct {
 	Result []byte
 }
 
+// Branch is the NetBox branch, from netbox-branching, that comparisons were
+// made in. Comparisons made in main have none.
+type Branch struct {
+	// SchemaID identifies the branch: eight lower case letters and digits,
+	// which netbox-branching never changes.
+	SchemaID string
+	// Name is the branch's name when the comparisons were made, which can
+	// change since.
+	Name string
+	// NetBoxID is the branch's ID in NetBox.
+	NetBoxID int64
+}
+
+// schemaID is the form of a branch's schema ID (Branch._generate_schema_id in
+// netbox_branching/models/branches.py, 1.2.4), which the database checks too.
+var schemaID = regexp.MustCompile(`^[a-z0-9]{8}$`)
+
+// key returns what the database records the branch's comparisons by: its
+// schema ID, or the empty string for main.
+func (b *Branch) key() string {
+	if b == nil {
+		return ""
+	}
+	return b.SchemaID
+}
+
 // ComparisonRun is the comparisons of one source's definitions, made at once
-// against one NetBox, to record.
+// against one NetBox, in main or one of its branches, to record.
 type ComparisonRun struct {
 	Source string
 	// Loaded and LoadedAt are the load whose definitions were compared, as
@@ -50,16 +77,25 @@ type ComparisonRun struct {
 	// NetBoxURL and NetBoxVersion are the NetBox compared with, and its
 	// release.
 	NetBoxURL, NetBoxVersion string
+	// Branch is the branch compared in, or nil for main. A run's comparisons
+	// replace only those of the same target: comparisons in main and in
+	// each branch are kept apart.
+	Branch *Branch
 	// Whole says that the run looked at every definition of the load, and
 	// compared those it has comparisons of, leaving the others out, as
 	// compare's default scope leaves out those NetBox hasn't got: every
-	// other comparison of the source is removed. Otherwise, as for a
-	// selection, the source's other comparisons are kept.
+	// other comparison of the source in the same target is removed.
+	// Otherwise, as for a selection, the source's other comparisons are
+	// kept.
 	Whole bool
 	// Comparisons are the comparisons made, which replace those recorded
-	// before.
+	// before in the same target.
 	Comparisons []Comparison
 }
+
+// Target returns what the database records the run's comparisons by: the
+// branch's schema ID, or the empty string for main.
+func (r ComparisonRun) Target() string { return r.Branch.key() }
 
 // RecordedComparison is a comparison as the database holds it, with its
 // definition's key and the run that made it.
@@ -69,6 +105,8 @@ type RecordedComparison struct {
 	Source, SourceVersion    string
 	ComparedAt               time.Time
 	NetBoxURL, NetBoxVersion string
+	// Branch is the branch the comparison was made in, or nil for main.
+	Branch *Branch
 }
 
 // Prepare checks a run and returns it as an engine records it: its times in
@@ -90,6 +128,18 @@ func (r ComparisonRun) Prepare() (ComparisonRun, error) {
 		if field.value == "" || !isText(field.value) {
 			return ComparisonRun{}, fmt.Errorf("source %s: a comparison's %s must be text, not %q", r.Source, field.name, field.value)
 		}
+	}
+	if b := r.Branch; b != nil {
+		switch {
+		case !schemaID.MatchString(b.SchemaID):
+			return ComparisonRun{}, fmt.Errorf("source %s: a branch's schema ID must be eight lower case letters and digits, not %q", r.Source, b.SchemaID)
+		case b.Name == "" || !isText(b.Name):
+			return ComparisonRun{}, fmt.Errorf("source %s: branch %s's name must be text, not %q", r.Source, b.SchemaID, b.Name)
+		case b.NetBoxID <= 0:
+			return ComparisonRun{}, fmt.Errorf("source %s: branch %s's NetBox ID must be positive, not %d", r.Source, b.SchemaID, b.NetBoxID)
+		}
+		b := *b
+		r.Branch = &b
 	}
 	switch {
 	case r.ComparedAt.IsZero():

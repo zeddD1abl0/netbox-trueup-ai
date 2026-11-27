@@ -498,6 +498,19 @@ func (ld *loader) set(l *layer, key string, raw any, name, base string) {
 			str = p
 		}
 		v = str
+	case kindBool:
+		str, ok := boolText(raw)
+		switch {
+		case !ok:
+			ld.reject(s.key, key, l.where(name), "must be "+ref.want())
+			return
+		case str == "":
+			return // an empty string counts as unset
+		case str != "true" && str != "false":
+			ld.reject(s.key, key, l.where(name), fmt.Sprintf("%q is neither true nor false", str))
+			return
+		}
+		v = str
 	case kindSources:
 		list, ok := ld.decodeSources(raw, l.where(name))
 		if !ok {
@@ -514,6 +527,25 @@ func (ld *loader) set(l *layer, key string, raw any, name, base string) {
 	l.values[s.key] = value{v: v, name: name, file: ref.file}
 	if s.secret && !ref.file {
 		l.holdsSecret = true
+	}
+}
+
+// boolText returns a boolean from the config file, or a string from any
+// layer, as text: true or false in lower case, a string that is neither as
+// it was given, and ok false for anything else, such as a number. go-yaml
+// reads only true and false, in any case, as booleans: yes and on stay
+// strings, which are then refused rather than taken for true.
+func boolText(raw any) (text string, ok bool) {
+	switch v := raw.(type) {
+	case bool:
+		return strconv.FormatBool(v), true
+	case string:
+		if lower := strings.ToLower(v); lower == "true" || lower == "false" {
+			return lower, true
+		}
+		return v, true
+	default:
+		return "", false
 	}
 }
 
@@ -652,9 +684,10 @@ func (ld *loader) strs(key, where string, v any) ([]string, bool) {
 
 // resolved is a setting's winning value, ready for its apply function.
 type resolved struct {
-	key   string
-	where string // where the value came from, for messages
-	str   string // for every kind but sources
+	key    string
+	where  string // where the value came from, for messages
+	origin Origin // the layer the value came from
+	str    string // for every kind but sources
 	// data is the content of a kindFile setting's file. It is nil if the
 	// setting isn't set, or if the file couldn't be read, which has been
 	// reported.
@@ -673,9 +706,9 @@ func (ld *loader) build(ctx context.Context, layers []*layer) *Config {
 		}
 		top, v := winner(layers, s.key)
 		e := Entry{Key: s.key, Secret: s.secret, Origin: top.origin, Name: v.name}
-		r := resolved{key: s.key, where: top.where(v.name)}
+		r := resolved{key: s.key, where: top.where(v.name), origin: top.origin}
 		switch s.kind {
-		case kindString, kindPath, kindFile, kindScalar:
+		case kindString, kindPath, kindFile, kindScalar, kindBool:
 			r.str, _ = v.v.(string)
 			e.Value = r.str
 			if s.secret {

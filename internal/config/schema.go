@@ -31,6 +31,7 @@ const (
 	kindPath         // a file system path, made absolute when it is loaded
 	kindFile         // a path, like kindPath, to a file that is read when settings load
 	kindScalar       // a string, or in the config file a number, which is read as its decimal text
+	kindBool         // true or false, in any case; in the config file, a YAML boolean too
 	kindSources      // the list of sources
 )
 
@@ -163,6 +164,22 @@ var settings = []setting{
 		},
 	},
 	{
+		key: "netbox.branching", kind: kindBool, flag: true, def: "false",
+		usage: "read and write NetBox's branches, with netbox-branching; given alone, true",
+		apply: func(_ *loader, st *Settings, r resolved) { st.NetBox.Branching = r.str == "true" },
+	},
+	{
+		// After netbox.branching, which its warning reads.
+		key: "netbox.protect_main", kind: kindBool, flag: true, def: "true",
+		usage: "with branching on, keep runs out of main; turn it off with --netbox-protect-main=false",
+		apply: func(ld *loader, st *Settings, r resolved) {
+			st.NetBox.ProtectMain = r.str == "true"
+			if r.origin != OriginDefault && !st.NetBox.Branching {
+				ld.warn(r.key, "netbox.protect_main has no effect while netbox.branching is off: every run reads and writes main")
+			}
+		},
+	},
+	{
 		key: "sources", kind: kindSources,
 		apply: func(ld *loader, st *Settings, r resolved) { st.Sources = ld.sources(r) },
 	},
@@ -211,6 +228,8 @@ func (r keyRef) want() string {
 		return "a list of sources"
 	case r.setting.kind == kindScalar:
 		return "a string or a number"
+	case r.setting.kind == kindBool:
+		return "true or false"
 	default:
 		return "a string"
 	}
@@ -259,11 +278,32 @@ func flagName(key string) string {
 func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String(FlagConfig, "", fmt.Sprintf("config file to read (default %s, if it exists)", defaultConfigFile))
 	for _, s := range settings {
-		if s.flag {
+		switch {
+		case !s.flag:
+		case s.kind == kindBool:
+			// Given alone, the flag means true. Its value is checked as the
+			// other layers' are, so that every layer refuses the same.
+			v := &boolFlag{text: s.def}
+			fs.Var(v, flagName(s.flagKey()), s.usage)
+			fs.Lookup(flagName(s.flagKey())).NoOptDefVal = "true"
+		default:
 			fs.String(flagName(s.flagKey()), s.def, s.usage)
 		}
 	}
 }
+
+// boolFlag is a kindBool setting's flag. It keeps what it was given, which
+// Load checks, so that --netbox-branching=yes is the same configuration
+// problem as TRUEUP_NETBOX_BRANCHING=yes.
+type boolFlag struct{ text string }
+
+func (f *boolFlag) String() string     { return f.text }
+func (f *boolFlag) Set(s string) error { f.text = s; return nil }
+func (f *boolFlag) Type() string       { return "bool" }
+
+// IsBoolFlag tells pflag's help to show the flag as a switch, with its
+// default only when that is true.
+func (f *boolFlag) IsBoolFlag() bool { return true }
 
 // DefaultConfigFile is the config file read when neither --config nor
 // TRUEUP_CONFIG names one, if it exists.

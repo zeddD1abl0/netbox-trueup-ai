@@ -88,8 +88,18 @@ func recorded(r store.ComparisonRun, cs ...compared) []store.RecordedComparison 
 			Comparison: c.Comparison, DefinitionKey: c.key, Source: r.Source, SourceVersion: r.Loaded.Version,
 			ComparedAt: r.ComparedAt.UTC().Truncate(time.Microsecond), NetBoxURL: r.NetBoxURL, NetBoxVersion: r.NetBoxVersion,
 		}
+		if r.Branch != nil {
+			b := *r.Branch
+			out[i].Branch = &b
+		}
 	}
 	return out
+}
+
+// inBranch returns r made in a branch.
+func inBranch(r store.ComparisonRun, schemaID, name string, id int64) store.ComparisonRun {
+	r.Branch = &store.Branch{SchemaID: schemaID, Name: name, NetBoxID: id}
+	return r
 }
 
 func recordComparisons(t *testing.T, s store.Store, r store.ComparisonRun) {
@@ -175,6 +185,93 @@ func testComparisons(t *testing.T, s store.Store) {
 	// A load that holds no definitions removes every comparison.
 	reload(t, s, "other", "x1", t0.Add(10*time.Second))
 	checkComparisons(t, s, "other", nil)
+}
+
+// Comparisons in main and in each branch are kept apart: a run replaces, and
+// a whole run removes, only those of its own target, while a load removes
+// those of the definitions it removes in every target.
+func testComparisonsByTarget(t *testing.T, s store.Store) {
+	dell, a, b := key("", "Dell"), key("Dell/a.yaml", "A"), key("Dell/b.yaml", "B")
+	v1 := loadDefinitions(t, s, "lib", "v1", t0,
+		definition("", "Dell", "v1"), definition("Dell/a.yaml", "A", "v1"), definition("Dell/b.yaml", "B", "v1"))
+
+	main1 := v1.run(t0.Add(time.Second), true, v1.comparison(a, "absent", 0), v1.comparison(dell, "candidate", 3))
+	recordComparisons(t, s, main1)
+	lab1 := inBranch(v1.run(t0.Add(2*time.Second), true, v1.comparison(a, "candidate", 10), v1.comparison(b, "candidate", 11)), "lab00001", "lab", 7)
+	recordComparisons(t, s, lab1)
+	// Schema IDs sort by bytes, digits first, after main's ''.
+	other1 := inBranch(v1.run(t0.Add(3*time.Second), false, v1.comparison(dell, "conflict", 3)), "0ther000", "other", 8)
+	recordComparisons(t, s, other1)
+	mainOnly := recorded(main1, v1.comparison(a, "absent", 0), v1.comparison(dell, "candidate", 3))
+	checkComparisons(t, s, "lib", slicesConcat(
+		mainOnly,
+		recorded(other1, v1.comparison(dell, "conflict", 3)),
+		recorded(lab1, v1.comparison(a, "candidate", 10), v1.comparison(b, "candidate", 11)),
+	))
+
+	// A whole run in a branch removes only that branch's others; a
+	// selection in it, renamed since, replaces only what it compared, with
+	// the name it has now.
+	lab2 := inBranch(v1.run(t0.Add(4*time.Second), true, v1.comparison(b, "candidate", 11)), "lab00001", "lab", 7)
+	recordComparisons(t, s, lab2)
+	lab3 := inBranch(v1.run(t0.Add(5*time.Second), false, v1.comparison(a, "absent", 0)), "lab00001", "lab-renamed", 7)
+	recordComparisons(t, s, lab3)
+	checkComparisons(t, s, "lib", slicesConcat(
+		mainOnly,
+		recorded(other1, v1.comparison(dell, "conflict", 3)),
+		recorded(lab3, v1.comparison(a, "absent", 0)), recorded(lab2, v1.comparison(b, "candidate", 11)),
+	))
+
+	// A whole run in main that compares nothing removes main's alone.
+	recordComparisons(t, s, v1.run(t0.Add(6*time.Second), true))
+	checkComparisons(t, s, "lib", slicesConcat(
+		recorded(other1, v1.comparison(dell, "conflict", 3)),
+		recorded(lab3, v1.comparison(a, "absent", 0)), recorded(lab2, v1.comparison(b, "candidate", 11)),
+	))
+
+	// A load removes the comparisons of the definitions it removes in every
+	// target.
+	loadDefinitions(t, s, "lib", "v2", t0.Add(7*time.Second), definition("", "Dell", "v2"), definition("Dell/b.yaml", "B", "v2"))
+	checkComparisons(t, s, "lib", slicesConcat(
+		recorded(other1, v1.comparison(dell, "conflict", 3)), recorded(lab2, v1.comparison(b, "candidate", 11)),
+	))
+}
+
+// CheckComparisonsSchema checks that an engine's schema refuses what Prepare
+// refuses of a comparison's branch, in rows try inserts straight into the
+// comparisons table, so that no other way of writing one records a branch
+// without its name and ID, or main with them.
+func CheckComparisonsSchema(t *testing.T, s store.Store, try func(statement string) error) {
+	t.Helper()
+	l := loadDefinitions(t, s, "lib", "v1", t0, definition("a.yaml", "A", "v1"))
+	id := l.ids[key("a.yaml", "A")]
+	insert := func(branch, name, netboxID string) string {
+		return fmt.Sprintf(`INSERT INTO comparisons (
+			source, definition_id, branch, branch_name, branch_netbox_id, source_version, compared_at,
+			netbox_url, netbox_version, outcome, netbox_id, differences, result
+		) VALUES ('lib', %d, %s, %s, %s, 'v1', '2026-10-26T01:02:04.456789Z', 'https://netbox.example.com/', '4.7.2', 'absent', NULL, 0, '{}')`,
+			id, branch, name, netboxID)
+	}
+	for _, refused := range []struct{ name, branch, branchName, netboxID string }{
+		{"a branch without a name", "'abcd1234'", "NULL", "7"},
+		{"a branch with an empty name", "'abcd1234'", "''", "7"},
+		{"a branch without an ID", "'abcd1234'", "'lab'", "NULL"},
+		{"a branch with the ID 0", "'abcd1234'", "'lab'", "0"},
+		{"a short schema ID", "'abcd123'", "'lab'", "7"},
+		{"an upper-case schema ID", "'ABCD1234'", "'lab'", "7"},
+		{"main with a branch's name", "''", "'lab'", "NULL"},
+		{"main with a branch's ID", "''", "NULL", "7"},
+	} {
+		if err := try(insert(refused.branch, refused.branchName, refused.netboxID)); err == nil {
+			t.Errorf("the schema took a comparison of %s", refused.name)
+		}
+	}
+	// The rows are otherwise good.
+	for _, row := range [][3]string{{"''", "NULL", "NULL"}, {"'abcd1234'", "'lab'", "7"}} {
+		if err := try(insert(row[0], row[1], row[2])); err != nil {
+			t.Errorf("the schema refused a good comparison: %v", err)
+		}
+	}
 }
 
 func testComparisonsNeedTheSnapshot(t *testing.T, s store.Store) {
@@ -319,6 +416,14 @@ func testInvalidComparisons(t *testing.T, s store.Store) {
 		{"a result that isn't JSON", withComparison(func(c *store.Comparison) { c.Result = []byte("{") })},
 		{"a NUL in the source's name", with(func(r *store.ComparisonRun) { r.Source = "li\x00b" })},
 		{"a reader that isn't UTF-8", with(func(r *store.ComparisonRun) { r.Loaded.Reader = "r\xff" })},
+		{"a branch without a schema ID", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "", "lab", 7) })},
+		{"a branch with a short schema ID", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "lab0001", "lab", 7) })},
+		{"a branch with an upper-case schema ID", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "LAB00001", "lab", 7) })},
+		{"a branch with a line break in its schema ID", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "lab0001\n", "lab", 7) })},
+		{"a branch without a name", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "lab00001", "", 7) })},
+		{"a branch whose name isn't UTF-8", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "lab00001", "l\xffb", 7) })},
+		{"a branch without a NetBox ID", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "lab00001", "lab", 0) })},
+		{"a branch with a negative NetBox ID", with(func(r *store.ComparisonRun) { *r = inBranch(*r, "lab00001", "lab", -7) })},
 	}
 	for _, tt := range tests {
 		if err := s.RecordComparisons(t.Context(), tt.run); err == nil || errors.Is(err, store.ErrSnapshotChanged) {

@@ -33,16 +33,19 @@ type AuditEvent struct {
 }
 
 type Comparison struct {
-	Source        string
-	DefinitionID  int64
-	SourceVersion string
-	ComparedAt    string
-	NetboxUrl     string
-	NetboxVersion string
-	Outcome       string
-	NetboxID      sql.NullInt64
-	Differences   int64
-	Result        string
+	Source         string
+	DefinitionID   int64
+	Branch         string
+	BranchName     sql.NullString
+	BranchNetboxID sql.NullInt64
+	SourceVersion  string
+	ComparedAt     string
+	NetboxUrl      string
+	NetboxVersion  string
+	Outcome        string
+	NetboxID       sql.NullInt64
+	Differences    int64
+	Result         string
 }
 
 type Definition struct {
