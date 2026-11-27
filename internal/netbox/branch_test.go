@@ -84,7 +84,8 @@ func TestConnectChecksBranching(t *testing.T) {
 		},
 		{
 			name: "no version, branching off", plugins: map[string]any{"netbox_branching": nil},
-			wantWarning: "NetBox has netbox-branching, without saying which release" + unsupported,
+			wantWarning: "NetBox has netbox-branching, without saying which release, but netbox.branching is off, " +
+				"so TrueUp reads and writes main only: turn netbox.branching on to work in branches",
 		},
 	}
 	for _, tt := range tests {

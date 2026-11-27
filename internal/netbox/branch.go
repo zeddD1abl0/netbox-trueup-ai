@@ -34,6 +34,10 @@ const (
 	branchesPath = "/api/plugins/branching/branches/"
 )
 
+// BranchType is netbox-branching's branch, whose view permission finding and
+// listing branches needs, as CheckRead checks it.
+var BranchType = ObjectType{Name: "netbox_branching.branch", Endpoint: branchesPath}
+
 // maxBranchName is the longest name netbox-branching allows a branch, in
 // characters (Branch.name in netbox_branching/models/branches.py).
 const maxBranchName = 100
@@ -148,7 +152,7 @@ func (c *Client) checkBranching(p plugins) (warning string, err error) {
 		return "", &BranchingError{Installed: p.branching, Version: p.branchingVersion}
 	case c.branching, !p.branching:
 		return "", nil
-	case supportedBranching(p.branchingVersion):
+	case supportedBranching(p.branchingVersion), p.branchingVersion == "":
 		return "NetBox has " + branchingRelease(p.branchingVersion) +
 			", but netbox.branching is off, so TrueUp reads and writes main only: turn netbox.branching on to work in branches", nil
 	default:

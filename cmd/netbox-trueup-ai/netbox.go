@@ -185,10 +185,6 @@ func checkNetBox(ctx context.Context, cfg *config.Config, logger *slog.Logger, b
 	return result, nil
 }
 
-// branchType is netbox-branching's branch, which TrueUp reads with
-// netbox.branching on, to find the branch --branch names, and to list them.
-var branchType = netbox.ObjectType{Name: "netbox_branching.branch", Endpoint: "/api/plugins/branching/branches/"}
-
 // readTypes are the object types compare reads, as the specs say, in the
 // order a sync would read them: every type with an endpoint. Port mappings
 // need no permission of their own, since a front port template carries
@@ -203,7 +199,8 @@ func readTypes(branching bool) []netbox.ObjectType {
 		}
 	}
 	if branching {
-		types = append(types, branchType)
+		// To find the branch --branch names, and to list them.
+		types = append(types, netbox.BranchType)
 	}
 	return types
 }
