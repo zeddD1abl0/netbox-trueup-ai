@@ -119,7 +119,7 @@ func (s *Store) Comparisons(ctx context.Context, source string) ([]store.Recorde
 }
 
 // recordedBranch returns the branch a comparison was recorded in, as the
-// database holds it, or nil for main, whose schema ID is ”.
+// database holds it, or nil for main, whose schema ID is empty.
 func recordedBranch(schemaID, name string, id int64) *store.Branch {
 	if schemaID == "" {
 		return nil

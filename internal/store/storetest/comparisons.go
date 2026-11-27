@@ -237,6 +237,43 @@ func testComparisonsByTarget(t *testing.T, s store.Store) {
 	))
 }
 
+// CheckComparisonsSchema checks that an engine's schema refuses what Prepare
+// refuses of a comparison's branch, in rows try inserts straight into the
+// comparisons table, so that no other way of writing one records a branch
+// without its name and ID, or main with them.
+func CheckComparisonsSchema(t *testing.T, s store.Store, try func(statement string) error) {
+	t.Helper()
+	l := loadDefinitions(t, s, "lib", "v1", t0, definition("a.yaml", "A", "v1"))
+	id := l.ids[key("a.yaml", "A")]
+	insert := func(branch, name, netboxID string) string {
+		return fmt.Sprintf(`INSERT INTO comparisons (
+			source, definition_id, branch, branch_name, branch_netbox_id, source_version, compared_at,
+			netbox_url, netbox_version, outcome, netbox_id, differences, result
+		) VALUES ('lib', %d, %s, %s, %s, 'v1', '2026-10-26T01:02:04.456789Z', 'https://netbox.example.com/', '4.7.2', 'absent', NULL, 0, '{}')`,
+			id, branch, name, netboxID)
+	}
+	for _, refused := range []struct{ name, branch, branchName, netboxID string }{
+		{"a branch without a name", "'abcd1234'", "NULL", "7"},
+		{"a branch with an empty name", "'abcd1234'", "''", "7"},
+		{"a branch without an ID", "'abcd1234'", "'lab'", "NULL"},
+		{"a branch with the ID 0", "'abcd1234'", "'lab'", "0"},
+		{"a short schema ID", "'abcd123'", "'lab'", "7"},
+		{"an upper-case schema ID", "'ABCD1234'", "'lab'", "7"},
+		{"main with a branch's name", "''", "'lab'", "NULL"},
+		{"main with a branch's ID", "''", "NULL", "7"},
+	} {
+		if err := try(insert(refused.branch, refused.branchName, refused.netboxID)); err == nil {
+			t.Errorf("the schema took a comparison of %s", refused.name)
+		}
+	}
+	// The rows are otherwise good.
+	for _, row := range [][3]string{{"''", "NULL", "NULL"}, {"'abcd1234'", "'lab'", "7"}} {
+		if err := try(insert(row[0], row[1], row[2])); err != nil {
+			t.Errorf("the schema refused a good comparison: %v", err)
+		}
+	}
+}
+
 func testComparisonsNeedTheSnapshot(t *testing.T, s store.Store) {
 	a := key("a.yaml", "A")
 	never := loaded{status: store.LoadStatus{Source: "lib", Loaded: store.LoadKey{Version: "v1", Reader: reader, Settings: settings}, LoadedAt: t0}}

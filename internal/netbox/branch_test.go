@@ -443,7 +443,7 @@ func TestInBranchSharesTheLimit(t *testing.T) {
 	f.addBranch(1, "lab", "abcd1234", BranchReady)
 	f.add("/api/dcim/device-types/", ids(1), nil)
 	c := connected(t, f, Options{Branching: true, MaxRequests: 1}, nil)
-	bc, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234"})
+	bc, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,14 +477,42 @@ func TestInBranchSharesTheLimit(t *testing.T) {
 	wg.Wait()
 }
 
-func TestInBranchRefusesASchemaID(t *testing.T) {
+func TestInBranchRefuses(t *testing.T) {
 	t.Parallel()
 	f := branchingFake(t)
 	c := connected(t, f, Options{Branching: true}, nil)
 	for _, id := range []string{"", "abcd123", "abcd1234\r\nX-Other: 1", "ABCD1234"} {
-		if _, err := c.InBranch(Branch{Name: "lab", SchemaID: id}); err == nil {
+		if _, err := c.InBranch(Branch{Name: "lab", SchemaID: id, Status: BranchReady}); err == nil {
 			t.Errorf("InBranch with schema ID %q succeeded", id)
 		}
+	}
+	for _, status := range []string{"merging", "new", "", "Ready"} {
+		if _, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: status}); err == nil {
+			t.Errorf("InBranch with a branch whose status is %q succeeded", status)
+		}
+	}
+	// A client connected with branching off reads main only.
+	off := connected(t, f, Options{}, nil)
+	if _, err := off.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err == nil {
+		t.Error("InBranch on a client with branching off succeeded")
+	}
+}
+
+// A name is kept whole, so that a long one, of characters that take several
+// bytes each, is found by its name; one longer than netbox-branching allows
+// is refused.
+func TestBranchNames(t *testing.T) {
+	t.Parallel()
+	f := branchingFake(t)
+	long := strings.Repeat("\U0001f333", 100) // 400 bytes, more than cut keeps
+	f.addBranch(1, long, "abcd1234", BranchReady)
+	c := connected(t, f, Options{Branching: true}, nil)
+	if b, err := c.FindBranch(t.Context(), long); err != nil || b.Name != long {
+		t.Errorf("FindBranch with a name of 100 characters = %+v, %v", b, err)
+	}
+	f.addBranch(2, long+"x", "efgh5678", BranchReady)
+	if _, err := c.Branches(t.Context()); err == nil || !strings.Contains(err.Error(), "NetBox sent branch #2 with a name longer than the 100 characters netbox-branching allows") {
+		t.Errorf("Branches with a name of 101 characters: %v", err)
 	}
 }
 
@@ -585,7 +613,7 @@ func TestOtherBadRequestsAreNotBranchRefusals(t *testing.T) {
 			client := c.Client
 			if tt.branch {
 				var err error
-				if client, err = c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234"}); err != nil {
+				if client, err = c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -609,7 +637,7 @@ func TestBranchRefusalIsCleaned(t *testing.T) {
 		return true
 	}
 	f.mu.Unlock()
-	bc, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234"})
+	bc, err := c.InBranch(Branch{Name: "lab", SchemaID: "abcd1234", Status: BranchReady})
 	if err != nil {
 		t.Fatal(err)
 	}

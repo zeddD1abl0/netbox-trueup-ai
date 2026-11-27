@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 // SupportedBranching is the netbox-branching release line TrueUp works with:
@@ -32,6 +33,10 @@ const (
 	// branchesPath is netbox-branching's list of branches.
 	branchesPath = "/api/plugins/branching/branches/"
 )
+
+// maxBranchName is the longest name netbox-branching allows a branch, in
+// characters (Branch.name in netbox_branching/models/branches.py).
+const maxBranchName = 100
 
 // schemaIDPattern is what netbox-branching makes a branch's schema ID of:
 // eight lower case letters and digits (Branch._generate_schema_id in
@@ -207,13 +212,17 @@ func (c *Client) readBranch(raw json.RawMessage) (Branch, error) {
 	switch {
 	case b.Name == nil || *b.Name == "":
 		return Branch{}, fmt.Errorf("NetBox sent branch #%d without a name", id)
+	case utf8.RuneCountInString(*b.Name) > maxBranchName:
+		return Branch{}, fmt.Errorf("NetBox sent branch #%d with a name longer than the %d characters netbox-branching allows", id, maxBranchName)
 	case b.SchemaID == nil || !schemaIDPattern.MatchString(*b.SchemaID):
 		return Branch{}, fmt.Errorf("NetBox sent branch #%d without a schema ID of eight lower case letters and digits", id)
 	case b.Status == nil || b.Status.Value == nil || *b.Status.Value == "":
 		return Branch{}, fmt.Errorf("NetBox sent branch #%d without a status", id)
 	}
+	// The name is kept whole, for FindBranch to match exactly: it is at most
+	// 100 characters, which cut could shorten.
 	branch := Branch{
-		ID: id, Name: cut(c.redact(*b.Name)), SchemaID: *b.SchemaID, Status: cut(c.redact(*b.Status.Value)),
+		ID: id, Name: c.redact(*b.Name), SchemaID: *b.SchemaID, Status: cut(c.redact(*b.Status.Value)),
 	}
 	if b.Description != nil {
 		branch.Description = cut(c.redact(*b.Description))
@@ -300,12 +309,18 @@ func (c *Client) listBranches(ctx context.Context, query url.Values, name string
 // InBranch returns a client that reads from branch b of the same NetBox,
 // sending the X-NetBox-Branch header on every request but those that read
 // branches themselves (Branches and FindBranch). It shares the receiver's
-// connections and its limit on requests in flight. b is usually what
-// FindBranch returned; InBranch doesn't check that it is ready, and NetBox
-// refuses each request, with a *BranchRefusedError, while it isn't.
+// connections and its limit on requests in flight. b is what FindBranch or
+// Branches returned, and must be ready; if it stops being ready, NetBox
+// refuses each request, with a *BranchRefusedError. The client must have
+// connected with Options.Branching.
 func (c *Client) InBranch(b Branch) (*Client, error) {
-	if !schemaIDPattern.MatchString(b.SchemaID) {
+	switch {
+	case !c.branching:
+		return nil, fmt.Errorf("branch %q: netbox.branching is off, so TrueUp reads main only", b.Name)
+	case !schemaIDPattern.MatchString(b.SchemaID):
 		return nil, fmt.Errorf("branch %q: its schema ID isn't eight lower case letters and digits", b.Name)
+	case !b.Ready():
+		return nil, fmt.Errorf("branch %q is %s, not ready", b.Name, strconv.Quote(b.Status))
 	}
 	bound := *c
 	bound.branch = &b

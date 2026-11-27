@@ -49,7 +49,8 @@ Exit codes:
   1  The check couldn't be made: NetBox can't be reached, runs a release
      TrueUp doesn't support, or refuses the token; netbox.branching is on
      and NetBox hasn't netbox-branching ` + netbox.SupportedBranching + `.x; or the branch --branch
-     names doesn't exist or isn't ready.
+     names doesn't exist or isn't ready, or can't be found, since the
+     token can't view NetBox's branches.
   2  --branch is given with netbox.branching off, or white space alone.
   3  The configuration is invalid, or netbox.url or netbox.token isn't set.
   4  The token can't read some object types. Grant its user the view

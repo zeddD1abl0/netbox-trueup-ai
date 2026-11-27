@@ -253,6 +253,19 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	check(t, s)
 }
 
+func TestComparisonsSchema(t *testing.T) {
+	t.Parallel()
+	s, _, err := Open(t.Context(), Options{Path: filepath.Join(t.TempDir(), "trueup.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	storetest.CheckComparisonsSchema(t, s, func(statement string) error {
+		_, err := s.db.ExecContext(t.Context(), statement)
+		return err
+	})
+}
+
 func TestTargetsMigrationKeepsData(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "trueup.db")

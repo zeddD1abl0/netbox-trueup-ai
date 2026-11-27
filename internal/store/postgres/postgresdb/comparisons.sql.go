@@ -48,7 +48,7 @@ type DeleteTargetComparisonsParams struct {
 }
 
 // Deletes every comparison of a source's definitions in one target: a
-// branch, by its schema ID, or main, as ”.
+// branch, by its schema ID, or main, as the empty string.
 func (q *Queries) DeleteTargetComparisons(ctx context.Context, arg DeleteTargetComparisonsParams) error {
 	_, err := q.db.Exec(ctx, deleteTargetComparisons, arg.Source, arg.Branch)
 	return err
@@ -69,7 +69,7 @@ type DeleteTargetComparisonsOfParams struct {
 }
 
 // Deletes the comparisons of those of a source's definitions with the IDs
-// given, in one target: a branch, by its schema ID, or main, as ”.
+// given, in one target: a branch, by its schema ID, or main, as the empty string.
 func (q *Queries) DeleteTargetComparisonsOf(ctx context.Context, arg DeleteTargetComparisonsOfParams) error {
 	_, err := q.db.Exec(ctx, deleteTargetComparisonsOf, arg.Source, arg.Branch, arg.Ids)
 	return err

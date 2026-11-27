@@ -38,7 +38,10 @@ CREATE TABLE comparisons_by_target (
     FOREIGN KEY (source, definition_id) REFERENCES definitions (source, id),
     CHECK (
         (branch = '' AND branch_name IS NULL AND branch_netbox_id IS NULL)
-        OR (branch != '' AND branch_name != '' AND branch_netbox_id > 0)
+        OR (
+            branch != '' AND branch_name IS NOT NULL AND branch_name != ''
+            AND branch_netbox_id IS NOT NULL AND branch_netbox_id > 0
+        )
     )
 ) STRICT;
 

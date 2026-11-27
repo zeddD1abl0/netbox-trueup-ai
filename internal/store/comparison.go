@@ -52,7 +52,7 @@ type Branch struct {
 var schemaID = regexp.MustCompile(`^[a-z0-9]{8}$`)
 
 // key returns what the database records the branch's comparisons by: its
-// schema ID, or ” for main.
+// schema ID, or the empty string for main.
 func (b *Branch) key() string {
 	if b == nil {
 		return ""
@@ -94,7 +94,7 @@ type ComparisonRun struct {
 }
 
 // Target returns what the database records the run's comparisons by: the
-// branch's schema ID, or ” for main.
+// branch's schema ID, or the empty string for main.
 func (r ComparisonRun) Target() string { return r.Branch.key() }
 
 // RecordedComparison is a comparison as the database holds it, with its

@@ -127,7 +127,8 @@ Exit codes:
      it is read, such as a device type deleted, or when the database can't
      be opened or written. Also when netbox.branching is on and NetBox
      hasn't netbox-branching ` + netbox.SupportedBranching + `.x, or the branch --branch names doesn't
-     exist, isn't ready, or stops being ready while it is read.
+     exist, isn't ready, stops being ready while it is read, or can't be
+     found, since the token can't view NetBox's branches.
   2  A name given isn't a configured source, --all is given with
      --manufacturer or --model, or either of them, or --branch, is given
      white space alone, or --branch is given with netbox.branching off.
@@ -1528,7 +1529,6 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 	return nil
 }
 
-// countsText says how many objects were compared, by outcome.
 // targetText names, with netbox.branching on, the target compared: main, or
 // the branch read through.
 func targetText(r compareJSON) string {
@@ -1542,6 +1542,7 @@ func targetText(r compareJSON) string {
 	}
 }
 
+// countsText says how many objects were compared, by outcome.
 func countsText(c compareCountsJSON) string {
 	objects := "objects"
 	if c.Compared == 1 {

@@ -13,12 +13,12 @@ DELETE FROM comparisons WHERE source = ?;
 
 -- name: DeleteTargetComparison :exec
 -- Deletes the comparison of one of a source's definitions in one target: a
--- branch, by its schema ID, or main, as ''.
+-- branch, by its schema ID, or main, as the empty string.
 DELETE FROM comparisons WHERE source = ? AND definition_id = ? AND branch = ?;
 
 -- name: DeleteTargetComparisons :exec
 -- Deletes every comparison of a source's definitions in one target: a
--- branch, by its schema ID, or main, as ''.
+-- branch, by its schema ID, or main, as the empty string.
 DELETE FROM comparisons WHERE source = ? AND branch = ?;
 
 -- name: InsertComparison :exec

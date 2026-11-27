@@ -315,6 +315,20 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	check(t, s)
 }
 
+func TestComparisonsSchema(t *testing.T) {
+	t.Parallel()
+	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, srv.NewDatabase(t)))
+	s, _, err := Open(t.Context(), Options{URL: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	storetest.CheckComparisonsSchema(t, s, func(statement string) error {
+		_, err := s.pool.Exec(t.Context(), statement)
+		return err
+	})
+}
+
 func TestTargetsMigrationKeepsData(t *testing.T) {
 	t.Parallel()
 	database := srv.NewDatabase(t)

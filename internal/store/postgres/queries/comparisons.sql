@@ -23,7 +23,7 @@ DELETE FROM comparisons WHERE source = $1;
 
 -- name: DeleteTargetComparisonsOf :exec
 -- Deletes the comparisons of those of a source's definitions with the IDs
--- given, in one target: a branch, by its schema ID, or main, as ''.
+-- given, in one target: a branch, by its schema ID, or main, as the empty string.
 DELETE FROM comparisons
 WHERE
     source = sqlc.arg(source)
@@ -32,7 +32,7 @@ WHERE
 
 -- name: DeleteTargetComparisons :exec
 -- Deletes every comparison of a source's definitions in one target: a
--- branch, by its schema ID, or main, as ''.
+-- branch, by its schema ID, or main, as the empty string.
 DELETE FROM comparisons WHERE source = $1 AND branch = $2;
 
 -- name: InsertComparisons :copyfrom
