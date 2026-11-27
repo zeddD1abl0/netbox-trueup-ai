@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -43,13 +44,70 @@ type compareNetBox struct {
 	// compare has read the sources' definitions.
 	onManufacturers func()
 
+	// With plugins set, /api/status/ lists them. branches are
+	// netbox-branching's, as its list gives them; a request naming one by
+	// its schema ID reads branchManufacturers and branchDeviceTypes, and
+	// netbox-branching's middleware refuses it unless the branch is ready.
+	plugins             map[string]any
+	branches            []map[string]any
+	branchManufacturers []map[string]any
+	branchDeviceTypes   []map[string]any
+
 	mu      sync.Mutex
 	queries map[string][]url.Values // by path
+	// branchHeaders holds each request's X-NetBox-Branch header, or "main"
+	// for none, by path.
+	branchHeaders map[string][]string
+}
+
+// nbBranch is a branch as netbox-branching's API gives it.
+func nbBranch(id int, name, schemaID, status string) map[string]any {
+	return map[string]any{
+		"id": id, "url": "http://netbox.example.com/api/plugins/branching/branches/" + strconv.Itoa(id) + "/", "display": name,
+		"name": name, "status": choice(status), "owner": map[string]any{"id": 1, "username": "alice"},
+		"description": "branch " + name, "schema_id": schemaID, "last_sync": "2026-11-26T23:21:32.709369Z",
+	}
+}
+
+// setBranchStatus changes a branch's status, as netbox-branching does when a
+// person synchronizes or merges it.
+func (f *compareNetBox) setBranchStatus(schemaID, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, b := range f.branches {
+		if b["schema_id"] == schemaID {
+			b["status"] = choice(status)
+		}
+	}
+}
+
+// branchStatus returns the status of the branch with schemaID, or "" if there
+// is none. f.mu must be held.
+func (f *compareNetBox) branchStatus(schemaID string) string {
+	for _, b := range f.branches {
+		if b["schema_id"] == schemaID {
+			status, _ := b["status"].(map[string]any)
+			value, _ := status["value"].(string)
+			return value
+		}
+	}
+	return ""
+}
+
+// branchesRead returns the X-NetBox-Branch header of each request for path,
+// or "main" for a request without one.
+func (f *compareNetBox) branchesRead(path string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.branchHeaders[path])
 }
 
 func newCompareNetBox(t *testing.T, manufacturers, deviceTypes []map[string]any, denied ...string) *compareNetBox {
 	t.Helper()
-	f := &compareNetBox{manufacturers: manufacturers, deviceTypes: deviceTypes, denied: denied, queries: map[string][]url.Values{}}
+	f := &compareNetBox{
+		manufacturers: manufacturers, deviceTypes: deviceTypes, denied: denied,
+		queries: map[string][]url.Values{}, branchHeaders: map[string][]string{},
+	}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("compare sent %s %s", r.Method, r.URL.Path)
@@ -61,16 +119,44 @@ func newCompareNetBox(t *testing.T, manufacturers, deviceTypes []map[string]any,
 			_ = json.NewEncoder(w).Encode(v)
 		}
 		q := r.URL.Query()
+		branch, inBranch := r.Header[http.CanonicalHeaderKey("X-NetBox-Branch")]
+		header := "main"
+		if inBranch {
+			header = strings.Join(branch, ",")
+		}
 		f.mu.Lock()
 		f.queries[r.URL.Path] = append(f.queries[r.URL.Path], q)
+		f.branchHeaders[r.URL.Path] = append(f.branchHeaders[r.URL.Path], header)
+		status := f.branchStatus(header)
 		f.mu.Unlock()
+		// As netbox-branching's middleware does, before anything but
+		// /api/status/, with Django's plain-text 400.
+		if inBranch && r.URL.Path != "/api/status/" && status != "ready" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("API-Version", "4.7")
+			w.WriteHeader(http.StatusBadRequest)
+			if status == "" {
+				_, _ = io.WriteString(w, "Invalid branch identifier")
+			} else {
+				_, _ = io.WriteString(w, "Selected branch is not ready.")
+			}
+			return
+		}
+		manufacturers, deviceTypes := f.manufacturers, f.deviceTypes
+		if inBranch {
+			manufacturers, deviceTypes = f.branchManufacturers, f.branchDeviceTypes
+		}
 		var objects []map[string]any
 		switch {
 		case r.Header.Get("Authorization") != "Bearer "+checkToken:
 			answer(http.StatusForbidden, map[string]any{"detail": "Invalid v2 token"})
 			return
 		case r.URL.Path == "/api/status/":
-			answer(http.StatusOK, map[string]any{"netbox-version": "4.7.2"})
+			status := map[string]any{"netbox-version": "4.7.2"}
+			if f.plugins != nil {
+				status["plugins"] = f.plugins
+			}
+			answer(http.StatusOK, status)
 			return
 		case r.URL.Path == "/api/authentication-check/":
 			answer(http.StatusOK, map[string]any{"username": "trueup"})
@@ -85,10 +171,18 @@ func newCompareNetBox(t *testing.T, manufacturers, deviceTypes []map[string]any,
 			if f.onManufacturers != nil {
 				f.onManufacturers()
 			}
-			objects = f.manufacturers
+			objects = manufacturers
+		case r.URL.Path == "/api/plugins/branching/branches/" && f.plugins != nil:
+			f.mu.Lock()
+			for _, b := range f.branches {
+				if names, ok := q["name"]; !ok || slices.Contains(names, b["name"].(string)) { //nolint:forcetypeassert // the fake's own branches
+					objects = append(objects, maps.Clone(b))
+				}
+			}
+			f.mu.Unlock()
 		case r.URL.Path == "/api/dcim/device-types/":
 			ids := q["manufacturer_id"]
-			for _, o := range f.deviceTypes {
+			for _, o := range deviceTypes {
 				maker, _ := o["manufacturer"].(map[string]any)
 				id, _ := maker["id"].(int)
 				if len(ids) == 0 || slices.Contains(ids, strconv.Itoa(id)) {
@@ -310,8 +404,9 @@ type compareResult struct {
 	OK     bool   `json:"ok"`
 	Scope  string `json:"scope"`
 	NetBox struct {
-		URL     string `json:"url"`
-		Version string `json:"version"`
+		URL     string         `json:"url"`
+		Version string         `json:"version"`
+		Branch  *branchRefJSON `json:"branch"`
 	} `json:"netbox"`
 	ComparedAt string `json:"compared_at"`
 	Sources    []struct {
@@ -456,7 +551,8 @@ func recordedResults(t *testing.T, dataDir string) map[string]any {
 }
 
 // recordedComparisons returns the comparisons recorded of the source lib, by
-// path, or identity for a derived definition.
+// path, or identity for a derived definition, after the schema ID and a
+// colon for a branch's.
 func recordedComparisons(t *testing.T, dataDir string) map[string]store.RecordedComparison {
 	t.Helper()
 	s, _, err := engine.Open(t.Context(), engine.Config{DataDir: dataDir})
@@ -473,6 +569,9 @@ func recordedComparisons(t *testing.T, dataDir string) map[string]store.Recorded
 		k := c.Path
 		if k == "" {
 			k = c.Identity
+		}
+		if c.Branch != nil {
+			k = c.Branch.SchemaID + ":" + k
 		}
 		out[k] = c
 	}

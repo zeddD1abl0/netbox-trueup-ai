@@ -68,8 +68,8 @@ func TestNetBoxCheckText(t *testing.T) {
 	if r.code != exitOK || r.stderr != "" {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
-	want := `NetBox:  ` + srv.URL + `, release 4.7.2 (API 4.7)
-Token:   v2, for user trueup
+	want := `NetBox:     ` + srv.URL + `, release 4.7.2 (API 4.7)
+Token:      v2, for user trueup
 
 OBJECT TYPE                     ENDPOINT                                  READABLE
 dcim.manufacturer               /api/dcim/manufacturers/                  yes
@@ -113,7 +113,7 @@ func TestNetBoxCheckJSON(t *testing.T) {
 		URL: srv.URL, NetBoxVersion: "4.7.0", APIVersion: "4.7", User: "trueup", TokenVersion: 2,
 		Warnings: []warningJSON{},
 	}
-	for _, rt := range readTypes() {
+	for _, rt := range readTypes(false) {
 		want.ObjectTypes = append(want.ObjectTypes, objectTypeJSON{
 			ObjectType: rt.Name, Endpoint: rt.Endpoint, Readable: !slices.Contains(denied, rt.Endpoint),
 		})
@@ -137,7 +137,7 @@ func TestNetBoxCheckWarnsAboutV1Tokens(t *testing.T) {
 	if r.code != exitOK {
 		t.Fatalf("exit code = %d\nstderr: %s", r.code, r.stderr)
 	}
-	if !strings.Contains(r.stdout, "Token:   v1, for user trueup") || !strings.Contains(r.stdout, "Warnings:\n  netbox.token is a v1 token, which NetBox deprecated in 4.6") {
+	if !strings.Contains(r.stdout, "Token:      v1, for user trueup") || !strings.Contains(r.stdout, "Warnings:\n  netbox.token is a v1 token, which NetBox deprecated in 4.6") {
 		t.Errorf("stdout doesn't show the v1 token and its warning:\n%s", r.stdout)
 	}
 	if !strings.Contains(r.stderr, "level=WARN msg=\"netbox.token is a v1 token") {

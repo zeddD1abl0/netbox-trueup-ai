@@ -38,6 +38,7 @@ A file named by `--config` or `TRUEUP_CONFIG` must exist. TrueUp never looks for
 - The file holds a single YAML document, without tags (such as `!!str`), anchors or aliases. Settings don't need them, and the YAML library's errors about them can quote a value, which could be a secret.
 - Relative paths in the file are relative to the file's own directory.
 - A setting that takes a number, such as `netbox.retries`, can be a YAML number or a string.
+- A setting that is on or off, such as `netbox.branching`, takes `true` or `false`, in any case: a YAML boolean, or a string. Other spellings, such as `yes`, `on` or `1`, are errors.
 - The file can be at most 1 MiB.
 
 ```yaml
@@ -92,6 +93,8 @@ A setting's environment variable is `TRUEUP_` followed by its key in upper case,
 | `netbox.max_requests` | `TRUEUP_NETBOX_MAX_REQUESTS` | `--netbox-max-requests` | `4` | How many requests to NetBox may be in flight at once, from 1 to 32. |
 | `netbox.retries` | `TRUEUP_NETBOX_RETRIES` | `--netbox-retries` | `3` | How many more times a read from NetBox that failed is tried, from 0 to 10. See [Connecting to NetBox](#connecting-to-netbox). |
 | `netbox.max_response_size` | `TRUEUP_NETBOX_MAX_RESPONSE_SIZE` | `--netbox-max-response-size` | `32MiB` | The most TrueUp reads of one answer from NetBox: a number of bytes, or one with `KiB`, `MiB` or `GiB`, from `1MiB` to `1GiB`. A larger answer is an error. |
+| `netbox.branching` | `TRUEUP_NETBOX_BRANCHING` | `--netbox-branching` | `false` | Whether TrueUp works with NetBox's branches, from the netbox-branching plugin. Off, every run reads and writes main, and nothing asks about branches. See [Branches](#branches). |
+| `netbox.protect_main` | `TRUEUP_NETBOX_PROTECT_MAIN` | `--netbox-protect-main` | `true` | With `netbox.branching` on, keeps runs out of main: they target branches only. Off, a run may target main or a branch. It has no effect while `netbox.branching` is off, and setting it then is a warning. |
 | `sources` | `TRUEUP_SOURCES`, as JSON | none | none | The sources to read definitions from. See below. |
 
 ### Sources
@@ -136,8 +139,8 @@ netbox-trueup-ai netbox check
 It connects, refuses a NetBox release other than 4.7.x ([ADR 0003](adr/0003-initial-netbox-target.md)), and confirms the token. Then it reads at most one object of each type that TrueUp reads, and writes nothing:
 
 ```text
-NetBox:  https://netbox.example.com, release 4.7.2 (API 4.7)
-Token:   v2, for user trueup
+NetBox:     https://netbox.example.com, release 4.7.2 (API 4.7)
+Token:      v2, for user trueup
 
 OBJECT TYPE                     ENDPOINT                                  READABLE
 dcim.manufacturer               /api/dcim/manufacturers/                  yes
@@ -147,11 +150,27 @@ dcim.consoleporttemplate        /api/dcim/console-port-templates/         no
 ```
 
 - **The token.** Use a v2 token, `nbt_<key>.<token>`, for a user with the view permission on each object type listed. TrueUp only reads for now, so the token needn't be write-enabled. A permission with constraints counts as readable, but TrueUp then sees only the objects it allows. A v1 token still works with NetBox 4.7, with a warning, until NetBox 5.0 removes them.
-- **Exit codes.** 0 when the token can read every type, and 4 when it can't read some, with the result printed as usual. 1 when the check couldn't be made, such as when NetBox can't be reached, runs another release or refuses the token, and 3 for a configuration problem ([ADR 0018](adr/0018-cli-conventions.md)).
-- **JSON.** With `--output json`, the result is one document whose fields scripts can rely on: `url`, `netbox_version`, `api_version`, `user`, `token_version`, `ok` (whether the token can read every type), `object_types` with `object_type`, `endpoint` and `readable` for each, and `warnings`, each with `message` and, where it is about one setting, `key`.
+- **Exit codes.** 0 when the token can read every type, and 4 when it can't read some, with the result printed as usual. 1 when the check couldn't be made, such as when NetBox can't be reached, runs another release or refuses the token, 2 for `--branch` given wrongly ([Branches](#branches)), and 3 for a configuration problem ([ADR 0018](adr/0018-cli-conventions.md)).
+- **JSON.** With `--output json`, the result is one document whose fields scripts can rely on: `url`, `netbox_version`, `api_version`, `user`, `token_version`, `branching` (`netbox.branching`), `branching_version` (the netbox-branching NetBox has, or null), `branch` (the branch read through, with `id`, `name` and `schema_id`, or null for main), `ok` (whether the token can read every type), `object_types` with `object_type`, `endpoint` and `readable` for each, and `warnings`, each with `message` and, where it is about one setting, `key`.
 - **TLS.** TrueUp verifies NetBox's certificate against the system's trust store, and the certificates in `netbox.ca_bundle` if it is set. Nothing turns verification off. Plain `http` works, with a warning unless NetBox is on this machine.
 - **Proxies and redirects.** For an `https` NetBox, TrueUp uses the proxy that `HTTPS_PROXY` names, except for hosts in `NO_PROXY` and this machine. It never sends plain `http` through a proxy, which would see the token, so an `http` NetBox is reached directly. It never follows a redirect, so that the token can't be led elsewhere: point `netbox.url` at the address NetBox's API answers on. A reverse proxy in front of NetBox must pass the `Authorization` header on; Apache, for one, needs `WSGIPassAuthorization On`. An answer that a proxy or firewall gives instead of NetBox, without NetBox's `API-Version` header, is reported as such, never as a missing permission.
 - **Retries.** A read that fails because NetBox couldn't be reached, didn't answer within `netbox.timeout`, or answered 429, 500, 502, 503 or 504 is tried again, up to `netbox.retries` more times. The waits start at 1 second and double each time up to 30 seconds, with some randomness. When NetBox answers 429 or 503 with `Retry-After`, TrueUp waits as long as it asks, but gives up at once if that is more than a minute. Other failures, such as a certificate that doesn't verify or a TLS handshake the server refuses, aren't retried. Each retry is logged as a warning.
+
+### Branches
+
+NetBox's branches come from [netbox-branching](https://github.com/netboxlabs/netbox-branching), NetBox Labs' plugin, 1.2.x for NetBox 4.7. Two settings decide how TrueUp uses them ([ADR 0033](adr/0033-runs-against-main-or-a-chosen-branch.md), [ADR 0036](adr/0036-read-netbox-through-a-branch-named-on-the-command-line.md)):
+
+```yaml
+netbox:
+  branching: true     # off by default: every run reads and writes main
+  protect_main: true  # on by default: with branching on, runs use branches only
+```
+
+- **Detection.** When TrueUp connects, it reads the plugins NetBox lists in `/api/status/`. With `netbox.branching` on, NetBox must have netbox-branching 1.2.x, or every command that reads NetBox fails. With it off, NetBox having netbox-branching is a warning: branches are there, but TrueUp reads and writes main only.
+- **Main.** With `netbox.protect_main` on, runs target branches only, and `netbox branches` doesn't list main. Comparing still reads main: `compare` without `--branch` compares with main, which is how to see what a merged branch brought.
+- **Choosing a branch.** `netbox check --branch NAME` and `compare --branch NAME` read NetBox through the branch with that name, exactly, case included, without white space at either end, as NetBox stores names. It must be ready: a branch being provisioned, synchronized, migrated or merged, or one merged or archived, can't be read, nor one that doesn't exist; either ends the command with exit code 1, and `netbox-trueup-ai netbox branches` lists those that are ready. A branch that stops being ready while a command reads it, as when someone starts merging it, ends the command too. `--branch` with `netbox.branching` off is a usage error, exit code 2.
+- **The token.** Finding a branch by its name, and listing branches, needs the view permission on `netbox_branching.branch`, which `netbox check` checks with branching on. A permission with constraints doesn't limit the branches the token sees: netbox-branching's list doesn't apply them. Reading objects through a branch needs the same permissions as reading them in main.
+- **TrueUp's own branches.** Nothing in TrueUp creates, changes, merges or deletes a branch yet.
 
 ## Fetching sources
 
@@ -224,7 +243,7 @@ Warnings:
 
 ## The database
 
-TrueUp records what it learns, such as each source's latest fetch, the definitions its format read from it, and the latest comparison of each of them, in a database: SQLite on a single host, which needs no setup, or PostgreSQL, which processes on several hosts can share. `database.url` chooses: unset, or a `sqlite:` URL, for SQLite, and a `postgres:` or `postgresql:` URL for PostgreSQL ([ADR 0011](adr/0011-store-state-with-sqlc-and-goose.md)). Either way, TrueUp creates what it needs, migrates it as [Migrations](#migrations) says, and refuses a database that holds another application's tables in the place of TrueUp's, before it changes anything.
+TrueUp records what it learns, such as each source's latest fetch, the definitions its format read from it, and the latest comparison of each of them, in main and in each branch compared, in a database: SQLite on a single host, which needs no setup, or PostgreSQL, which processes on several hosts can share. `database.url` chooses: unset, or a `sqlite:` URL, for SQLite, and a `postgres:` or `postgresql:` URL for PostgreSQL ([ADR 0011](adr/0011-store-state-with-sqlc-and-goose.md)). Either way, TrueUp creates what it needs, migrates it as [Migrations](#migrations) says, and refuses a database that holds another application's tables in the place of TrueUp's, before it changes anything.
 
 ### SQLite
 

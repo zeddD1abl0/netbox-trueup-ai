@@ -315,6 +315,28 @@ func TestComparisonsMigrationKeepsData(t *testing.T) {
 	check(t, s)
 }
 
+func TestTargetsMigrationKeepsData(t *testing.T) {
+	t.Parallel()
+	database := srv.NewDatabase(t)
+	url := config.NewSecret(srv.URL(pgtest.Superuser, pgtest.SuperuserPassword, database))
+	files, after := storetest.MigrationsUpTo(t, migrationFiles, 5)
+	before, _, err := open(t.Context(), Options{URL: url}, files, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := storetest.FillForTargetsMigration(t, before, sqlOn(before))
+	closeStore(t, before)
+	s, migrated, err := Open(t.Context(), Options{URL: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStore(t, s)
+	if diff := cmp.Diff(after, migrated.Applied); diff != "" {
+		t.Errorf("applied (-want +got):\n%s", diff)
+	}
+	check(t, s)
+}
+
 // sqlOn returns what the shared migration tests need to fill s directly.
 func sqlOn(s *Store) storetest.SQL {
 	return storetest.SQL{Exec: execOn(s), Bytes: func(b []byte) string { return `'\x` + hex.EncodeToString(b) + `'::bytea` }}

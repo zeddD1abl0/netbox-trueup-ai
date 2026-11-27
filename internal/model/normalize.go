@@ -32,7 +32,7 @@ func (f *Field) Normalize(v Value) Value {
 	switch v := v.(type) {
 	case String:
 		if f.Trim {
-			v = String(strings.TrimFunc(string(v), isPythonSpace))
+			v = String(StripSpace(string(v)))
 		}
 		if v == "" && f.BlankIsNull {
 			return Null{}
@@ -55,6 +55,13 @@ func (f *Field) Normalize(v Value) Value {
 	default:
 		return v
 	}
+}
+
+// StripSpace removes white space from both ends of s as Python's str.strip
+// does, which NetBox's string fields, and REST framework's CharField, use to
+// trim input.
+func StripSpace(s string) string {
+	return strings.TrimFunc(s, isPythonSpace)
 }
 
 // isPythonSpace reports whether Python's str.strip, which NetBox's string

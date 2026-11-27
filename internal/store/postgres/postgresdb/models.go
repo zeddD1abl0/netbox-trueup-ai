@@ -33,16 +33,19 @@ type AuditEvent struct {
 }
 
 type Comparison struct {
-	Source        string
-	SourceVersion string
-	ComparedAt    pgtype.Timestamptz
-	NetboxUrl     string
-	NetboxVersion string
-	Outcome       string
-	NetboxID      pgtype.Int8
-	Differences   int64
-	Result        string
-	DefinitionID  int64
+	Source         string
+	SourceVersion  string
+	ComparedAt     pgtype.Timestamptz
+	NetboxUrl      string
+	NetboxVersion  string
+	Outcome        string
+	NetboxID       pgtype.Int8
+	Differences    int64
+	Result         string
+	DefinitionID   int64
+	Branch         string
+	BranchName     pgtype.Text
+	BranchNetboxID pgtype.Int8
 }
 
 type Definition struct {

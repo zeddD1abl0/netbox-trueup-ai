@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,9 @@ type fakeNetBox struct {
 	authorization string // the Authorization header it accepts
 	statusOpen    bool   // /api/status/ answers a request without a token, as with LOGIN_REQUIRED off
 	maxPageSize   int
-	ignoreFilters bool                        // ignores _id filters, as NetBox ignores unknown ones
+	ignoreFilters bool                        // ignores _id and name filters, as NetBox ignores unknown ones
+	plugins       any                         // /api/status/'s plugins, or omitted{} to leave them out
+	branches      map[string]string           // netbox-branching's branches, by schema ID, to their status
 	objects       map[string][]map[string]any // by endpoint, in ID order
 	denied        map[string]bool             // endpoints that answer 403
 	// handle, if set, answers a request first; it returns false to leave
@@ -62,7 +65,14 @@ type request struct {
 	authorization string
 	accept        string
 	userAgent     string
+	// branch is the X-NetBox-Branch header, and hasBranch whether there
+	// was one.
+	branch    string
+	hasBranch bool
 }
+
+// omitted, as a fake's plugins, leaves plugins out of /api/status/.
+type omitted struct{}
 
 func newFake(t *testing.T) *fakeNetBox {
 	t.Helper()
@@ -74,6 +84,8 @@ func newFake(t *testing.T) *fakeNetBox {
 		maxPageSize:   1000,
 		objects:       map[string][]map[string]any{},
 		denied:        map[string]bool{},
+		plugins:       map[string]any{},
+		branches:      map[string]string{},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
@@ -86,10 +98,12 @@ func (f *fakeNetBox) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	_, hasBranch := r.Header[http.CanonicalHeaderKey(branchHeader)]
 	f.mu.Lock()
 	f.requests = append(f.requests, request{
 		path: r.URL.Path, query: r.URL.Query(), authorization: r.Header.Get("Authorization"),
 		accept: r.Header.Get("Accept"), userAgent: r.Header.Get("User-Agent"),
+		branch: r.Header.Get(branchHeader), hasBranch: hasBranch,
 	})
 	handle := f.handle
 	f.mu.Unlock()
@@ -99,6 +113,18 @@ func (f *fakeNetBox) serve(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// As netbox-branching's middleware does, before anything else but
+	// /api/status/, a branch the request names must exist and be ready.
+	if hasBranch && r.URL.Path != statusPath {
+		switch status, ok := f.branches[r.Header.Get(branchHeader)]; {
+		case !ok:
+			f.writeBadRequest(w, "Invalid branch identifier")
+			return
+		case status != BranchReady:
+			f.writeBadRequest(w, "Selected branch is not ready.")
+			return
+		}
+	}
 	// As in NetBox, a token it refuses fails every request, since REST
 	// framework authenticates before it checks permissions. Only a request
 	// without a token can see /api/status/ unauthenticated.
@@ -106,7 +132,11 @@ func (f *fakeNetBox) serve(w http.ResponseWriter, r *http.Request) {
 	authorized := auth == f.authorization
 	switch {
 	case r.URL.Path == statusPath && (authorized || (auth == "" && f.statusOpen)):
-		f.writeJSON(w, http.StatusOK, map[string]any{"netbox-version": f.version, "netbox-full-version": f.version, "plugins": map[string]any{}})
+		status := map[string]any{"netbox-version": f.version, "netbox-full-version": f.version, "plugins": f.plugins}
+		if _, omit := f.plugins.(omitted); omit {
+			delete(status, "plugins")
+		}
+		f.writeJSON(w, http.StatusOK, status)
 	case auth == "":
 		f.writeJSON(w, http.StatusForbidden, map[string]any{"detail": "Authentication credentials were not provided."})
 	case !authorized:
@@ -155,12 +185,20 @@ func (f *fakeNetBox) list(w http.ResponseWriter, r *http.Request) {
 	f.writeJSON(w, http.StatusOK, map[string]any{"count": nil, "next": next, "previous": nil, "results": results})
 }
 
-// matches applies the _id filters in q to obj, unless the fake ignores them.
+// matches applies the _id filters, and name, in q to obj, unless the fake
+// ignores them. name is exact, case included, as NetBox's is for
+// netbox-branching's branches (BranchFilterSet in netbox_branching/filtersets.py).
 func (f *fakeNetBox) matches(obj map[string]any, q url.Values) bool {
 	if f.ignoreFilters {
 		return true
 	}
 	for key, values := range q {
+		if key == "name" {
+			if name, _ := obj["name"].(string); !slices.Contains(values, name) {
+				return false
+			}
+			continue
+		}
 		field, isFilter := strings.CutSuffix(key, "_id")
 		if !isFilter {
 			continue
@@ -182,6 +220,37 @@ func (f *fakeNetBox) writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		f.t.Errorf("fake NetBox: encode answer: %v", err)
 	}
+}
+
+// writeBadRequest answers as Django's HttpResponseBadRequest does, which
+// netbox-branching's middleware answers with: 400, HTML's content type,
+// though the body is plain text, and the headers NetBox's own middleware
+// adds.
+func (f *fakeNetBox) writeBadRequest(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("API-Version", f.apiVersion)
+	w.Header().Set("X-Request-ID", "11111111-2222-3333-4444-555555555555")
+	w.WriteHeader(http.StatusBadRequest)
+	if _, err := io.WriteString(w, text); err != nil {
+		f.t.Errorf("fake NetBox: write answer: %v", err)
+	}
+}
+
+// addBranch stores a branch of netbox-branching, as its list gives it, which
+// the middleware knows by its schema ID.
+func (f *fakeNetBox) addBranch(id int64, name, schemaID, status string) {
+	f.add(branchesPath, []int64{id}, func(int64) map[string]any {
+		return map[string]any{
+			"url": "http://netbox.example.com" + branchesPath + strconv.FormatInt(id, 10) + "/", "display": name,
+			"name": name, "status": map[string]any{"value": status, "label": status},
+			"owner":       map[string]any{"id": 1, "username": "alice", "display": "alice"},
+			"description": "branch " + name, "schema_id": schemaID, "last_sync": "2026-11-26T23:21:32.709369Z",
+			"merged_time": nil, "merged_by": nil, "comments": "", "tags": []any{}, "custom_fields": map[string]any{},
+		}
+	})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.branches[schemaID] = status
 }
 
 // add stores objects at endpoint with the given IDs, each with a name and

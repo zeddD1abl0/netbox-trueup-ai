@@ -192,8 +192,8 @@ Differences:
 | Code | Means |
 | --- | --- |
 | 0 | Every source was read and its comparisons recorded, and every file is valid, whatever the outcomes. |
-| 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers, device types or the component templates compared, or the database can't be opened or written. |
-| 2 | A name given isn't a configured source, `--all` is given with `--manufacturer` or `--model`, or either of them is given white space alone. |
+| 1 | The command couldn't run: NetBox can't be reached, runs another release, refuses the token, or the token can't read manufacturers, device types or the component templates compared, or the database can't be opened or written. Also when `netbox.branching` is on and NetBox hasn't netbox-branching 1.2.x, or the branch `--branch` names doesn't exist, isn't ready, or stops being ready while it is read. |
+| 2 | A name given isn't a configured source, `--all` is given with `--manufacturer` or `--model`, either of them or `--branch` is given white space alone, or `--branch` is given with `netbox.branching` off. |
 | 3 | The configuration is invalid, or `netbox.url` or the token isn't set. |
 | 4 | Some sources couldn't be read, or their comparisons recorded, or some files are invalid, or no source defines a manufacturer `--manufacturer` names or a model `--model` names. The rest is compared and printed as usual. |
 | 5 | Only with `--exit-code`: everything was read, and some objects compared are absent, in conflict or differ, from NetBox or between sources. |
@@ -206,7 +206,37 @@ TrueUp sees what the token's permissions let it see. A token that can't read man
 
 ### Recorded comparisons
 
-Each run records the comparison of each definition it compared with NetBox, alone, in the database, as the latest of that definition, replacing the one before: when it was made, against which version of the source and which NetBox, and the result, as `--output json` prints it. By default, and with `--all`, a run's comparisons replace all of the source's, so the comparisons of definitions NetBox no longer has go; with `--manufacturer` or `--model`, the other definitions keep the comparisons recorded before. Loading a version of the source removes the comparisons of the definitions it no longer holds, and of files that no longer read, which define nothing: the invalid file is reported instead, and its comparison returns when it reads again. A comparison is recorded only against the version of the source that the database holds, as the database loaded it: if the source was fetched or loaded again while it was compared, nothing is recorded for it, and `compare` says so and exits with 4. A definition compared because another source's definition of its object matches NetBox is recorded too, so whether a definition has a record after a default run can depend on the sources compared with it, though what the record says doesn't. An object's comparison isn't recorded: it is built again by merging its definitions' records, as `compare` merges them. The web UI will read these records; for now they are in the `comparisons` table.
+Each run records the comparison of each definition it compared with NetBox, alone, in the database, as the latest of that definition in main, or in the branch compared ([Compare in a branch](#compare-in-a-branch)), replacing the one before there: when it was made, against which version of the source and which NetBox, and the result, as `--output json` prints it. By default, and with `--all`, a run's comparisons replace all of the source's in main or that branch, so the comparisons of definitions NetBox no longer has go; with `--manufacturer` or `--model`, the other definitions keep the comparisons recorded before. Comparisons in main and in each branch are kept apart: comparing in a branch leaves main's as they were. Loading a version of the source removes the comparisons of the definitions it no longer holds, and of files that no longer read, which define nothing: the invalid file is reported instead, and its comparison returns when it reads again. A comparison is recorded only against the version of the source that the database holds, as the database loaded it: if the source was fetched or loaded again while it was compared, nothing is recorded for it, and `compare` says so and exits with 4. A definition compared because another source's definition of its object matches NetBox is recorded too, so whether a definition has a record after a default run can depend on the sources compared with it, though what the record says doesn't. An object's comparison isn't recorded: it is built again by merging its definitions' records, as `compare` merges them. The web UI will read these records; for now they are in the `comparisons` table.
+
+## Compare in a branch
+
+Where NetBox has [netbox-branching](https://github.com/netboxlabs/netbox-branching) 1.2.x, TrueUp can read NetBox through one of its branches, once `netbox.branching` is on ([Branches](configuration.md#branches)):
+
+```sh
+export TRUEUP_NETBOX_BRANCHING=true
+netbox-trueup-ai netbox branches
+```
+
+```text
+NetBox:     https://netbox.example.com, release 4.7.2
+Branching:  on, netbox-branching 1.2.4; main is protected (netbox.protect_main), so runs use branches only
+
+TARGET  NAME              SCHEMA ID  OWNER  LAST SYNC             DESCRIPTION
+branch  lab-device-types  f3ih5j6p   alice  2026-11-26T23:21:32Z  New Juniper types
+
+2 other branches aren't ready: 1 merged, 1 merging. --all lists them.
+```
+
+`netbox branches` lists what a run can target: the branches that are ready, and main where `netbox.protect_main` is off, or `netbox.branching` is. `--all` lists every branch with its status, those that aren't ready marked `-` in TARGET. `--output json` prints `url`, `netbox_version`, `branching`, `branching_version`, `protect_main`, `main` (whether main is a target), `branches`, each with `id`, `name`, `schema_id`, `status`, `target`, `owner`, `description` and `last_sync`, `not_ready`, the count of the others by status, and `warnings`. It exits with 1 when the token can't view NetBox's branches, which needs the view permission on `netbox_branching.branch`.
+
+Then read through a branch by its name:
+
+```sh
+netbox-trueup-ai netbox check --branch lab-device-types
+netbox-trueup-ai compare --branch lab-device-types
+```
+
+`netbox check --branch` checks that every object type can be read through the branch. `compare --branch` compares with what the branch holds, and says so: `NetBox:  https://netbox.example.com, release 4.7.2, branch "lab-device-types" (f3ih5j6p)`. Without `--branch`, and with branching on, it compares with main, even while main is protected, and says `main`. The branch must exist and be ready, or the command exits with 1; if it stops being ready while it is read, such as when someone starts merging it, the command stops with an error that says so. `--branch` with branching off exits with 2.
 
 ## See who changed what
 
@@ -235,7 +265,7 @@ With `--output json`, `compare` prints one document whose fields scripts can rel
 
 - `ok`: whether every source was read and recorded, and every file is valid;
 - `scope`: what was compared: `netbox`, what NetBox has, by default; `selection`, what `--manufacturer` and `--model` name; or `all`;
-- `netbox`: its `url` and `version`; and `compared_at`, in UTC;
+- `netbox`: its `url`, `version` and `branch`, the branch compared in, with its `id`, `name` and `schema_id`, or null for main; and `compared_at`, in UTC;
 - `sources`: for each, `name`, `format`, `ref`, `version`, `ok`, `error`, `files`, `invalid_files`, `definitions` and `compared`, of which, by default, `definitions` − `compared` is how many NetBox hasn't got, the counts of the definitions compared by their own outcome, `in_step`, `differing`, `absent` and `conflicts`, and `problems`, as `list` gives them;
 - `counts`: the objects compared, `compared`, and by their outcome, `in_step`, `differing`, `absent` and `conflicts`;
 - `objects`: each object compared, with every definition of it, in the order of their first definitions, sources in the configuration's order;

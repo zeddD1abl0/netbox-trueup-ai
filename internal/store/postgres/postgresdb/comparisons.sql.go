@@ -15,7 +15,7 @@ const deleteComparisons = `-- name: DeleteComparisons :exec
 DELETE FROM comparisons WHERE source = $1
 `
 
-// Deletes every comparison of a source's definitions.
+// Deletes every comparison of a source's definitions, in every target.
 func (q *Queries) DeleteComparisons(ctx context.Context, source string) error {
 	_, err := q.db.Exec(ctx, deleteComparisons, source)
 	return err
@@ -32,9 +32,46 @@ type DeleteComparisonsOfParams struct {
 }
 
 // Deletes the comparisons of those of a source's definitions with the IDs
-// given.
+// given, in every target.
 func (q *Queries) DeleteComparisonsOf(ctx context.Context, arg DeleteComparisonsOfParams) error {
 	_, err := q.db.Exec(ctx, deleteComparisonsOf, arg.Source, arg.Ids)
+	return err
+}
+
+const deleteTargetComparisons = `-- name: DeleteTargetComparisons :exec
+DELETE FROM comparisons WHERE source = $1 AND branch = $2
+`
+
+type DeleteTargetComparisonsParams struct {
+	Source string
+	Branch string
+}
+
+// Deletes every comparison of a source's definitions in one target: a
+// branch, by its schema ID, or main, as ”.
+func (q *Queries) DeleteTargetComparisons(ctx context.Context, arg DeleteTargetComparisonsParams) error {
+	_, err := q.db.Exec(ctx, deleteTargetComparisons, arg.Source, arg.Branch)
+	return err
+}
+
+const deleteTargetComparisonsOf = `-- name: DeleteTargetComparisonsOf :exec
+DELETE FROM comparisons
+WHERE
+    source = $1
+    AND branch = $2
+    AND definition_id = ANY($3::bigint[])
+`
+
+type DeleteTargetComparisonsOfParams struct {
+	Source string
+	Branch string
+	Ids    []int64
+}
+
+// Deletes the comparisons of those of a source's definitions with the IDs
+// given, in one target: a branch, by its schema ID, or main, as ”.
+func (q *Queries) DeleteTargetComparisonsOf(ctx context.Context, arg DeleteTargetComparisonsOfParams) error {
+	_, err := q.db.Exec(ctx, deleteTargetComparisonsOf, arg.Source, arg.Branch, arg.Ids)
 	return err
 }
 
@@ -51,46 +88,53 @@ func (q *Queries) GetSnapshotVersion(ctx context.Context, source string) (string
 }
 
 type InsertComparisonsParams struct {
-	Source        string
-	DefinitionID  int64
-	SourceVersion string
-	ComparedAt    pgtype.Timestamptz
-	NetboxUrl     string
-	NetboxVersion string
-	Outcome       string
-	NetboxID      pgtype.Int8
-	Differences   int64
-	Result        string
+	Source         string
+	DefinitionID   int64
+	Branch         string
+	BranchName     pgtype.Text
+	BranchNetboxID pgtype.Int8
+	SourceVersion  string
+	ComparedAt     pgtype.Timestamptz
+	NetboxUrl      string
+	NetboxVersion  string
+	Outcome        string
+	NetboxID       pgtype.Int8
+	Differences    int64
+	Result         string
 }
 
 const listComparisons = `-- name: ListComparisons :many
 SELECT
     d.id, d.object_type, d.path, d.identity,
+    c.branch, c.branch_name, c.branch_netbox_id,
     c.source_version, c.compared_at, c.netbox_url, c.netbox_version,
     c.outcome, c.netbox_id, c.differences, c.result
 FROM comparisons AS c
 INNER JOIN definitions AS d ON d.source = c.source AND d.id = c.definition_id
 WHERE c.source = $1
-ORDER BY d.object_type, d.path, d.identity
+ORDER BY c.branch, d.object_type, d.path, d.identity
 `
 
 type ListComparisonsRow struct {
-	ID            int64
-	ObjectType    string
-	Path          string
-	Identity      string
-	SourceVersion string
-	ComparedAt    pgtype.Timestamptz
-	NetboxUrl     string
-	NetboxVersion string
-	Outcome       string
-	NetboxID      pgtype.Int8
-	Differences   int64
-	Result        string
+	ID             int64
+	ObjectType     string
+	Path           string
+	Identity       string
+	Branch         string
+	BranchName     pgtype.Text
+	BranchNetboxID pgtype.Int8
+	SourceVersion  string
+	ComparedAt     pgtype.Timestamptz
+	NetboxUrl      string
+	NetboxVersion  string
+	Outcome        string
+	NetboxID       pgtype.Int8
+	Differences    int64
+	Result         string
 }
 
-// Returns the comparisons of a source's definitions, each with its
-// definition's key.
+// Returns the comparisons of a source's definitions, in every target, each
+// with its definition's key: main's first, then each branch's.
 func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListComparisonsRow, error) {
 	rows, err := q.db.Query(ctx, listComparisons, source)
 	if err != nil {
@@ -105,6 +149,9 @@ func (q *Queries) ListComparisons(ctx context.Context, source string) ([]ListCom
 			&i.ObjectType,
 			&i.Path,
 			&i.Identity,
+			&i.Branch,
+			&i.BranchName,
+			&i.BranchNetboxID,
 			&i.SourceVersion,
 			&i.ComparedAt,
 			&i.NetboxUrl,

@@ -271,10 +271,14 @@ func checkListing(endpoint string, query url.Values) error {
 // framework's DjangoModelPermissions, which TokenPermissions in
 // netbox/netbox/api/authentication.py extends, checks it before any object
 // is read. A view permission with constraints counts as one, although the
-// token then sees only some of the objects.
+// token then sees only some of the objects. netbox-branching's list of
+// branches is read without the branch header, as Branches reads it.
 func (c *Client) CanRead(ctx context.Context, endpoint string) (bool, error) {
 	if err := checkListing(endpoint, nil); err != nil {
 		return false, err
+	}
+	if endpoint == branchesPath {
+		c = c.onMain()
 	}
 	q := url.Values{"brief": {"true"}, "limit": {"1"}, "start": {"0"}}
 	var p page

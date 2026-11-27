@@ -35,6 +35,7 @@ func newCompareCommand(a *app) *cobra.Command {
 		fetch  bool
 		signal bool
 		sel    compareSelection
+		branch string
 	)
 	cmd := &cobra.Command{
 		Use:   "compare [source...]",
@@ -99,11 +100,17 @@ the device type, exactly, and compared field by field in the same way. A
 template the definition has and NetBox hasn't is one difference. A template
 only NetBox has is listed, but isn't a difference: TrueUp never removes one.
 
+It compares with NetBox's main, or with --branch, reads NetBox through that
+branch, from netbox-branching, which must be ready, and needs
+netbox.branching on. Main is read even while netbox.protect_main is on,
+which keeps runs out of main, since comparing only reads.
+
 The comparison of each definition compared with NetBox, alone, is recorded
-in TrueUp's database, as the latest, against the version of the source
-compared. By default, and
-with --all, the source's other comparisons are removed; with --manufacturer
-or --model, they are kept. NetBox is only read. The token sees what its
+in TrueUp's database, as the latest in main or in the branch read, against
+the version of the source compared. By default, and with --all, the
+source's other comparisons in the same main or branch are removed; with
+--manufacturer or --model, they are kept. Comparisons in main and in each
+branch are kept apart. NetBox is only read. The token sees what its
 permissions let it see: where they have constraints, the objects they hide
 show as absent.
 
@@ -118,10 +125,12 @@ Exit codes:
      read manufacturers, device types or the component templates compared
      ('netbox-trueup-ai netbox check' says which), when NetBox changes while
      it is read, such as a device type deleted, or when the database can't
-     be opened or written.
+     be opened or written. Also when netbox.branching is on and NetBox
+     hasn't netbox-branching ` + netbox.SupportedBranching + `.x, or the branch --branch names doesn't
+     exist, isn't ready, or stops being ready while it is read.
   2  A name given isn't a configured source, --all is given with
-     --manufacturer or --model, or either of them is given white space
-     alone.
+     --manufacturer or --model, or either of them, or --branch, is given
+     white space alone, or --branch is given with netbox.branching off.
   3  The configuration is invalid, no sources are configured, netbox.url
      or netbox.token isn't set, or database.url names a database this
      release can't use.
@@ -151,9 +160,13 @@ Exit codes:
 			if err := requireNetBox(cfg.Settings.NetBox); err != nil {
 				return err
 			}
-			result, err := a.runCompare(cmd.Context(), cfg, sources, fetch, sel, out != outputJSON)
+			name, err := branchName(cmd, branch, cfg.Settings.NetBox)
 			if err != nil {
 				return err
+			}
+			result, err := a.runCompare(cmd.Context(), cfg, sources, fetch, sel, name, out != outputJSON)
+			if err != nil {
+				return withBranchHint(err)
 			}
 			if out == outputJSON {
 				err = writeCompareJSON(cmd.OutOrStdout(), result)
@@ -180,6 +193,7 @@ Exit codes:
 	cmd.Flags().StringArrayVar(&sel.models, "model", nil,
 		"compare only the device types with this model, as NetBox would store it, and their manufacturers; repeat it for more")
 	cmd.Flags().BoolVar(&sel.all, "all", false, "compare every definition, not only those NetBox has")
+	addBranchFlag(cmd, &branch)
 	return cmd
 }
 
@@ -261,9 +275,11 @@ type compareJSON struct {
 	// objects are the Objects, kept for text output only, with only the
 	// rows that differ, since they take more memory than their JSON;
 	// Objects are kept for JSON output only. unknown says which names given
-	// to --manufacturer and --model no source read defines.
-	objects []compare.Object
-	unknown []string
+	// to --manufacturer and --model no source read defines. branching is
+	// netbox.branching, which says whether text output names main.
+	objects   []compare.Object
+	unknown   []string
+	branching bool
 }
 
 // compareCountsJSON counts objects, or a source's definitions, by outcome.
@@ -311,6 +327,8 @@ func (o objectOut) MarshalJSON() ([]byte, error) {
 type compareNetBoxJSON struct {
 	URL     string `json:"url"`
 	Version string `json:"version"`
+	// Branch is the branch read through, or null for main.
+	Branch *branchRefJSON `json:"branch"`
 }
 
 type compareSourceJSON struct {
@@ -381,12 +399,12 @@ type sourceCompared struct {
 	whole   []compare.Definition
 }
 
-// runCompare opens the database, connects to NetBox, fetches the sources if
-// asked, compares them with NetBox, and records the comparisons, keeping
-// the results for text output if forText, and their JSON otherwise. It
-// closes the database before it returns, so that nothing is printed if
-// closing it fails.
-func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, sel compareSelection, forText bool) (_ compareJSON, err error) {
+// runCompare opens the database, connects to NetBox, through the branch named
+// branch unless it is empty, fetches the sources if asked, compares them with
+// NetBox, and records the comparisons, keeping the results for text output
+// if forText, and their JSON otherwise. It closes the database before it
+// returns, so that nothing is printed if closing it fails.
+func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []config.Source, fetch bool, sel compareSelection, branch string, forText bool) (_ compareJSON, err error) {
 	db, _, err := a.openStore(ctx, cfg)
 	if err != nil {
 		return compareJSON{}, err
@@ -401,6 +419,11 @@ func (a *app) runCompare(ctx context.Context, cfg *config.Config, sources []conf
 	c, err := connectNetBox(ctx, cfg, a.logger)
 	if err != nil {
 		return compareJSON{}, err
+	}
+	if branch != "" {
+		if c, err = inBranch(ctx, c, branch); err != nil {
+			return compareJSON{}, err
+		}
 	}
 	fetchErrors := map[string]string{}
 	if fetch {
@@ -430,7 +453,10 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 ) (compareJSON, error) {
 	specs := dcim.Specs()
 	scope := sel.scope()
-	result := compareJSON{OK: true, Scope: scope, Sources: []compareSourceJSON{}, Objects: []objectOut{}, Warnings: []warningJSON{}}
+	result := compareJSON{
+		OK: true, Scope: scope, Sources: []compareSourceJSON{}, Objects: []objectOut{}, Warnings: []warningJSON{},
+		branching: cfg.Settings.NetBox.Branching,
+	}
 	var compared []sourceCompared
 	for _, s := range sources {
 		row := &compareSourceJSON{Name: s.Name, Format: s.Format, Problems: []problemJSON{}}
@@ -579,7 +605,7 @@ func (a *app) compareSources(ctx context.Context, cfg *config.Config, db store.S
 		}
 	}
 	info := c.Info()
-	result.NetBox = compareNetBoxJSON{URL: info.URL, Version: info.Version}
+	result.NetBox = compareNetBoxJSON{URL: info.URL, Version: info.Version, Branch: branchRef(info)}
 	// To the microsecond, as the database records it.
 	result.ComparedAt = time.Now().UTC().Truncate(time.Microsecond)
 
@@ -1154,6 +1180,9 @@ func recordComparisons(ctx context.Context, db store.Store, sc sourceCompared, s
 		NetBoxVersion: run.NetBox.Version,
 		Whole:         scope != scopeSelection,
 	}
+	if b := run.NetBox.Branch; b != nil {
+		rec.Branch = &store.Branch{SchemaID: b.SchemaID, Name: b.Name, NetBoxID: b.ID}
+	}
 	for i, r := range recorded {
 		rec.Comparisons = append(rec.Comparisons, store.Comparison{
 			DefinitionID: sc.rows[sc.chosen[i]].ID, Outcome: string(r.outcome), NetBoxID: r.netboxID, Differences: r.differences, Result: r.json,
@@ -1328,7 +1357,7 @@ func readError(s *model.Spec, err error) error {
 
 func writeCompareText(w io.Writer, r compareJSON) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "NetBox:  %s, release %s\n\n", cell(r.NetBox.URL), cell(r.NetBox.Version))
+	fmt.Fprintf(&b, "NetBox:  %s, release %s%s\n\n", cell(r.NetBox.URL), cell(r.NetBox.Version), targetText(r))
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "SOURCE\tREF\tVERSION\tCOMPARED\tIN STEP\tDIFFERING\tABSENT\tCONFLICTS\tINVALID\tWARNINGS")
 	for _, s := range r.Sources {
@@ -1500,6 +1529,19 @@ func writeCompareText(w io.Writer, r compareJSON) error {
 }
 
 // countsText says how many objects were compared, by outcome.
+// targetText names, with netbox.branching on, the target compared: main, or
+// the branch read through.
+func targetText(r compareJSON) string {
+	switch {
+	case r.NetBox.Branch != nil:
+		return fmt.Sprintf(", branch %s (%s)", strconv.Quote(r.NetBox.Branch.Name), r.NetBox.Branch.SchemaID)
+	case r.branching:
+		return ", main"
+	default:
+		return ""
+	}
+}
+
 func countsText(c compareCountsJSON) string {
 	objects := "objects"
 	if c.Compared == 1 {

@@ -41,6 +41,7 @@ An architecture decision record (ADR) captures one significant decision: the pro
 | [0033](0033-runs-against-main-or-a-chosen-branch.md) | Sync against main or a chosen NetBox branch, with branches turned on by settings, and leave merging to people | Accepted; the test NetBox stands in for neither a refused merge nor a protected main since [0035](0035-test-against-netbox-with-and-without-branching.md) |
 | [0034](0034-audit-what-changes-what-trueup-manages.md) | Audit what changes what TrueUp manages, as the operating system user at the command line, in the change's own transaction | Accepted |
 | [0035](0035-test-against-netbox-with-and-without-branching.md) | Test against NetBox with and without netbox-branching, from one Compose file, with the plugin pinned by hash into an image built locally | Accepted |
+| [0036](0036-read-netbox-through-a-branch-named-on-the-command-line.md) | Read NetBox through a branch named on the command line, and keep a comparison for each target | Accepted |
 
 ## When to write one
 

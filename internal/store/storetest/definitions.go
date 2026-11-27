@@ -796,6 +796,58 @@ func FillForComparisonsMigration(t *testing.T, s store.Store, db SQL) (check fun
 	}
 }
 
+// FillForTargetsMigration records, in a store at schema version 5, in SQL
+// that db runs, since the store records them otherwise now: a load of a
+// source's definitions, and comparisons of two of them, from before
+// comparisons named their target. It returns a function that checks that a
+// store, migrated since, keeps them as main's, and that a whole run in a
+// branch then leaves them.
+func FillForTargetsMigration(t *testing.T, s store.Store, db SQL) (check func(*testing.T, store.Store)) {
+	t.Helper()
+	recordInSQL(t, db, success("lib", "v1", t0, "Dell/a.yaml", "Dell/b.yaml"))
+	const at = "2026-10-26T01:02:03.456789Z"
+	db.Exec(t, fmt.Sprintf(`INSERT INTO definition_loads (
+		source, started_at, version, reader, settings, error,
+		loaded_at, loaded_version, loaded_reader, loaded_settings, files, invalid_files
+	) VALUES ('lib', '%[1]s', 'v1', '%[2]s', '%[3]s', NULL, '%[1]s', 'v1', '%[2]s', '%[3]s', 2, 0)`, at, reader, settings))
+	defs := []store.Definition{definition("", "Dell", "v1"), definition("Dell/a.yaml", "A", "v1"), definition("Dell/b.yaml", "B", "v1")}
+	for i, d := range defs {
+		db.Exec(t, fmt.Sprintf(`INSERT INTO definitions (
+			source, object_type, path, identity, seq, manufacturer, model, slug, part_number, search, digest, definition, unique_values
+		) VALUES ('lib', '%s', '%s', '%s', %d, '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')`,
+			d.ObjectType, d.Path, d.Identity, i, d.Manufacturer, d.Model, d.Slug, d.PartNumber, d.SearchText(), d.Digest, d.JSON, d.UniqueValues))
+	}
+	for _, c := range []struct{ path, outcome, netboxID, result string }{
+		{"", "candidate", "3", `{"n":1}`},
+		{"Dell/b.yaml", "absent", "NULL", `{"n":3}`},
+	} {
+		db.Exec(t, fmt.Sprintf(`INSERT INTO comparisons (
+			source, definition_id, source_version, compared_at,
+			netbox_url, netbox_version, outcome, netbox_id, differences, result
+		) SELECT 'lib', id, 'v1', '2026-10-26T01:02:04.456789Z', 'https://netbox.example.com/', '4.7.2', '%s', %s, 1, '%s'
+		FROM definitions WHERE source = 'lib' AND path = '%s'`, c.outcome, c.netboxID, c.result, c.path))
+	}
+	return func(t *testing.T, s store.Store) {
+		t.Helper()
+		unique, err := s.UniqueValues(t.Context(), "lib")
+		if err != nil {
+			t.Fatal(err)
+		}
+		l := loaded{status: unique.LoadStatus, ids: idsOf(t, unique.Definitions)}
+		r := l.run(time.Date(2026, 10, 26, 1, 2, 4, 456789000, time.UTC), false,
+			l.comparison(defs[2].DefinitionKey, "absent", 0), l.comparison(defs[0].DefinitionKey, "candidate", 3))
+		want := recorded(r, l.comparison(defs[2].DefinitionKey, "absent", 0), l.comparison(defs[0].DefinitionKey, "candidate", 3))
+		want[0].Result, want[0].Differences = []byte(`{"n":3}`), 1
+		want[1].Result, want[1].Differences = []byte(`{"n":1}`), 1
+		checkComparisons(t, s, "lib", want)
+
+		// Main's are main's: a whole run in a branch leaves them.
+		lab := inBranch(l.run(t0.Add(time.Minute), true, l.comparison(defs[1].DefinitionKey, "candidate", 9)), "lab00001", "lab", 7)
+		recordComparisons(t, s, lab)
+		checkComparisons(t, s, "lib", slicesConcat(want, recorded(lab, l.comparison(defs[1].DefinitionKey, "candidate", 9))))
+	}
+}
+
 // MigrationsUpTo returns an engine's migrations, from the directory
 // migrations in files, up to version, for opening a database at that
 // version, and the migrations after it.

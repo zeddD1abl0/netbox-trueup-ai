@@ -259,6 +259,7 @@ func TestLoadSettings(t *testing.T) {
 		NetBox: NetBox{
 			URL:     "https://netbox.example.com",
 			Timeout: 30 * time.Second, MaxRequests: 4, Retries: 3, MaxResponseSize: 32 << 20,
+			ProtectMain: true,
 		},
 		Sources: []Source{},
 	}
@@ -281,7 +282,7 @@ func TestLoadNetBoxClientSettings(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: NetBox{Timeout: 30 * time.Second, MaxRequests: 4, Retries: 3, MaxResponseSize: 32 << 20},
+			want: NetBox{Timeout: 30 * time.Second, MaxRequests: 4, Retries: 3, MaxResponseSize: 32 << 20, ProtectMain: true},
 		},
 		{
 			name: "numbers in the file",
@@ -292,7 +293,7 @@ func TestLoadNetBoxClientSettings(t *testing.T) {
 				},
 				args: withConfig,
 			},
-			want:      NetBox{CABundle: "{dir}/ca.pem", Timeout: 2 * time.Minute, MaxRequests: 8, Retries: 0, MaxResponseSize: 1 << 20},
+			want:      NetBox{CABundle: "{dir}/ca.pem", Timeout: 2 * time.Minute, MaxRequests: 8, Retries: 0, MaxResponseSize: 1 << 20, ProtectMain: true},
 			wantCerts: 2,
 		},
 		{
@@ -302,7 +303,7 @@ func TestLoadNetBoxClientSettings(t *testing.T) {
 				args:  []string{"--netbox-ca-bundle", "{dir}/ca.pem", "--netbox-retries", "10", "--netbox-max-requests", "32"},
 				env:   []string{"TRUEUP_NETBOX_TIMEOUT=1500ms", "TRUEUP_NETBOX_MAX_RESPONSE_SIZE=1 GiB"},
 			},
-			want:      NetBox{CABundle: "{dir}/ca.pem", Timeout: 1500 * time.Millisecond, MaxRequests: 32, Retries: 10, MaxResponseSize: 1 << 30},
+			want:      NetBox{CABundle: "{dir}/ca.pem", Timeout: 1500 * time.Millisecond, MaxRequests: 32, Retries: 10, MaxResponseSize: 1 << 30, ProtectMain: true},
 			wantCerts: 1,
 		},
 	}
@@ -830,6 +831,30 @@ func TestLoadProblems(t *testing.T) {
 			},
 		},
 		{
+			name: "booleans spelt otherwise",
+			in: input{
+				files: map[string]string{"config.yaml": "netbox:\n  branching: yes\n  protect_main: 1\n"},
+				args:  withConfig,
+			},
+			want: []string{
+				`netbox.branching (file {dir}/config.yaml): "yes" is neither true nor false`,
+				"netbox.protect_main (file {dir}/config.yaml): must be true or false",
+			},
+		},
+		{
+			name: "booleans spelt otherwise in the environment and on a flag",
+			in:   input{env: []string{"TRUEUP_NETBOX_BRANCHING=1"}, args: []string{"--netbox-protect-main=on"}},
+			want: []string{
+				`netbox.branching (env TRUEUP_NETBOX_BRANCHING): "1" is neither true nor false`,
+				`netbox.protect_main (flag --netbox-protect-main): "on" is neither true nor false`,
+			},
+		},
+		{
+			name: "a boolean that is a list",
+			in:   input{files: map[string]string{"config.yaml": "netbox:\n  branching: [true]\n"}, args: withConfig},
+			want: []string{"netbox.branching (file {dir}/config.yaml): must be true or false"},
+		},
+		{
 			name: "a CA bundle that is missing",
 			in:   input{env: []string{"TRUEUP_NETBOX_CA_BUNDLE={dir}/missing.pem"}},
 			want: []string{"netbox.ca_bundle (env TRUEUP_NETBOX_CA_BUNDLE): read file: open {dir}/missing.pem: no such file or directory"},
@@ -1074,6 +1099,118 @@ func TestLoadNetBoxURL(t *testing.T) {
 			}
 			if diff := cmp.Diff(want, cfg.Warnings); diff != "" {
 				t.Errorf("warnings (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestLoadBranchingSettings(t *testing.T) {
+	t.Parallel()
+
+	const noEffect = "netbox.protect_main has no effect while netbox.branching is off: every run reads and writes main"
+	file := func(yaml string) input {
+		return input{files: map[string]string{"config.yaml": "netbox:\n" + yaml}, args: withConfig}
+	}
+	tests := []struct {
+		name                      string
+		in                        input
+		wantBranching, wantMain   bool
+		wantWarning               string
+		wantBranchingE, wantMainE summary
+	}{
+		{
+			name: "defaults", wantMain: true,
+			wantBranchingE: summary{Value: "false", Origin: OriginDefault},
+			wantMainE:      summary{Value: "true", Origin: OriginDefault},
+		},
+		{
+			name: "YAML booleans", in: file("  branching: true\n  protect_main: false\n"), wantBranching: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginFile, Name: "netbox.branching"},
+			wantMainE:      summary{Value: "false", Origin: OriginFile, Name: "netbox.protect_main"},
+		},
+		{
+			name: "YAML booleans in other cases", in: file("  branching: TRUE\n  protect_main: True\n"), wantBranching: true, wantMain: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginFile, Name: "netbox.branching"},
+			wantMainE:      summary{Value: "true", Origin: OriginFile, Name: "netbox.protect_main"},
+		},
+		{
+			name: "YAML strings", in: file("  branching: \"True\"\n  protect_main: 'FALSE'\n"), wantBranching: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginFile, Name: "netbox.branching"},
+			wantMainE:      summary{Value: "false", Origin: OriginFile, Name: "netbox.protect_main"},
+		},
+		{
+			name: "an empty value is unset", in: input{env: []string{"TRUEUP_NETBOX_BRANCHING=", "TRUEUP_NETBOX_PROTECT_MAIN="}}, wantMain: true,
+			wantBranchingE: summary{Value: "false", Origin: OriginDefault},
+			wantMainE:      summary{Value: "true", Origin: OriginDefault},
+		},
+		{
+			name: "the environment, in any case", in: input{env: []string{"TRUEUP_NETBOX_BRANCHING=TrUe", "TRUEUP_NETBOX_PROTECT_MAIN=false"}}, wantBranching: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginEnv, Name: "TRUEUP_NETBOX_BRANCHING"},
+			wantMainE:      summary{Value: "false", Origin: OriginEnv, Name: "TRUEUP_NETBOX_PROTECT_MAIN"},
+		},
+		{
+			name: "a flag alone means true", in: input{args: []string{"--netbox-branching"}}, wantBranching: true, wantMain: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginFlag, Name: "--netbox-branching"},
+			wantMainE:      summary{Value: "true", Origin: OriginDefault},
+		},
+		{
+			name: "flags with values", in: input{args: []string{"--netbox-branching=true", "--netbox-protect-main=FALSE"}}, wantBranching: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginFlag, Name: "--netbox-branching"},
+			wantMainE:      summary{Value: "false", Origin: OriginFlag, Name: "--netbox-protect-main"},
+		},
+		{
+			name: "a flag over the environment over the file",
+			in: input{
+				files: map[string]string{"config.yaml": "netbox:\n  branching: false\n  protect_main: false\n"},
+				args:  append([]string{"--netbox-branching"}, withConfig...),
+				env:   []string{"TRUEUP_NETBOX_BRANCHING=false", "TRUEUP_NETBOX_PROTECT_MAIN=true"},
+			},
+			wantBranching: true, wantMain: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginFlag, Name: "--netbox-branching"},
+			wantMainE:      summary{Value: "true", Origin: OriginEnv, Name: "TRUEUP_NETBOX_PROTECT_MAIN"},
+		},
+		{
+			name: "protect_main set in the file, branching off", in: file("  protect_main: true\n"), wantMain: true, wantWarning: noEffect,
+			wantBranchingE: summary{Value: "false", Origin: OriginDefault},
+			wantMainE:      summary{Value: "true", Origin: OriginFile, Name: "netbox.protect_main"},
+		},
+		{
+			name: "protect_main turned off in the environment, branching off", in: input{env: []string{"TRUEUP_NETBOX_PROTECT_MAIN=false"}}, wantWarning: noEffect,
+			wantBranchingE: summary{Value: "false", Origin: OriginDefault},
+			wantMainE:      summary{Value: "false", Origin: OriginEnv, Name: "TRUEUP_NETBOX_PROTECT_MAIN"},
+		},
+		{
+			name: "protect_main set by a flag, branching turned off", in: input{args: []string{"--netbox-protect-main", "--netbox-branching=false"}}, wantMain: true, wantWarning: noEffect,
+			wantBranchingE: summary{Value: "false", Origin: OriginFlag, Name: "--netbox-branching"},
+			wantMainE:      summary{Value: "true", Origin: OriginFlag, Name: "--netbox-protect-main"},
+		},
+		{
+			name: "protect_main set, branching on", in: input{env: []string{"TRUEUP_NETBOX_BRANCHING=true", "TRUEUP_NETBOX_PROTECT_MAIN=true"}}, wantBranching: true, wantMain: true,
+			wantBranchingE: summary{Value: "true", Origin: OriginEnv, Name: "TRUEUP_NETBOX_BRANCHING"},
+			wantMainE:      summary{Value: "true", Origin: OriginEnv, Name: "TRUEUP_NETBOX_PROTECT_MAIN"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, dir, err := tt.in.load(t)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			nb := cfg.Settings.NetBox
+			if nb.Branching != tt.wantBranching || nb.ProtectMain != tt.wantMain {
+				t.Errorf("Branching, ProtectMain = %v, %v, want %v, %v", nb.Branching, nb.ProtectMain, tt.wantBranching, tt.wantMain)
+			}
+			var wantWarnings []Warning
+			if tt.wantWarning != "" {
+				wantWarnings = []Warning{{Key: "netbox.protect_main", Message: tt.wantWarning}}
+			}
+			if diff := cmp.Diff(wantWarnings, cfg.Warnings); diff != "" {
+				t.Errorf("warnings (-want +got):\n%s", diff)
+			}
+			got, want := summarize(cfg, map[string]summary{"netbox.branching": tt.wantBranchingE, "netbox.protect_main": tt.wantMainE}, dir)
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("entries (-want +got):\n%s", diff)
 			}
 		})
 	}

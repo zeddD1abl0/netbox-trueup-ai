@@ -210,6 +210,8 @@ netbox.timeout             default                     30s
 netbox.max_requests        default                     4
 netbox.retries             default                     3
 netbox.max_response_size   default                     32MiB
+netbox.branching           default                     false
+netbox.protect_main        default                     true
 sources[0].name            file                        devicetype-library
 sources[0].kind            file                        git
 sources[0].url             file                        https://github.com/netbox-community/devicetype-library.git
@@ -256,6 +258,8 @@ func TestConfigShowJSON(t *testing.T) {
 			{Key: "netbox.max_requests", Value: "4", Origin: "default"},
 			{Key: "netbox.retries", Value: "3", Origin: "default"},
 			{Key: "netbox.max_response_size", Value: "32MiB", Origin: "default"},
+			{Key: "netbox.branching", Value: "false", Origin: "default"},
+			{Key: "netbox.protect_main", Value: "true", Origin: "default"},
 			{
 				Key: "sources", Origin: "file", Name: "sources",
 				Value: []any{map[string]any{
@@ -298,6 +302,8 @@ netbox.timeout            default  30s
 netbox.max_requests       default  4
 netbox.retries            default  3
 netbox.max_response_size  default  32MiB
+netbox.branching          default  false
+netbox.protect_main       default  true
 sources                   default  []
 `
 	if diff := cmp.Diff(want, r.stdout); diff != "" {
