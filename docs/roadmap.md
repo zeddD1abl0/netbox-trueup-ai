@@ -217,9 +217,9 @@ Steps 16, 17 and 21 can start at once. Every step works with branching off, the 
   - An image built on the pinned netbox-docker image, with netbox-branching 1.2.x pinned by hash and configured as the plugin requires, and a worker; a `branching` profile for `make netbox-up` and `netboxtest`, which creates branches and works in them for tests, and the integration tests run against it in CI as well as against the stock NetBox ([ADR 0035](adr/0035-test-against-netbox-with-and-without-branching.md)).
   - No stand-in for a refused merge, since merging is a person's act in NetBox, nor for a protected main, until it is known how deployments protect it (backlog).
 
-- **18. `feat(netbox): find and read NetBox's branches`.**
+- **18. `feat(netbox): find and read NetBox's branches`.** Done in #41.
   - Settings `netbox.branching`, off by default, and `netbox.protect_main`, on by default. The client reads NetBox's installed plugins when it connects: branching on without netbox-branching 1.2.x is an error, and netbox-branching with branching off a warning.
-  - `netbox-trueup-ai netbox branches` lists what a run can target: NetBox's ready branches, and main where it is allowed. `netbox check --branch` and `compare --branch` read through a branch, with the `X-NetBox-Branch` header on every request, and comparisons record their branch.
+  - `netbox-trueup-ai netbox branches` lists what a run can target: NetBox's ready branches, and main where it is allowed. `netbox check --branch` and `compare --branch` read through a branch named on the command line, with the `X-NetBox-Branch` header on every request but the reads of branches, once the client has checked that the header reaches NetBox. Comparisons are kept for main and each branch apart ([ADR 0036](adr/0036-read-netbox-through-a-branch-named-on-the-command-line.md)).
 
 - **19. `feat(sync): import definitions and link them to NetBox`.**
   - Links (the NetBox object and the primary definition it follows) and import requests, on both engines. `import` takes `compare`'s selection, against a run's target: a candidate is linked, an absent definition requested, and a conflict refused with its reasons. The primary switches to another source's definition, or to NetBox, and `unlink` stops management. Each is audited.
